@@ -1,0 +1,7 @@
+{
+    "Id": "example.selection",
+    "Name": "选择摘要",
+    "Version": "1.0.0",
+    "ApiVersion": 1,
+    "Description": "C++ SDK 示例：读取用户选择、显示侧栏、注册命令、刷新活动文件栏；不联网。"
+}

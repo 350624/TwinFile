@@ -1,0 +1,9 @@
+<RCC>
+  <qresource prefix="/">
+    <file alias="app.ico">app.ico</file>
+    <file alias="app.png">app.png</file>
+    <file>appearance-check.svg</file>
+    <file>appearance-close.svg</file>
+    <file>appearance-chevron.svg</file>
+  </qresource>
+</RCC>

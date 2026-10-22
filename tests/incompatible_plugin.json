@@ -1,0 +1,6 @@
+{
+    "Id": "example.incompatible",
+    "Name": "Incompatible test fixture",
+    "Version": "1.0.0",
+    "ApiVersion": 99
+}
