@@ -13,3 +13,5 @@
 - 贡献的原创部分按本项目 GPL-3.0-only 提供；不得提交无权再分发的内容。
 
 常用验证命令见 [docs/BUILD.md](docs/BUILD.md)。安全问题处理见 [SECURITY.md](SECURITY.md)。
+
+维护者发布时必须更新版本与 [CHANGELOG.md](CHANGELOG.md)，并按 [发布说明](docs/RELEASING.md) 运行 `publish.ps1`，让源码、安装包、源码归档、校验值和更新日志保持一致。外部贡献者提交 PR 不需仓库发布权限。

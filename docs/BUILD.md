@@ -60,7 +60,7 @@ cmake --build build-core --parallel 4
 
 `verify.ps1` 检查便携启动、Python 产物及源文件摘要；`verify-ui.ps1` 在 Windows 平台运行专项测试并生成截图。两者产生的本地路径、截图、JSON 和日志在 `verification`，**默认不提交 Git**。不要将自己的文件列表截图上传。
 
-安装器输出 `releases\TwinFile-3.1-Cpp-Setup.exe` 及 `.sha256`。脚本**不执行安装器**。公开发布前还要核对具体 Qt/FFmpeg/Java/Android/编译器运行库版本、通知及对应源码义务，详见 [THIRD_PARTY.md](../THIRD_PARTY.md)。本仓库没有把本地旧安装包当成已完成再发行核查的公开 Release。
+安装器输出 `releases\TwinFile-3.1-Cpp-Setup.exe` 及 `.sha256`。脚本**不执行安装器**。运行包附实际工具链通知、Qt SDK SBOM 与 `release-components.json` 文件校验清单，来源见 [THIRD_PARTY.md](../THIRD_PARTY.md)。完整发布使用 [publish.ps1 流程](RELEASING.md)，自动生成带版本的安装包名称、对应提交源码、校验值与更新日志并上传 GitHub Releases；不是上传历史旧安装器。
 
 ## D. 导出源码
 

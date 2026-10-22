@@ -2,19 +2,20 @@
 
 **Windows 双栏文件管理器 · Android 工具箱 · 可选 AI / Agent · 原生插件扩展**
 
-[安装说明](docs/INSTALL.md) · [使用手册与快捷键](docs/USAGE.md) · [源码构建](docs/BUILD.md) · [工具依赖](tools/README.md) · [常见问题](docs/FAQ.md) · [问题反馈](https://github.com/350624/TwinFile/issues)
+[下载安装包](https://github.com/350624/TwinFile/releases/latest) · [更新日志](CHANGELOG.md) · [安装说明](docs/INSTALL.md) · [使用手册与快捷键](docs/USAGE.md) · [源码构建](docs/BUILD.md) · [常见问题](docs/FAQ.md) · [问题反馈](https://github.com/350624/TwinFile/issues)
 
 TwinFile 是面向 Windows 的双栏文件管理与 Android 工具箱。本版将桌面业务层、界面和设备协议迁为 **C++20 / Qt 6**，没有 Python 后端、解释器、PySide 或 Shiboken，也不会通过旧脚本补做功能。压缩依赖为原生 C；APK 编译、签名仍调用随包 Java 工具，Android 调试使用 ADB。
 
-> 本仓库提供原生桌面源码、测试、插件 SDK、资源和构建脚本，不提交本地配置、API 密钥、构建目录或历史安装包。当前源码版本为 3.1.1；是否有可下载成品请查看 [Releases](https://github.com/350624/TwinFile/releases)。仓库中的文档不表示已发布安装包。Android/Java 等可选外部工具需按说明另行准备。
+> 源码在本仓库，Windows 安装包在 [Releases](https://github.com/350624/TwinFile/releases/latest)。每版附更新日志、SHA256 与对应源码；Git 历史不存放安装器、个人配置或密钥。源码构建需要另行准备 [外部工具](tools/README.md)，普通安装用户无需自行配置构建环境。
 
 ## 运行和安装
 
-- 面向 Windows x64。取得完整便携包后解压，运行 `TwinFile.exe`，不要单独移动 EXE；取得安装器后按向导安装。发布包尚未提供时，可按[构建说明](docs/BUILD.md)自行编译。
+- 面向 Windows x64。[下载 3.1.1 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.1/TwinFile-3.1.1-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
 - 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.1）。这些是构建后的路径，不是仓库已包含的文件。
 - 完整发布包不需要安装 Python、Qt SDK 或编译器。手机需开启 USB 调试并授权电脑；HFX 需经用户确认安装配套手机端。源码编译与完整工具包的准备步骤不同，详见[安装说明](docs/INSTALL.md)。
 - 新配置：`%APPDATA%/TwinFileNative/settings.json`。在“更多 → 导入旧版设置 / 工作区”中可读取旧 JSON，不修改旧文件。
 - 第一次使用：点选左栏目录，再点选右栏目标目录，回到源栏选择文件，按 `F5` 复制到另一栏；顶部“助手”打开可选 AI，未配置 API 不影响文件管理。
+- 后续软件更新按[发布流程](docs/RELEASING.md)同步源码、更新日志和安装包；不含客户端静默自动更新或后台文件监控。
 
 ## 开源协议
 

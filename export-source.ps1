@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $Destination = [IO.Path]::GetFullPath($Destination)
 if (Test-Path -LiteralPath $Destination) { throw 'Choose a new destination; existing files are never overwritten' }
 New-Item -ItemType Directory -Path $Destination | Out-Null
-foreach ($Name in @('src','sdk','assets','tests','vendor','licenses','docs','CMakeLists.txt','build.ps1','verify.ps1','verify-ui.ps1','package.ps1','export-source.ps1','installer.iss','README.md','MIGRATION.md','THIRD_PARTY.md','VERIFICATION.md','PLUGIN_SDK.md','LICENSE','NOTICE.md','CONTRIBUTING.md','SECURITY.md','.gitignore','.gitattributes')) {
+foreach ($Name in @('src','sdk','assets','tests','vendor','licenses','docs','CMakeLists.txt','build.ps1','verify.ps1','verify-ui.ps1','package.ps1','publish.ps1','export-source.ps1','installer.iss','README.md','CHANGELOG.md','AGENTS.md','MIGRATION.md','THIRD_PARTY.md','VERIFICATION.md','PLUGIN_SDK.md','LICENSE','NOTICE.md','CONTRIBUTING.md','SECURITY.md','.gitignore','.gitattributes')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $Name) -Destination $Destination -Recurse
 }
 New-Item -ItemType Directory -Path (Join-Path $Destination 'tools') | Out-Null

@@ -5,14 +5,14 @@
 ## 1. 系统与下载
 
 - 目标平台是 **Windows x64**；当前没有 Linux、macOS 或 Android 桌面端安装包。macOS 主题仅是 Windows 上的外观。
-- 请从本项目 [Releases](https://github.com/350624/TwinFile/releases) 取得发布包；没有资产时，说明该版本尚未提供公开成品，可按源码构建说明自行编译。GitHub 的 “Source code (zip)” 不是免编译运行包。
+- 请从本项目 [Releases](https://github.com/350624/TwinFile/releases/latest) 取得安装包及 `SHA256SUMS.txt`。GitHub 的 “Source code (zip)” 不是免编译运行包。
 - 完整运行包应含 Qt DLL、插件及所需工具，不要求用户安装 Python、Qt SDK 或编译器。媒体格式取决于发布包实际解码后端。
 - 本地验证使用 Qt 6.10.3 / MinGW x64；不同 Windows 版本、驱动和安全软件仍需实际验证，不承诺所有旧系统可用。
 - 重要文件先备份。建议以普通用户运行；不必为常规浏览授予管理员权限。
 
 ## 2. 安装版
 
-1. 下载 `TwinFile-3.1-Cpp-Setup.exe` 及对应 SHA256（若发布者提供）。
+1. 下载 `TwinFile-3.1.1-Windows-x64-Setup.exe` 及 `SHA256SUMS.txt`。
 2. 核对来源和校验值，关闭正在运行的 TwinFile 后打开安装器。
 3. 选择目录和是否创建桌面快捷方式，完成安装。项目使用独立的 `TwinFileCpp` 安装目录标识。
 4. 从开始菜单或快捷方式启动。安装器不会默认勾选安装结束立即运行。
@@ -20,7 +20,7 @@
 未签名或下载较少的安装器可能触发 Windows SmartScreen。请先核实仓库、文件哈希和来源，不要关闭系统安全防护来运行来源不明的副本。哈希只能检查文件一致性，不能代替签名或安全审计。
 
 ```powershell
-Get-FileHash .\TwinFile-3.1-Cpp-Setup.exe -Algorithm SHA256
+Get-FileHash .\TwinFile-3.1.1-Windows-x64-Setup.exe -Algorithm SHA256
 ```
 
 ## 3. 便携版

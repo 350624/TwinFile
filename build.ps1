@@ -75,7 +75,7 @@ if ($Package) {
     Copy-Item -LiteralPath "$ToolSource\hfx\HybridFileXfer-phone.apk" -Destination "$ToolDestination\hfx" -Force
     New-Item -ItemType Directory -Path "$ToolDestination\runtime" -Force | Out-Null
     Get-ChildItem -LiteralPath "$ToolSource\runtime" | Copy-Item -Destination "$ToolDestination\runtime" -Recurse -Force
-    foreach ($Name in @('README.md','MIGRATION.md','THIRD_PARTY.md','VERIFICATION.md','PLUGIN_SDK.md','LICENSE','NOTICE.md','CONTRIBUTING.md','SECURITY.md','docs')) {
+    foreach ($Name in @('README.md','CHANGELOG.md','MIGRATION.md','THIRD_PARTY.md','VERIFICATION.md','PLUGIN_SDK.md','LICENSE','NOTICE.md','CONTRIBUTING.md','SECURITY.md','docs')) {
         if (Test-Path -LiteralPath "$Root\$Name") { Copy-Item -LiteralPath "$Root\$Name" -Destination $Destination -Recurse -Force }
     }
     New-Item -ItemType Directory -Path "$Destination\licenses" -Force | Out-Null
@@ -90,6 +90,21 @@ if ($Package) {
     Copy-Item -LiteralPath "$Root\vendor\webp\COPYING" -Destination "$Destination\licenses\libwebp-BSD.txt" -Force
     Copy-Item -LiteralPath "$Root\vendor\webp\PATENTS" -Destination "$Destination\licenses\libwebp-PATENTS.txt" -Force
     if (Test-Path -LiteralPath "$Root\licenses") { Get-ChildItem -LiteralPath "$Root\licenses" | Copy-Item -Destination "$Destination\licenses" -Recurse -Force }
+    New-Item -ItemType Directory -Path "$Destination\licenses\mingw","$Destination\licenses\qt-sbom" -Force | Out-Null
+    foreach ($Name in @('gcc','mingw-w64','winpthreads')) {
+        $LicenseDirectory = Join-Path $CompilerRoot "licenses\$Name"
+        if (-not (Test-Path -LiteralPath $LicenseDirectory)) { throw "Missing runtime notices: $Name" }
+        Copy-Item -LiteralPath $LicenseDirectory -Destination "$Destination\licenses\mingw" -Recurse -Force
+    }
+    foreach ($Module in @('qtbase','qtsvg','qtmultimedia')) {
+        $Sbom = @(Get-ChildItem -LiteralPath "$QtRoot\sbom" -Filter "$Module-*.cdx.json")
+        if ($Sbom.Count -ne 1) { throw "Expected one SDK SBOM for $Module" }
+        Copy-Item -LiteralPath $Sbom[0].FullName -Destination "$Destination\licenses\qt-sbom" -Force
+    }
+    $Components = foreach ($File in (Get-ChildItem -LiteralPath $Destination -Recurse -File | Where-Object { $_.Extension -in @('.exe','.dll','.jar','.apk') } | Sort-Object FullName)) {
+        [ordered]@{ path=[IO.Path]::GetRelativePath($Destination,$File.FullName).Replace('\','/'); size=$File.Length; sha256=(Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); fileVersion=$File.VersionInfo.FileVersion }
+    }
+    [ordered]@{ schema=1; components=@($Components); sources='licenses/SOURCES.md' } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath "$Destination\release-components.json" -Encoding utf8
     $Forbidden = @(Get-ChildItem -LiteralPath $Destination -Recurse -File | Where-Object { $_.Name -match '(?i)(\.py[co]?$|^python.*\.(dll|exe)$|pyside|shiboken)' })
     if ($Forbidden.Count) { throw "Python artifacts found in native package: $($Forbidden.FullName -join ', ')" }
     Write-Output "Native portable application: $Destination\TwinFile.exe"
