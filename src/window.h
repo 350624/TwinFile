@@ -5,6 +5,8 @@
 #include "hfx.h"
 #include "operations.h"
 #include <QMainWindow>
+#include <QPointer>
+#include <QUrl>
 #include <functional>
 
 class QDockWidget;
@@ -12,11 +14,13 @@ class QDockWidget;
 namespace twinfile {
 
 class ExtensionSidebar;
+class UpdateChecker;
+class UpdateDialog;
 
 class Window : public QMainWindow {
     Q_OBJECT
 public:
-    explicit Window(QWidget *parent = nullptr);
+    explicit Window(QWidget *parent = nullptr, const QUrl &updateTestEndpoint = {});
     Pane *leftPane() const { return left_; }
     Pane *rightPane() const { return right_; }
     Pane *activePane() const { return active_; }
@@ -25,6 +29,7 @@ public:
     void setTheme(const QString &theme);
     void setColorMode(const QString &mode);
     void showAppearanceSettings();
+    void showUpdateSettings(bool checkNow = true);
     void setReducedMotion(bool enabled);
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -87,6 +92,9 @@ private:
     ArchiveMounts mounts_;
     ExtensionSidebar *extensions_ = nullptr;
     QDockWidget *extensionDock_ = nullptr;
+    UpdateChecker *updates_ = nullptr;
+    QPointer<UpdateDialog> updateDialog_;
+    bool closing_ = false;
 };
 
 }

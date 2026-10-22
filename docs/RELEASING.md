@@ -21,6 +21,8 @@
 
 需 PowerShell 7、Git、完整构建工具和 GitHub 仓库写权限。先通过 Git Credential Manager 登录 GitHub；无人值守环境可在秘密存储中提供 `GH_TOKEN` / `GITHUB_TOKEN`，不得写进仓库。脚本不要求安装 gh。`-CheckOnly` 只进行本地发布条件检查，不构建、不联网、不上传。
 
+受限网络可指定 `-Proxy 'http://proxy.example:8080'`，或通过当前进程 `HTTPS_PROXY` 环境变量传入 HTTPS 代理；凭据不得放进脚本默认值或仓库配置。Git 的推送代理由 Git Credential Manager / Git 配置单独处理。
+
 二进制资产命名为 `TwinFile-版本-Windows-x64-Setup.exe`，源码为 `TwinFile-版本-source.zip`。GitHub 自带的 Source code 是源码，不是安装器。安装包使用固定本地输出名，发布时另取包含版本号的名称。
 
 ## 失败恢复与边界
@@ -30,6 +32,6 @@
 - 推送成功但上传失败时，main / 标签仍可能已在远端。修好认证或网络后，用完全相同的提交重试；有新修改则另发版本。
 - `-CheckOnly` 不能替代真正构建、设备测试或安装验收。发布失败不会回滚已推送源码；不要删除标签掩盖失败。
 - 该流程按发布命令运行；没有定时任务或后台文件监控。今后在本项目继续修改时按 `AGENTS.md` 自动收尾，不会擅自上传其它目录内容。
-- 此处“自动更新仓库”不是客户端自动更新器；已安装软件不会静默下载安装新版。
+- 应用内更新功能会查询正式版本并打开发布页，**不会自动下载、安装或运行安装器**；本发布脚本也不会静默更新用户设备。
 
 依赖来源和再分发通知见 [THIRD_PARTY.md](../THIRD_PARTY.md) 与 [SOURCES.md](../licenses/SOURCES.md)。发布者仍需持续维护具体版本的许可与源码义务，不应把组件版本清单当成法律或安全审计证明。

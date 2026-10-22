@@ -1,6 +1,6 @@
 # 发布依赖与源码获取
 
-TwinFile 源码在 <https://github.com/350624/TwinFile>；每个正式 Release 附对应提交的完整项目源码 ZIP，包含实际构建的 vendor 源码和 HFX 上游源码/修改说明。以下记录 3.1.1 发布环境，不声称由这些网址下载的任意文件与继承的历史工具逐字节相同。实际部署文件哈希见安装目录 `release-components.json`。
+TwinFile 源码在 <https://github.com/350624/TwinFile>；每个正式 Release 附对应提交的完整项目源码 ZIP，包含实际构建的 vendor 源码和 HFX 上游源码/修改说明。以下记录 3.1.2 发布环境，不声称由这些网址下载的任意文件与继承的历史工具逐字节相同。实际部署文件哈希见安装目录 `release-components.json`。
 
 | 组件 | 本次版本证据 | 上游源码 / 获取位置 |
 | --- | --- | --- |

@@ -9,6 +9,7 @@
 #include "shell.h"
 #include "extensions.h"
 #include "appearance.h"
+#include "updates.h"
 
 #include <QApplication>
 #include <QActionGroup>
@@ -132,7 +133,7 @@ protected:
     void closeEvent(QCloseEvent *event) override { event->ignore(); reject(); }
 };
 
-Window::Window(QWidget *parent) : QMainWindow(parent) {
+Window::Window(QWidget *parent, const QUrl &updateTestEndpoint) : QMainWindow(parent) {
     settings_ = readSettings(settingsPath());
     normalizeAppearance(settings_);
     setWindowTitle(QStringLiteral("TwinFile")); setWindowIcon(QIcon(QStringLiteral(":/app.ico"))); resize(1520, 900); setMinimumSize(1100, 650);
@@ -188,6 +189,11 @@ Window::Window(QWidget *parent) : QMainWindow(parent) {
     statusBar()->showMessage(QStringLiteral("就绪"));
     auto *statusHint = new QLabel(QStringLiteral("空格预览   ·   F2 刷新   ·   F5 复制   ·   F6 移动")); statusHint->setObjectName(QStringLiteral("workspaceShortcuts")); statusBar()->addPermanentWidget(statusHint);
     buildExtensions();
+    updates_ = new UpdateChecker(QStringLiteral(TWINFILE_VERSION), this, updateTestEndpoint);
+    connect(updates_, &UpdateChecker::stateChanged, this, [this] {
+        if (!closing_ && updates_->state() == UpdateChecker::State::Available) showUpdateSettings(false);
+    });
+    if (!qEnvironmentVariableIsSet("TWINFILE_TEST_MODE") || !updateTestEndpoint.isEmpty()) updates_->scheduleStartup(settings_.value(QStringLiteral("check_updates_on_startup")).toBool(true));
 }
 
 void Window::buildExtensions() {
@@ -390,9 +396,23 @@ void Window::showAppearanceSettings() {
     }
     layout->addLayout(modes);
     auto *motion = new QCheckBox(QStringLiteral("减少动画")); motion->setChecked(settings_.value(QStringLiteral("reduced_motion")).toBool()); layout->addWidget(motion); connect(motion, &QCheckBox::toggled, this, &Window::setReducedMotion);
+    auto *updates = new QPushButton(QStringLiteral("软件更新…")); updates->setObjectName(QStringLiteral("appearanceUpdates")); updates->setAutoDefault(false); layout->addWidget(updates);
+    connect(updates, &QPushButton::clicked, this, [this] { showUpdateSettings(); });
     connect(themes, &QComboBox::currentIndexChanged, &dialog, [this, themes] { setTheme(themes->currentData().toString()); });
     layout->addStretch(); auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close); buttons->button(QDialogButtonBox::Close)->setText(QStringLiteral("完成")); layout->addWidget(buttons); connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     dialog.exec(); saveSettings();
+}
+
+void Window::showUpdateSettings(bool checkNow) {
+    if (!updateDialog_) {
+        updateDialog_ = new UpdateDialog(updates_, settings_.value(QStringLiteral("check_updates_on_startup")).toBool(true), this);
+        updateDialog_->setAttribute(Qt::WA_DeleteOnClose);
+        connect(updateDialog_, &UpdateDialog::startupChanged, this, [this](bool enabled) {
+            settings_.insert(QStringLiteral("check_updates_on_startup"), enabled); updates_->setStartupEnabled(enabled); saveSettings();
+        });
+    }
+    updateDialog_->show(); updateDialog_->raise(); updateDialog_->activateWindow();
+    if (checkNow) updates_->check();
 }
 
 void Window::buildActions() {
@@ -996,6 +1016,10 @@ void Window::menu(const QPoint &position) {
 
 void Window::moreMenu() {
     QMenu popup(this);
+    auto *settings = popup.addMenu(QStringLiteral("设置"));
+    settings->addAction(QStringLiteral("外观…"), this, &Window::showAppearanceSettings);
+    settings->addAction(QStringLiteral("软件更新…"), this, [this] { showUpdateSettings(); });
+    popup.addSeparator();
     popup.addAction(QStringLiteral("AI / 扩展侧栏  Ctrl+Shift+A"), this, [this] { extensionDock_->show(); extensionDock_->raise(); });
     popup.addAction(QStringLiteral("管理插件"), this, [this] { extensionDock_->show(); extensions_->showExtensions(); });
     popup.addSeparator();
@@ -1067,7 +1091,7 @@ void Window::saveSettings() {
 void Window::closeEvent(QCloseEvent *event) {
     if (busy_) { if (cancellation_) cancellation_->store(true); statusBar()->showMessage(QStringLiteral("正在取消操作，请完成后再次关闭")); event->ignore(); return; }
     for (auto *dialog : findChildren<QDialog *>(QString(), Qt::FindDirectChildrenOnly)) { if (!dialog->isVisible()) continue; dialog->close(); if (dialog->isVisible()) { event->ignore(); return; } }
-    saveSettings(); QMainWindow::closeEvent(event);
+    closing_ = true; updates_->cancel(); saveSettings(); QMainWindow::closeEvent(event);
 }
 
 }

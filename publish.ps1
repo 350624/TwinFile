@@ -4,6 +4,7 @@ param(
     [string]$ToolRoot = (Join-Path $PSScriptRoot 'tools'),
     [string]$CMake = 'cmake',
     [string]$Compiler = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+    [string]$Proxy = $env:HTTPS_PROXY,
     [switch]$CheckOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -62,6 +63,7 @@ function Invoke-Api {
     param([string]$Path, [string]$Method='Get', [object]$Body=$null)
     $Parameters = @{ Uri="https://api.github.com/repos/$Repository/$Path"; Method=$Method; Headers=$Headers; TimeoutSec=120 }
     if ($null -ne $Body) { $Parameters.Body = ConvertTo-Json -InputObject $Body -Depth 12 -Compress; $Parameters.ContentType = 'application/json; charset=utf-8' }
+    if ($Proxy) { $Parameters.Proxy = $Proxy }
     Invoke-RestMethod @Parameters
 }
 try {
@@ -117,7 +119,9 @@ try {
             $null = Invoke-Api "releases/assets/$($OldAsset.id)" 'Delete'
         }
         Write-Output "Uploading $Name"
-        $Uploaded = Invoke-RestMethod -Uri "https://uploads.github.com/repos/$Repository/releases/$($Existing.id)/assets?name=$([Uri]::EscapeDataString($Name))" -Method Post -Headers $Headers -InFile $Artifact -ContentType 'application/octet-stream' -TimeoutSec 1800
+        $UploadParameters = @{ Uri="https://uploads.github.com/repos/$Repository/releases/$($Existing.id)/assets?name=$([Uri]::EscapeDataString($Name))"; Method='Post'; Headers=$Headers; InFile=$Artifact; ContentType='application/octet-stream'; TimeoutSec=1800 }
+        if ($Proxy) { $UploadParameters.Proxy = $Proxy }
+        $Uploaded = Invoke-RestMethod @UploadParameters
         if ($Uploaded.size -ne (Get-Item -LiteralPath $Artifact).Length -or $Uploaded.digest -ne "sha256:$Hash") { throw "Uploaded asset verification failed: $Name; draft retained" }
     }
     $Published = Invoke-Api "releases/$($Existing.id)" 'Patch' @{ draft=$false; make_latest='true' }

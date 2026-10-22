@@ -22,7 +22,7 @@ struct PayloadManifest {
     quint64 blockSize = 4096;
     QList<PayloadPartition> partitions;
 };
-struct PayloadOptions { QString userAgent = QStringLiteral("TwinFileNative/3.1.1"); };
+struct PayloadOptions { QString userAgent = QStringLiteral("TwinFileNative/" TWINFILE_VERSION); };
 
 Result parsePayloadManifest(const QByteArray &bytes, PayloadManifest *manifest);
 Result inspectPayload(const QString &source, const Cancellation &cancel = {}, const PayloadOptions &options = {});

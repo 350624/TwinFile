@@ -3,10 +3,12 @@
 #include "extensions.h"
 #include "window.h"
 #include "appearance.h"
+#include "updates.h"
 
 #include <QApplication>
 #include <QAction>
 #include <QClipboard>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -32,8 +34,10 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QTest>
 #include <QTextBrowser>
+#include <limits>
 
 using namespace twinfile;
 
@@ -137,12 +141,129 @@ static QByteArray jsonAnswer(const QString &answer) {
     return QJsonDocument(QJsonObject{{QStringLiteral("choices"), QJsonArray{QJsonObject{{QStringLiteral("message"), QJsonObject{{QStringLiteral("content"), answer}}}, {QStringLiteral("finish_reason"), QStringLiteral("stop")}}}}}).toJson(QJsonDocument::Compact);
 }
 
+static QString nextPatchVersion(const QString &version) {
+    QStringList components = version.split(u'.');
+    if (components.size() != 3) return {};
+    bool valid = false;
+    const int patch = components.last().toInt(&valid);
+    if (!valid || patch == std::numeric_limits<int>::max()) return {};
+    components[2] = QString::number(patch + 1);
+    return components.join(u'.');
+}
+
+static QByteArray updateReleasePayload(const QString &version, const QString &notes) {
+    const QString tag = QStringLiteral("v") + version;
+    const QString name = QStringLiteral("TwinFile-%1-Windows-x64-Setup.exe").arg(version);
+    const QString page = QStringLiteral("https://github.com/350624/TwinFile/releases/tag/") + tag;
+    const QString asset = QStringLiteral("https://github.com/350624/TwinFile/releases/download/%1/%2").arg(tag, name);
+    return QJsonDocument(QJsonObject{{QStringLiteral("tag_name"), tag}, {QStringLiteral("html_url"), page},
+        {QStringLiteral("draft"), false}, {QStringLiteral("prerelease"), false}, {QStringLiteral("body"), notes},
+        {QStringLiteral("assets"), QJsonArray{QJsonObject{{QStringLiteral("name"), name}, {QStringLiteral("state"), QStringLiteral("uploaded")},
+            {QStringLiteral("size"), 2048}, {QStringLiteral("browser_download_url"), asset}}}}}).toJson(QJsonDocument::Compact);
+}
+
 static QString examplePath() { return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("twinfile_example_plugin.dll")); }
 
 class ExtensionTests : public QObject {
     Q_OBJECT
     QTemporaryDir settings_;
 private slots:
+    void updateReleaseValidation_data() {
+        QTest::addColumn<QByteArray>("payload"); QTest::addColumn<bool>("expected"); QTest::addColumn<QString>("version");
+        auto makeRelease = [](const QString &version, const QString &tag, const QString &page, const QString &installerVersion, bool draft = false) {
+            const QString name = QStringLiteral("TwinFile-%1-Windows-x64-Setup.exe").arg(installerVersion);
+            return QJsonDocument(QJsonObject{{QStringLiteral("tag_name"), tag}, {QStringLiteral("html_url"), page}, {QStringLiteral("draft"), draft},
+                {QStringLiteral("prerelease"), false}, {QStringLiteral("body"), QStringLiteral("更新说明")},
+                {QStringLiteral("assets"), QJsonArray{QJsonObject{{QStringLiteral("name"), name}, {QStringLiteral("state"), QStringLiteral("uploaded")},
+                    {QStringLiteral("size"), 1234}, {QStringLiteral("browser_download_url"), QStringLiteral("https://github.com/350624/TwinFile/releases/download/%1/%2").arg(tag, name)}}}}}).toJson();
+        };
+        QTest::newRow("new-release") << makeRelease(QStringLiteral("3.1.2"), QStringLiteral("v3.1.2"), QStringLiteral("https://github.com/350624/TwinFile/releases/tag/v3.1.2"), QStringLiteral("3.1.2")) << true << QStringLiteral("3.1.2");
+        QTest::newRow("current") << makeRelease(QStringLiteral("3.1.1"), QStringLiteral("v3.1.1"), QStringLiteral("https://github.com/350624/TwinFile/releases/tag/v3.1.1"), QStringLiteral("3.1.1")) << true << QStringLiteral("3.1.1");
+        QTest::newRow("draft") << makeRelease(QStringLiteral("3.1.2"), QStringLiteral("v3.1.2"), QStringLiteral("https://github.com/350624/TwinFile/releases/tag/v3.1.2"), QStringLiteral("3.1.2"), true) << false << QString();
+        QTest::newRow("wrong-page") << makeRelease(QStringLiteral("3.1.2"), QStringLiteral("v3.1.2"), QStringLiteral("https://example.com/fake"), QStringLiteral("3.1.2")) << false << QString();
+        QTest::newRow("missing-installer") << makeRelease(QStringLiteral("3.1.2"), QStringLiteral("v3.1.2"), QStringLiteral("https://github.com/350624/TwinFile/releases/tag/v3.1.2"), QStringLiteral("3.1.1")) << false << QString();
+        QTest::newRow("invalid-json") << QByteArray("<html/>") << false << QString();
+    }
+    void updateReleaseValidation() {
+        QFETCH(QByteArray, payload); QFETCH(bool, expected); QFETCH(QString, version);
+        UpdateRelease release; QString error;
+        QCOMPARE(UpdateChecker::parseRelease(payload, QStringLiteral("3.1.1"), &release, &error), expected);
+        if (expected) { QCOMPARE(release.version, version); QCOMPARE(release.newer, version != QStringLiteral("3.1.1")); QCOMPARE(release.notes, QStringLiteral("更新说明")); }
+        else QVERIFY(!error.isEmpty());
+    }
+    void updateCheckIsAsyncBoundedAndShowsReleaseNotes() {
+        MockApi api;
+        const QString currentVersion = QStringLiteral(TWINFILE_VERSION);
+        const QString newerVersion = nextPatchVersion(currentVersion);
+        QVERIFY(!newerVersion.isEmpty());
+        api.respond = [newerVersion](QTcpSocket *socket) { MockApi::response(socket, updateReleasePayload(newerVersion, QStringLiteral("新增检查更新"))); };
+        UpdateChecker checker(currentVersion, nullptr, QUrl(api.url())); QSignalSpy states(&checker, &UpdateChecker::stateChanged);
+        UpdateDialog dialog(&checker, true); auto *startup = dialog.findChild<QCheckBox *>(QStringLiteral("updateOnStartup"));
+        auto *check = dialog.findChild<QPushButton *>(QStringLiteral("updateCheck")); auto *notes = dialog.findChild<QPlainTextEdit *>(QStringLiteral("updateNotes"));
+        QVERIFY(startup && check && notes); QVERIFY(startup->isChecked()); QVERIFY(api.requests.isEmpty());
+        const QString screenshotRoot = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT");
+        if (!screenshotRoot.isEmpty()) { dialog.show(); QTest::qWait(100); QVERIFY(dialog.grab().save(QDir(screenshotRoot).filePath(QStringLiteral("native-update-settings.png")))); }
+        startup->click(); QVERIFY(!startup->isChecked());
+        check->click(); QCOMPARE(checker.state(), UpdateChecker::State::Checking); QTRY_COMPARE(api.requests.size(), 1);
+        QTRY_COMPARE(checker.state(), UpdateChecker::State::Available); QCOMPARE(notes->toPlainText(), QStringLiteral("新增检查更新"));
+        QVERIFY(!dialog.findChild<QPushButton *>(QStringLiteral("updateDownload"))->isHidden());
+        QVERIFY(api.requests.first().startsWith("GET /v1 HTTP/1.1")); QVERIFY(api.requests.first().toLower().contains("user-agent: twinfile/" + currentVersion.toLatin1()));
+        QVERIFY(!api.requests.first().contains("authorization:")); QVERIFY(states.size() >= 2);
+    }
+    void applicationChecksUpdatesAtStartupAndFromSettings() {
+        const QString currentVersion = QStringLiteral(TWINFILE_VERSION);
+        const QString newerVersion = nextPatchVersion(currentVersion);
+        QVERIFY(!newerVersion.isEmpty());
+        MockApi api;
+        api.respond = [newerVersion](QTcpSocket *socket) { MockApi::response(socket, updateReleasePayload(newerVersion, QStringLiteral("启动更新测试"))); };
+        QJsonObject state = readSettings(settingsPath());
+        state.insert(QStringLiteral("check_updates_on_startup"), true);
+        state.insert(QStringLiteral("extension_visible"), false);
+        state.insert(QStringLiteral("workspace"), QJsonObject());
+        state.insert(QStringLiteral("geometry"), QString());
+        QVERIFY(writeSettings(settingsPath(), state));
+        Window window(nullptr, QUrl(api.url()));
+        window.setAttribute(Qt::WA_DontShowOnScreen); window.resize(1100, 650); window.show();
+        QTRY_COMPARE_WITH_TIMEOUT(api.requests.size(), 1, 5000);
+        auto *checker = window.findChild<UpdateChecker *>(QStringLiteral("updateChecker"));
+        QVERIFY(checker); QTRY_COMPARE(checker->state(), UpdateChecker::State::Available);
+        auto *dialog = window.findChild<UpdateDialog *>(QStringLiteral("updateSettings"));
+        QVERIFY(dialog); QVERIFY(dialog->isVisible()); QCOMPARE(dialog->findChild<QLabel *>(QStringLiteral("updateStatus"))->text(), QStringLiteral("发现新版本 %1").arg(newerVersion));
+        QCOMPARE(dialog->findChild<QPlainTextEdit *>(QStringLiteral("updateNotes"))->toPlainText(), QStringLiteral("启动更新测试"));
+        const QString screenshotRoot = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT");
+        if (!screenshotRoot.isEmpty()) QVERIFY(dialog->grab().save(QDir(screenshotRoot).filePath(QStringLiteral("native-update-found.png"))));
+        auto *startup = dialog->findChild<QCheckBox *>(QStringLiteral("updateOnStartup"));
+        auto *check = dialog->findChild<QPushButton *>(QStringLiteral("updateCheck"));
+        QVERIFY(startup && startup->isChecked() && check);
+        startup->click(); QVERIFY(!startup->isChecked());
+        QVERIFY(!readSettings(settingsPath()).value(QStringLiteral("check_updates_on_startup")).toBool(true));
+        check->click(); QTRY_COMPARE_WITH_TIMEOUT(api.requests.size(), 2, 3000);
+        QTRY_COMPARE(checker->state(), UpdateChecker::State::Available);
+        bool openedFromMenu = false;
+        QTimer::singleShot(0, &window, [&] {
+            auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+            if (!menu) return;
+            for (QAction *action : menu->actions()) {
+                if (action->text() != QStringLiteral("设置") || !action->menu()) continue;
+                for (QAction *settingsAction : action->menu()->actions()) {
+                    if (settingsAction->text() != QStringLiteral("软件更新…")) continue;
+                    settingsAction->trigger(); openedFromMenu = true; menu->close(); return;
+                }
+            }
+        });
+        auto *more = window.findChild<QPushButton *>(QStringLiteral("action_more")); QVERIFY(more); more->click(); QVERIFY(openedFromMenu);
+        QTRY_COMPARE_WITH_TIMEOUT(api.requests.size(), 3, 3000); QTRY_COMPARE(checker->state(), UpdateChecker::State::Available);
+        window.close();
+    }
+    void updateCheckFailureCancelAndStartupOnce() {
+        MockApi api; int responseCount = 0; api.respond = [&responseCount](QTcpSocket *socket) { if (++responseCount == 1) MockApi::response(socket, "{}", "application/json", 429); };
+        UpdateChecker disabled(QStringLiteral("3.1.2"), nullptr, QUrl(api.url()));
+        disabled.scheduleStartup(false); QTest::qWait(2100); QVERIFY(api.requests.isEmpty());
+        UpdateChecker checker(QStringLiteral("3.1.2"), nullptr, QUrl(api.url()));
+        checker.scheduleStartup(true); QTRY_COMPARE_WITH_TIMEOUT(api.requests.size(), 1, 4000); QTRY_COMPARE(checker.state(), UpdateChecker::State::Error);
+        QVERIFY(checker.error().contains(QStringLiteral("请求受限"))); checker.scheduleStartup(true); QTest::qWait(100); QCOMPARE(api.requests.size(), 1);
+        checker.check(); QTRY_COMPARE(api.requests.size(), 2); checker.cancel(); QCOMPARE(checker.state(), UpdateChecker::State::Idle);
+    }
     void initTestCase() {
         QVERIFY(settings_.isValid()); qputenv("TWINFILE_TEST_MODE", "1");
         qputenv("TWINFILE_SETTINGS", settings_.filePath(QStringLiteral("settings.json")).toUtf8());

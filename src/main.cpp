@@ -12,7 +12,7 @@
 int main(int argc, char **argv) {
     QApplication application(argc, argv);
     application.setApplicationName(QStringLiteral("TwinFileNative"));
-    application.setApplicationVersion(QStringLiteral("3.1.1-native"));
+    application.setApplicationVersion(QStringLiteral(TWINFILE_VERSION));
     application.setWindowIcon(QIcon(QStringLiteral(":/app.ico")));
     application.setStyle(QStringLiteral("Fusion"));
     QImageReader::setAllocationLimit(256);
