@@ -16,6 +16,7 @@ namespace twinfile {
 class ExtensionSidebar;
 class UpdateChecker;
 class UpdateDialog;
+class McpServer;
 
 class Window : public QMainWindow {
     Q_OBJECT
@@ -30,6 +31,7 @@ public:
     void setColorMode(const QString &mode);
     void showAppearanceSettings();
     void showUpdateSettings(bool checkNow = true);
+    void showMcpSettings();
     void setReducedMotion(bool enabled);
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -94,6 +96,7 @@ private:
     QDockWidget *extensionDock_ = nullptr;
     UpdateChecker *updates_ = nullptr;
     QPointer<UpdateDialog> updateDialog_;
+    McpServer *mcp_ = nullptr;
     bool closing_ = false;
 };
 

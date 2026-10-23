@@ -44,6 +44,12 @@ try {
     if (-not $Process.WaitForExit(30000)) { $Process.Kill(); throw 'Agent UI check timed out' }
     Get-Content -LiteralPath $AgentResults
     if ($Process.ExitCode -ne 0) { throw 'Agent UI check failed' }
+    $McpExecutable = Join-Path $PSScriptRoot 'build\bin\twinfile_mcp_tests.exe'
+    $McpResults = Join-Path $Evidence 'mcp-ui-test-results.txt'
+    $Process = Start-Process -FilePath $McpExecutable -ArgumentList @('-platform','windows','settingsDialogRendersAndStarts','-o',('"' + $McpResults + ',txt"')) -WindowStyle Hidden -PassThru
+    if (-not $Process.WaitForExit(30000)) { $Process.Kill(); throw 'MCP UI check timed out' }
+    Get-Content -LiteralPath $McpResults
+    if ($Process.ExitCode -ne 0) { throw 'MCP UI check failed' }
 } finally {
     foreach ($Name in $Previous.Keys) { [Environment]::SetEnvironmentVariable($Name, $Previous[$Name]) }
 }

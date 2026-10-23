@@ -11,6 +11,7 @@
 #include "extensions.h"
 #include "appearance.h"
 #include "updates.h"
+#include "mcp.h"
 
 #include <QApplication>
 #include <QActionGroup>
@@ -190,6 +191,8 @@ Window::Window(QWidget *parent, const QUrl &updateTestEndpoint) : QMainWindow(pa
     statusBar()->showMessage(QStringLiteral("就绪"));
     auto *statusHint = new QLabel(QStringLiteral("空格预览   ·   F2 刷新   ·   F5 复制   ·   F6 移动")); statusHint->setObjectName(QStringLiteral("workspaceShortcuts")); statusBar()->addPermanentWidget(statusHint);
     buildExtensions();
+    mcp_ = new McpServer(this);
+    connect(mcp_, &McpServer::filesChanged, this, [this] { left_->refresh(); right_->refresh(); });
     updates_ = new UpdateChecker(QStringLiteral(TWINFILE_VERSION), this, updateTestEndpoint);
     connect(updates_, &UpdateChecker::stateChanged, this, [this] {
         if (!closing_ && updates_->state() == UpdateChecker::State::Available) showUpdateSettings(false);
@@ -414,6 +417,13 @@ void Window::showUpdateSettings(bool checkNow) {
     }
     updateDialog_->show(); updateDialog_->raise(); updateDialog_->activateWindow();
     if (checkNow) updates_->check();
+}
+
+void Window::showMcpSettings() {
+    showMcpDialog(mcp_, McpSettings::fromJson(settings_.value(QStringLiteral("mcp")).toObject()), this, [this](const McpSettings &value) {
+        settings_.insert(QStringLiteral("mcp"), value.json());
+        saveSettings();
+    });
 }
 
 void Window::buildActions() {
@@ -1025,6 +1035,7 @@ void Window::moreMenu() {
     auto *settings = popup.addMenu(QStringLiteral("设置"));
     settings->addAction(QStringLiteral("外观…"), this, &Window::showAppearanceSettings);
     settings->addAction(QStringLiteral("软件更新…"), this, [this] { showUpdateSettings(); });
+    settings->addAction(QStringLiteral("MCP 服务…"), this, &Window::showMcpSettings);
     popup.addSeparator();
     popup.addAction(QStringLiteral("AI / 扩展侧栏  Ctrl+Shift+A"), this, [this] { extensionDock_->show(); extensionDock_->raise(); });
     popup.addAction(QStringLiteral("管理插件"), this, [this] { extensionDock_->show(); extensions_->showExtensions(); });
@@ -1095,6 +1106,7 @@ void Window::saveSettings() {
     QString error; if (!writeSettings(settingsPath(), settings_, &error)) statusBar()->showMessage(QStringLiteral("保存设置失败：") + error);
 }
 void Window::closeEvent(QCloseEvent *event) {
+    if (mcp_) { mcp_->stop(); if (mcp_->busy()) { statusBar()->showMessage(QStringLiteral("正在停止 MCP 操作，请稍后再次关闭")); event->ignore(); return; } }
     if (busy_) { if (cancellation_) cancellation_->store(true); statusBar()->showMessage(QStringLiteral("正在取消操作，请完成后再次关闭")); event->ignore(); return; }
     for (auto *dialog : findChildren<QDialog *>(QString(), Qt::FindDirectChildrenOnly)) { if (!dialog->isVisible()) continue; dialog->close(); if (dialog->isVisible()) { event->ignore(); return; } }
     closing_ = true; updates_->cancel(); saveSettings(); QMainWindow::closeEvent(event);

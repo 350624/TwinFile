@@ -1,4 +1,4 @@
-# TwinFile 3.1.3 · C++ 原生版
+# TwinFile 3.1.4 · C++ 原生版
 
 **Windows 双栏文件管理器 · Android 工具箱 · 可选 AI / Agent · 原生插件扩展**
 
@@ -10,8 +10,8 @@ TwinFile 是面向 Windows 的双栏文件管理与 Android 工具箱。本版�
 
 ## 运行和安装
 
-- 面向 Windows x64。[下载 3.1.3 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.3/TwinFile-3.1.3-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
-- 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.3）。这些是构建后的路径，不是仓库已包含的文件。
+- 面向 Windows x64。[下载 3.1.4 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.4/TwinFile-3.1.4-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
+- 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.4）。这些是构建后的路径，不是仓库已包含的文件。
 - 完整发布包不需要安装 Python、Qt SDK 或编译器。手机需开启 USB 调试并授权电脑；HFX 需经用户确认安装配套手机端。源码编译与完整工具包的准备步骤不同，详见[安装说明](docs/INSTALL.md)。
 - 新配置：`%APPDATA%/TwinFileNative/settings.json`。在“更多 → 导入旧版设置 / 工作区”中可读取旧 JSON，不修改旧文件。
 - 第一次使用：点选左栏目录，再点选右栏目标目录，回到源栏选择文件，按 `F5` 复制到另一栏；顶部“助手”打开可选 AI，未配置 API 不影响文件管理。
@@ -23,6 +23,12 @@ TwinFile 是面向 Windows 的双栏文件管理与 Android 工具箱。本版�
 TwinFile 原创部分使用 **GPL-3.0-only**，详见 [LICENSE](LICENSE) 和 [NOTICE.md](NOTICE.md)。第三方源码、工具与通知保留各自许可证，见 [THIRD_PARTY.md](THIRD_PARTY.md)。可以学习、修改和按协议再分发；公开分发修改版及二进制时必须满足相应的源码和通知义务。项目不提供任何担保，重要文件请先备份。
 
 ## 完整功能介绍
+
+### MCP 服务
+
+在“⋯ → 设置 → MCP 服务”启动后，支持 Streamable HTTP 的外部 AI 客户端可连接 TwinFile，使用自己的模型分析和修改授权目录中的文件、ZIP/APK、DEX/Smali，并按需读取手机文件。提供目录搜索、文本/二进制读写、校验、ZIP 创建更新提取、APK 信息/清单修改/测试签名及 DEX 解码回编。默认关闭、仅本机监听、强制 Bearer 认证；Home 读写、其它目录按规则授权，默认拒绝。详情及客户端配置见 [MCP 使用说明](docs/MCP.md)。
+
+启动时会确认风险：持令牌客户端在可写目录直接操作，不逐项询问；覆盖/移动/永久删除要求当前 SHA256，不开放任意 shell 或安装。局域网选项使用明文 HTTP，仅用于可信网络。它是独立实现，不是 MT 插件或全部功能复制；未实测第三方 AI 客户端和真实手机，重要文件先备份。
 
 ### Dex 编辑器++
 

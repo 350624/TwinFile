@@ -1,5 +1,15 @@
 # 验证范围与复现
 
+## 3.1.4 MCP 服务（2026-10-23）
+
+Windows 11 x64、Qt 6.10.3、MinGW GCC 13.1、C++20 Release，五组回归 **310 passed / 0 failed / 0 skipped**（原生 109、迁移 56、AI/扩展 80、Agent 40、MCP 25）；Windows UI 专项 **114 项通过**（比较 3、动画 12、图标/DEX 32、AI/扩展 51、Agent 4、MCP 12）。专项与全量有重叠，不能相加作为独立场景数。独立便携启动通过，源码及部署 Python 文件/运行时为 0。
+
+MCP 使用本机 HTTP 客户端验证初始化、工具发现与调用、Bearer/Host/Origin/协议拒绝、HTTP 方法和长度限制；验证 Home/首条目录规则、只读输入不可修改、ADS/越界/连接点/硬链接拒绝、文件读写与 SHA256 冲突、ZIP 创建/读取/检查/更新/提取及更新后解压量超限不替换原件。验证停止时阻止重启，直到后台清理完成并通知目录刷新。
+
+真实 HFX APK 完成应用信息、Manifest 读取与版本名修改、新 APK 测试签名和 apksigner 校验；classes.dex 提取、Smali 解码、回编、再次解码核对类数，原 APK 不变。MCP 设置启停在五主题各亮暗下测试，实际 Windows 截图为 `verification/native-mcp-settings-主题-dark.png` / `light.png`。
+
+未与第三方 AI 客户端、真实手机或 LAN 防火墙端到端验收，未执行安装器或安装修改后的 APK。手机工具仅目录/读取及可选不覆盖新建，依赖手机硬链接支持；不提供完整 MT 资源工程、Java/so 反编译、任意命令或自定义签名管理。路径检查不是操作系统沙箱，协作取消不撤销已完成操作，自动化不能证明没有所有安全或兼容问题。
+
 ## 3.1.3 Dex 编辑器++（2026-10-23）
 
 Windows 11 x64、Qt 6.10.3、MinGW GCC 13.1、C++20 Release，全量回归 **285 passed / 0 failed / 0 skipped**（原生 109、迁移 56、AI/扩展 80、Agent 40）；Windows UI 专项 **102 项通过**（比较 3、动画 12、图标/DEX 32、AI/扩展 51、Agent 4）。专项和全量有重叠，不能相加作为独立场景数。独立便携启动通过，源码及部署 Python 文件/运行时为 0。

@@ -52,6 +52,13 @@ $AgentResults = Join-Path $Build 'agent-test-results.txt'
 $AgentExitCode = $LASTEXITCODE
 Get-Content -LiteralPath $AgentResults
 if ($AgentExitCode -ne 0) { throw 'Built-in Agent regression tests failed' }
+$McpResults = Join-Path $Build 'mcp-test-results.txt'
+& "$Build\bin\twinfile_mcp_tests.exe" -platform offscreen -o "$McpResults,txt"
+$McpExitCode = $LASTEXITCODE
+Get-Content -LiteralPath $McpResults
+if ($McpExitCode -ne 0) { throw 'MCP regression tests failed' }
+New-Item -ItemType Directory -Path "$Root\verification\test-results" -Force | Out-Null
+Copy-Item -LiteralPath $TestResults,$MigrationResults,$ExtensionResults,$AgentResults,$McpResults -Destination "$Root\verification\test-results" -Force
 } else {
     Write-Output 'Test execution skipped; this is not a passing test result.'
 }
