@@ -15,7 +15,7 @@ $ToolRoot = [IO.Path]::GetFullPath($ToolRoot)
 $CMakeCommand = Get-Command $CMake -CommandType Application -ErrorAction Stop
 $CMake = $CMakeCommand.Source
 if (-not $SkipTests -or $Package) {
-    foreach ($Relative in @('adb/adb.exe','adb/AdbWinApi.dll','adb/AdbWinUsbApi.dll','adb/fastboot.exe','apktool.jar','apksigner.jar','runtime/bin/java.exe','runtime/bin/keytool.exe','hfx/HybridFileXfer-phone.apk')) {
+    foreach ($Relative in @('adb/adb.exe','adb/AdbWinApi.dll','adb/AdbWinUsbApi.dll','adb/fastboot.exe','apktool.jar','ecj.jar','apksigner.jar','runtime/bin/java.exe','runtime/bin/keytool.exe','hfx/HybridFileXfer-phone.apk')) {
         if (-not (Test-Path -LiteralPath (Join-Path $ToolRoot $Relative) -PathType Leaf)) {
             throw "Missing external tool: $Relative. See tools/README.md; use -SkipTests for a desktop-only build without deployment."
         }

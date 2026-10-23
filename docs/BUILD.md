@@ -26,7 +26,7 @@ CMake 必须在 PATH，或传入 `-CMake 'C:\Program Files\CMake\bin\cmake.exe'`
 
 ## B. 完整构建、测试和部署
 
-按 [tools/README.md](../tools/README.md) 准备工具根目录，包含 ADB、Java、两个 JAR、HFX 测试 APK 等，再运行：
+按 [tools/README.md](../tools/README.md) 准备工具根目录，包含 ADB、Java、Apktool / apksigner / ECJ 三个 JAR、HFX 测试 APK 等，再运行：
 
 ```powershell
 .\build.ps1 -QtRoot 'C:\Qt\6.10.3\mingw_64' `
@@ -35,6 +35,8 @@ CMake 必须在 PATH，或传入 `-CMake 'C:\Program Files\CMake\bin\cmake.exe'`
 ```
 
 脚本会配置 Release、编译、执行四组 QtTest，再用 `windeployqt` 部署到 `dist\TwinFile`，复制工具、SDK、示例 DLL、许可和文档。测试结果为 `build\native-test-results.txt`、`migration-test-results.txt`、`extension-test-results.txt`、`agent-test-results.txt`。
+
+DEX 编辑界面和文件操作使用 C++/Qt；构建时以 Eclipse ECJ 3.33.0 编译仓库 `assets/DexBridge.java`，嵌入两个 class 资源，运行时调用发行包既有 Java 17 / Apktool 3.0.3 内的 smali 3.0.9-dev API。ECJ 仅用于构建、不部署；没有 ECJ 的核心构建会明确警告并禁用 DEX 后端，完整测试/打包拒绝缺失依赖。不同 Apktool 内部 API 版本可能不兼容，必须实际编译和往返验证，不应随意替换 JAR。
 
 完整测试包含实际 APK 解码/回编译/签名和历史 HFX 样本检查，**不是仅靠 Qt 就能全部通过**。与本地验证不同的工具版本或自建 APK 可能得到不同结果，不能据此声称复现了历史 262 项结果。缺失样本/工具时完整构建会预检报错。
 

@@ -9,6 +9,15 @@
 #include "android_strings.h"
 #include "shell.h"
 #include "appearance.h"
+#include "dex.h"
+#include <QComboBox>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QPlainTextEdit>
+#include <QPushButton>
+#include <QTreeWidget>
+#include <QTimer>
 #include <QBuffer>
 
 #include <QApplication>
@@ -88,6 +97,83 @@ private slots:
         QTest::newRow("false") << QStringLiteral("file.apk.abc") << false;
     }
     void apkSuffix() { QFETCH(QString, name); QFETCH(bool, accepted); QCOMPARE(isApk(name), accepted); }
+    void dexValidationAndSuffix() {
+        QVERIFY(isDex(QStringLiteral("classes.DEX"))); QVERIFY(!isDex(QStringLiteral("classes.dex.zip"))); QVERIFY(!isText(QStringLiteral("classes.dex")));
+        QTemporaryDir directory; const QString path = directory.filePath(QStringLiteral("classes.dex"));
+        QByteArray bytes(140, '\0'); bytes.replace(0, 8, QByteArray("dex\n035\0", 8));
+        qToLittleEndian<quint32>(140, bytes.data() + 32); qToLittleEndian<quint32>(112, bytes.data() + 36); qToLittleEndian<quint32>(0x12345678, bytes.data() + 40);
+        QVERIFY(writeFixture(path, bytes)); QVERIFY(validateDex(path).ok);
+        bytes[4] = '9'; QVERIFY(writeFixture(path, bytes)); QVERIFY(!validateDex(path).ok); bytes[4] = '0';
+        qToLittleEndian<quint32>(3, bytes.data() + 96); qToLittleEndian<quint32>(130, bytes.data() + 100);
+        QVERIFY(writeFixture(path, bytes)); QVERIFY(!validateDex(path).ok);
+        QVERIFY(writeFixture(path, QByteArray("not a dex"))); QVERIFY(!validateDex(path).ok);
+    }
+    void dexSmaliRoundTripAndFailedCompile() {
+        QTemporaryDir directory; const QString seed = makeDexSeed(directory); QVERIFY(!seed.isEmpty());
+        const QString workspace = directory.filePath(QStringLiteral("smali")); QVERIFY(QDir().mkpath(workspace));
+        const QByteArray smali(".class public Lcom/example/Hello;\n.super Ljava/lang/Object;\n\n.method public static message()Ljava/lang/String;\n    .locals 1\n    const-string v0, \"Hello TwinFile\"\n    return-object v0\n.end method\n");
+        QVERIFY(writeFixture(QDir(workspace).filePath(QStringLiteral("00000.smali")), smali));
+        const QString compiled = directory.filePath(QStringLiteral("compiled.dex"));
+        Result result = convertDex(seed, workspace, compiled); QVERIFY2(result.ok, qPrintable(result.error)); QVERIFY(validateDex(compiled).ok);
+        const QString decoded = directory.filePath(QStringLiteral("decoded")); result = convertDex(compiled, decoded, {}); QVERIFY2(result.ok, qPrintable(result.error));
+        const QString classPath = QDir(decoded).filePath(QStringLiteral("00000.smali")); QVERIFY(contents(classPath).contains("Hello TwinFile"));
+        QByteArray modified = contents(classPath); modified.replace("Hello TwinFile", "Changed successfully"); QVERIFY(writeFixture(classPath, modified));
+        const QString updated = directory.filePath(QStringLiteral("updated.dex")); result = convertDex(compiled, decoded, updated); QVERIFY2(result.ok, qPrintable(result.error));
+        const QString checked = directory.filePath(QStringLiteral("checked")); QVERIFY(convertDex(updated, checked, {}).ok); QVERIFY(contents(QDir(checked).filePath(QStringLiteral("00000.smali"))).contains("Changed successfully"));
+        QVERIFY(writeFixture(classPath, QByteArray(".class broken\nnot-smali"))); const QByteArray unchanged = contents(compiled);
+        QVERIFY(!convertDex(compiled, decoded, directory.filePath(QStringLiteral("invalid.dex"))).ok); QCOMPARE(contents(compiled), unchanged);
+        auto cancel = std::make_shared<std::atomic_bool>(true); QVERIFY(!convertDex(compiled, directory.filePath(QStringLiteral("cancelled")), {}, cancel).ok);
+        QVERIFY(!convertDex(compiled, decoded, updated).ok);
+    }
+    void dexSaveDetectsConflictsAndWritesArchive() {
+        QTemporaryDir directory; const QString seed = makeDexSeed(directory); QVERIFY(!seed.isEmpty());
+        const QByteArray expected = fileDigest(seed); const QString compiled = directory.filePath(QStringLiteral("output.dex")); QVERIFY(QFile::copy(seed, compiled));
+        QVERIFY(saveDex(seed, compiled, expected).ok);
+        const QString archive = directory.filePath(QStringLiteral("app.apk")); QVERIFY(createArchive({seed}, archive).ok);
+        Entry entry; entry.source = Source::Archive; entry.path = archive; entry.name = QFileInfo(seed).fileName(); entry.inner = entry.name;
+        QVERIFY(saveDex(seed, compiled, expected, entry).ok); QString error; QCOMPARE(readArchiveFile(archive, entry.inner, 1024 * 1024, &error), contents(compiled)); QVERIFY(error.isEmpty());
+        QVERIFY(writeFixture(seed, QByteArray("externally modified"))); QVERIFY(!saveDex(seed, compiled, expected).ok); QCOMPARE(contents(seed), QByteArray("externally modified"));
+        auto cancel = std::make_shared<std::atomic_bool>(true); QVERIFY(!saveDex(seed, compiled, expected, {}, cancel).ok);
+    }
+    void dexEditorRendersAndEdits_data() {
+        QTest::addColumn<QString>("theme"); QTest::addColumn<bool>("dark");
+        for (const QString &theme : themeIds()) { QTest::newRow(qPrintable(theme + QStringLiteral("-dark"))) << theme << true; QTest::newRow(qPrintable(theme + QStringLiteral("-light"))) << theme << false; }
+    }
+    void dexEditorRendersAndEdits() {
+        QFETCH(QString, theme); QFETCH(bool, dark); const auto previousPalette = qApp->palette(); const QString previousStyle = qApp->styleSheet();
+        const auto restore = qScopeGuard([&] { qApp->setPalette(previousPalette); qApp->setStyleSheet(previousStyle); });
+        const auto palette = appearancePalette(theme, dark, QStringLiteral("#5b8def"));
+        qApp->setPalette(palette); qApp->setStyleSheet(appearanceStyleSheet(theme, dark, palette));
+        QTemporaryDir directory; const QString seed = makeDexSeed(directory); QVERIFY(!seed.isEmpty());
+        const QString workspace = directory.filePath(QStringLiteral("source")); QVERIFY(QDir().mkpath(workspace));
+        QVERIFY(writeFixture(QDir(workspace).filePath(QStringLiteral("00000.smali")), QByteArray(".class public Lcom/example/MainActivity;\n.super Ljava/lang/Object;\n\n.field public static final VERSION:I = 0x1\n\n.method public static greeting()Ljava/lang/String;\n    .locals 1\n    const-string v0, \"Hello TwinFile\"\n    return-object v0\n.end method\n")));
+        const QString path = directory.filePath(QStringLiteral("classes.dex")); const Result result = convertDex(seed, workspace, path); QVERIFY2(result.ok, qPrintable(result.error));
+        auto *dialog = new DexDialog(path, nullptr); QPointer<DexDialog> guard(dialog); dialog->setAttribute(Qt::WA_DontShowOnScreen); dialog->show();
+        const auto cleanup = qScopeGuard([&] { if (guard) delete guard; });
+        auto *save = dialog->findChild<QPushButton *>(QStringLiteral("dexSave")); auto *tree = dialog->findChild<QTreeWidget *>(QStringLiteral("dexClasses")); auto *editor = dialog->findChild<QPlainTextEdit *>(QStringLiteral("dexCode"));
+        QVERIFY(save); QVERIFY(tree); QVERIFY(editor); QTRY_VERIFY_WITH_TIMEOUT(save->isEnabled(), 20000); QCOMPARE(tree->topLevelItemCount(), 1); QCOMPARE(tree->topLevelItem(0)->text(0), QStringLiteral("com.example"));
+        QVERIFY(editor->toPlainText().contains(QStringLiteral("Hello TwinFile"))); QCOMPARE(dialog->findChild<QComboBox *>(QStringLiteral("dexMembers"))->count(), 2);
+        auto *filter = dialog->findChild<QLineEdit *>(QStringLiteral("dexFilter")); filter->setText(QStringLiteral("missing")); QVERIFY(tree->topLevelItem(0)->child(0)->isHidden()); filter->clear(); QVERIFY(!tree->topLevelItem(0)->child(0)->isHidden());
+        const QString evidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT"); if (!evidence.isEmpty()) QVERIFY(dialog->grab().save(QDir(evidence).filePath(QStringLiteral("native-dex-editor-%1-%2.png").arg(theme, dark ? QStringLiteral("dark") : QStringLiteral("light")))));
+        auto cursor = editor->textCursor(); cursor.select(QTextCursor::Document); cursor.insertText(editor->toPlainText().replace(QStringLiteral("Hello TwinFile"), QStringLiteral("Edited in Dex++")));
+        QTimer approval; connect(&approval, &QTimer::timeout, dialog, [] { for (auto *widget : QApplication::topLevelWidgets()) if (auto *box = qobject_cast<QMessageBox *>(widget)) if (auto *button = box->button(QMessageBox::Yes)) button->click(); }); approval.start(25);
+        save->click(); QTRY_VERIFY_WITH_TIMEOUT(save->isEnabled(), 20000); approval.stop(); QVERIFY2(dialog->findChild<QLabel *>(QStringLiteral("dexStatus"))->text().startsWith(QStringLiteral("已编译保存")), qPrintable(dialog->findChild<QLabel *>(QStringLiteral("dexStatus"))->text()));
+        const QString checked = directory.filePath(QStringLiteral("after")); QVERIFY(convertDex(path, checked, {}).ok); QVERIFY(contents(QDir(checked).filePath(QStringLiteral("00000.smali"))).contains("Edited in Dex++"));
+    }
+    void dexRealApkRoundTripAndWindowRouting() {
+        QTemporaryDir directory; ZipReader apk(toolPath(QStringLiteral("hfx/HybridFileXfer-phone.apk")));
+        const QByteArray dex = apk.fileData(QStringLiteral("classes.dex")); QVERIFY(dex.size() > 1000);
+        const QString source = directory.filePath(QStringLiteral("classes.dex")); QVERIFY(writeFixture(source, dex));
+        const QString decoded = directory.filePath(QStringLiteral("decoded")); Result result = convertDex(source, decoded, {}); QVERIFY2(result.ok, qPrintable(result.error));
+        const QStringList classes = QDir(decoded).entryList({QStringLiteral("*.smali")}, QDir::Files); QVERIFY(classes.size() > 10);
+        const QString output = directory.filePath(QStringLiteral("roundtrip.dex")); result = convertDex(source, decoded, output); QVERIFY2(result.ok, qPrintable(result.error)); QVERIFY(validateDex(output).ok);
+        const QString checked = directory.filePath(QStringLiteral("checked")); result = convertDex(output, checked, {}); QVERIFY2(result.ok, qPrintable(result.error)); QCOMPARE(QDir(checked).entryList({QStringLiteral("*.smali")}, QDir::Files).size(), classes.size());
+        Window window; window.setAttribute(Qt::WA_DontShowOnScreen); window.setReducedMotion(true); window.show(); auto *pane = window.leftPane(); pane->navigate({Source::Local, directory.path(), {}, {}}); QTRY_VERIFY(pane->fileModel()->rowCount() >= 4);
+        int row = -1; for (int index = 0; index < pane->fileModel()->rowCount(); ++index) if (pane->fileModel()->entry(index).name == QStringLiteral("classes.dex")) row = index; QVERIFY(row >= 0);
+        window.setActive(pane); QApplication::setActiveWindow(&window); pane->view()->setFocus(); QTRY_VERIFY(pane->view()->hasFocus()); pane->view()->setCurrentIndex(pane->fileModel()->index(row)); QTest::keyClick(pane->view(), Qt::Key_Return);
+        QTRY_VERIFY(window.findChild<QDialog *>(QStringLiteral("dexEditor"))); auto *dialog = window.findChild<QDialog *>(QStringLiteral("dexEditor")); QTRY_VERIFY_WITH_TIMEOUT(dialog->findChild<QPushButton *>(QStringLiteral("dexSave"))->isEnabled(), 30000);
+        QTimer fallback; connect(&fallback, &QTimer::timeout, &window, [] { for (auto *widget : QApplication::topLevelWidgets()) if (auto *box = qobject_cast<QMessageBox *>(widget)) if (auto *button = box->button(QMessageBox::Yes)) button->click(); }); fallback.start(8000); dialog->close(); QVERIFY(!dialog->isVisible());
+    }
     void unsafeArchiveNames_data() {
         QTest::addColumn<QString>("name");
         for (const QString &name : {QStringLiteral("../escape"), QStringLiteral("/absolute"), QStringLiteral("C:/absolute"), QStringLiteral("a/../../bad"), QStringLiteral("a\\bad"), QStringLiteral("a/CON.txt"), QStringLiteral("a/file."), QStringLiteral("a/./file")}) QTest::newRow(qPrintable(name)) << name;
@@ -600,6 +686,13 @@ private slots:
         for (const QString &mode : {QStringLiteral("dark"), QStringLiteral("light"), QStringLiteral("cream"), QStringLiteral("bataUI01")}) { window.setTheme(mode); QCOMPARE(window.windowIcon().pixmap(64, 64).toImage(), selected); }
     }
 private:
+    QString makeDexSeed(QTemporaryDir &directory) {
+        QByteArray bytes(140, '\0'); bytes.replace(0, 8, QByteArray("dex\n035\0", 8));
+        qToLittleEndian<quint32>(140, bytes.data() + 32); qToLittleEndian<quint32>(112, bytes.data() + 36); qToLittleEndian<quint32>(0x12345678, bytes.data() + 40);
+        qToLittleEndian<quint32>(112, bytes.data() + 52); qToLittleEndian<quint32>(28, bytes.data() + 104); qToLittleEndian<quint32>(112, bytes.data() + 108);
+        qToLittleEndian<quint32>(2, bytes.data() + 112); qToLittleEndian<quint32>(1, bytes.data() + 120); qToLittleEndian<quint16>(0x1000, bytes.data() + 128); qToLittleEndian<quint32>(1, bytes.data() + 132); qToLittleEndian<quint32>(112, bytes.data() + 136);
+        const QString path = directory.filePath(QStringLiteral("seed.dex")); return writeFixture(path, bytes) ? path : QString();
+    }
     QTemporaryDir settings_;
 };
 

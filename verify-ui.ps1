@@ -26,9 +26,9 @@ try {
     Get-Content -LiteralPath $AnimationResults
     if ($Process.ExitCode -ne 0) { throw 'Native animation UI check failed' }
     $IconResults = Join-Path $Evidence 'icon-ui-test-results.txt'
-    $IconTests = @('nativeResourceTables','androidStringPoolsSupportModifiedUtf8','adaptiveIconIgnoresMonochromeAndRejectsMissingLayers','webpApkIconsDecodeWithoutQtPluginOrAapt','thumbnailCacheTracksIdentityAndOnlyHandlesSupportedFiles','windowsExecutableIconsAcceptQtPaths','thumbnailResultsArrivePerFileAndSurviveFolderRevisit','fileIconsUseRoundedMasksAndCorrectFit','maskedFileIconsRenderWithoutUserSettings')
+    $IconTests = @('nativeResourceTables','androidStringPoolsSupportModifiedUtf8','adaptiveIconIgnoresMonochromeAndRejectsMissingLayers','webpApkIconsDecodeWithoutQtPluginOrAapt','thumbnailCacheTracksIdentityAndOnlyHandlesSupportedFiles','windowsExecutableIconsAcceptQtPaths','thumbnailResultsArrivePerFileAndSurviveFolderRevisit','fileIconsUseRoundedMasksAndCorrectFit','maskedFileIconsRenderWithoutUserSettings','dexEditorRendersAndEdits')
     $Process = Start-Process -FilePath $AnimationExecutable -ArgumentList (@('-platform','windows') + $IconTests + @('-o',('"' + $IconResults + ',txt"'))) -WindowStyle Hidden -PassThru
-    if (-not $Process.WaitForExit(30000)) { $Process.Kill(); throw 'Native icon UI check timed out' }
+    if (-not $Process.WaitForExit(90000)) { $Process.Kill(); throw 'Native icon and DEX UI check timed out' }
     Get-Content -LiteralPath $IconResults
     if ($Process.ExitCode -ne 0) { throw 'Native icon UI check failed' }
     $ExtensionExecutable = Join-Path $PSScriptRoot 'build\bin\twinfile_extension_tests.exe'

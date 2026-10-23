@@ -1,5 +1,13 @@
 # 验证范围与复现
 
+## 3.1.3 Dex 编辑器++（2026-10-23）
+
+Windows 11 x64、Qt 6.10.3、MinGW GCC 13.1、C++20 Release，全量回归 **285 passed / 0 failed / 0 skipped**（原生 109、迁移 56、AI/扩展 80、Agent 40）；Windows UI 专项 **102 项通过**（比较 3、动画 12、图标/DEX 32、AI/扩展 51、Agent 4）。专项和全量有重叠，不能相加作为独立场景数。独立便携启动通过，源码及部署 Python 文件/运行时为 0。
+
+新增回归覆盖 DEX 文件头和索引边界、大小写后缀、真实 Smali 汇编/反汇编/修改后的重新汇编、错误语法不覆盖、取消、目标已存在、外部修改冲突、APK 条目回写，以及五主题各亮暗的实际编译保存。使用 HFX APK 的真实 classes.dex 完成解析→编译→再解析并核对类数；通过真实 Window 的文件打开入口核对专用编辑器路由。修复首次载入被误标记为已修改的问题。
+
+实际 Windows 截图：`verification/native-dex-editor-主题-dark.png` / `light.png`。测试使用本地 Java 17、Apktool 3.0.3 内的 Smali API，构建桥接使用 ECJ 3.33.0。未覆盖所有混淆/加固/损坏 DEX、恶意输入模糊测试、真实手机 DEX 回写、重新签名后的应用行为或真实安装升级；未执行安装器。Java 反编译、跨 DEX 重构、CompactDex/ODEX/041 容器不在本次实现范围。
+
 ## 3.1.2 更新检查验证（2026-10-22）
 
 环境：Windows 11 x64、Qt 6.10.3、MinGW GCC 13.1、C++20 Release。运行更新流程的四组回归 **271 passed / 0 failed / 0 skipped**（95 / 56 / 80 / 40）；Windows UI 专项 **92 项通过**（比较 3、动画 12、图标 22、AI/扩展 51、Agent 4），独立便携启动检查通过，源码与部署 Python 产物为 0。

@@ -12,7 +12,7 @@
 
 ## 2. 安装版
 
-1. 下载 `TwinFile-3.1.2-Windows-x64-Setup.exe` 及 `SHA256SUMS.txt`。
+1. 下载 `TwinFile-3.1.3-Windows-x64-Setup.exe` 及 `SHA256SUMS.txt`。
 2. 核对来源和校验值，关闭正在运行的 TwinFile 后打开安装器。
 3. 选择目录和是否创建桌面快捷方式，完成安装。项目使用独立的 `TwinFileCpp` 安装目录标识。
 4. 从开始菜单或快捷方式启动。安装器不会默认勾选安装结束立即运行。
@@ -20,7 +20,7 @@
 未签名或下载较少的安装器可能触发 Windows SmartScreen。请先核实仓库、文件哈希和来源，不要关闭系统安全防护来运行来源不明的副本。哈希只能检查文件一致性，不能代替签名或安全审计。
 
 ```powershell
-Get-FileHash .\TwinFile-3.1.2-Windows-x64-Setup.exe -Algorithm SHA256
+Get-FileHash .\TwinFile-3.1.3-Windows-x64-Setup.exe -Algorithm SHA256
 ```
 
 ## 3. 便携版

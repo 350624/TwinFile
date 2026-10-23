@@ -1,6 +1,6 @@
 # 发布依赖与源码获取
 
-TwinFile 源码在 <https://github.com/350624/TwinFile>；每个正式 Release 附对应提交的完整项目源码 ZIP，包含实际构建的 vendor 源码和 HFX 上游源码/修改说明。以下记录 3.1.2 发布环境，不声称由这些网址下载的任意文件与继承的历史工具逐字节相同。实际部署文件哈希见安装目录 `release-components.json`。
+TwinFile 源码在 <https://github.com/350624/TwinFile>；每个正式 Release 附对应提交的完整项目源码 ZIP，包含实际构建的 vendor 源码和 HFX 上游源码/修改说明。以下记录 3.1.3 发布环境，不声称由这些网址下载的任意文件与继承的历史工具逐字节相同。实际部署文件哈希见安装目录 `release-components.json`。
 
 | 组件 | 本次版本证据 | 上游源码 / 获取位置 |
 | --- | --- | --- |
@@ -9,6 +9,8 @@ TwinFile 源码在 <https://github.com/350624/TwinFile>；每个正式 Release �
 | GCC / MinGW | GCC 13.1 工具链，运行库动态部署 | <https://ftp.gnu.org/gnu/gcc/gcc-13.1.0/>；<https://download.qt.io/development_releases/prebuilt/mingw/>；<https://www.mingw-w64.org/> |
 | ADB / Fastboot | 37.0.1-15733141，adb 1.0.41 | <https://developer.android.com/tools/releases/platform-tools>；<https://android.googlesource.com/platform/packages/modules/adb/>；<https://android.googlesource.com/platform/system/core/> |
 | Apktool | JAR 自报 3.0.3 | <https://github.com/iBotPeaches/Apktool/tree/v3.0.3> |
+| smali / baksmali / dexlib2 | Apktool 自带 3.0.9-dev，复用其开放 API；通知保留在 Apktool JAR | <https://github.com/google/smali>；实际依赖以 Apktool 3.0.3 源码的构建配置为准 |
+| Eclipse ECJ（仅构建，不部署） | 3.33.0，SHA256 `f7686c4960cf70c2ebc5c500a73a8cfc04541b730c18f1c5c21329889b137f45` | <https://repo.maven.apache.org/maven2/org/eclipse/jdt/ecj/3.33.0/>；源码 <https://github.com/eclipse-jdt/eclipse.jdt.core>，EPL-2.0 |
 | apksigner | JAR 自报 0.9；此号不能唯一确定 Android Build-Tools 发行版 | <https://android.googlesource.com/platform/tools/apksig/>；<https://developer.android.com/tools/apksigner> |
 | Eclipse Temurin | 17.0.20.1+1，JRE 自带 release 文件 | <https://github.com/adoptium/jdk17u>，源码提交 79597447bd94；构建仓库 <https://github.com/adoptium/temurin-build> 提交 e6ba7dec3d07654074559310376a3ae89da5f4ac |
 | HybridFileXfer | Android v3.0.0，历史修改及重签名 | 本目录 `sources/HybridFileXfer-v3.0.0-source.zip`、`HFX-MODIFICATIONS.md`；上游提交 c4981456aa240212b282929a69658189aa89574c |

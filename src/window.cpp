@@ -3,6 +3,7 @@
 #include "operations.h"
 #include "payload.h"
 #include "editor.h"
+#include "dex.h"
 #include "media.h"
 #include "inspection.h"
 #include "adbsync.h"
@@ -597,7 +598,11 @@ void Window::showText(const QString &title, const QString &text) {
     dialog->show();
 }
 
-void Window::edit(const QString &path) { (new EditorDialog(path, this, {}, {}, [this] { left_->refresh(); right_->refresh(); }))->show(); }
+void Window::edit(const QString &path) {
+    auto changed = [this] { left_->refresh(); right_->refresh(); };
+    if (isDex(path)) (new DexDialog(path, this, {}, {}, changed))->show();
+    else (new EditorDialog(path, this, {}, {}, changed))->show();
+}
 
 void Window::open(const Entry &entry) {
     if (entry.source == Source::Device) {
@@ -624,7 +629,8 @@ void Window::open(const Entry &entry) {
                 auto mount = std::make_shared<MountedArchive>(); mount->original = entry; mount->local = path; mount->temporary = temporary; mount->hash = fileDigest(path); mounts_.insert(path, mount); if (isImage(entry.name)) image(path, neighbors); else media(path, neighbors);
             } else {
                 auto changed = [this] { runJob(QStringLiteral("同步嵌套容器"), [](const Cancellation &) { return Result{}; }, {}, {}, true); };
-                (new EditorDialog(path, this, entry, temporary, changed))->show();
+                if (isDex(entry.name)) (new DexDialog(path, this, entry, temporary, changed))->show();
+                else (new EditorDialog(path, this, entry, temporary, changed))->show();
             }
         });
         return;
@@ -632,14 +638,14 @@ void Window::open(const Entry &entry) {
     if (isArchive(entry.name)) { active_->navigate({Source::Archive, entry.path, {}, {}}); return; }
     if (isImage(entry.name)) { image(entry.path); return; }
     if (isMedia(entry.name)) { media(entry.path); return; }
-    if (isText(entry.name)) edit(entry.path);
+    if (isDex(entry.name) || isText(entry.name)) edit(entry.path);
     else QDesktopServices::openUrl(QUrl::fromLocalFile(entry.path));
 }
 
 void Window::preview() {
     const QList<Entry> entries = active_->selected(); if (entries.size() != 1) return;
     const Entry entry = entries.first();
-    if (!entry.directory && (isImage(entry.name) || isMedia(entry.name) || isText(entry.name))) { open(entry); return; }
+    if (!entry.directory && (isDex(entry.name) || isImage(entry.name) || isMedia(entry.name) || isText(entry.name))) { open(entry); return; }
     QString text = QStringLiteral("%1\n%2\n大小：%3\n修改：%4\n").arg(entry.name, entry.path, humanSize(entry.size), entry.modified.toString(Qt::ISODate));
     if (entry.source == Source::Local && !entry.directory) { QString error; const QString contents = readText(entry.path, 1024 * 1024, &error); if (error.isEmpty()) text += QStringLiteral("\n") + contents; }
     showText(QStringLiteral("快速预览"), text);

@@ -14,6 +14,7 @@ TwinFileTools/
     AdbWinUsbApi.dll
     fastboot.exe
   apktool.jar
+  ecj.jar
   apksigner.jar
   runtime/
     bin/java.exe
@@ -31,6 +32,7 @@ TwinFileTools/
 | --- | --- | --- |
 | Android SDK Platform-Tools for Windows | 手机检测、ADB 服务、安装、端口转发；Fastboot 供可信脚本使用 | [Android Platform-Tools](https://developer.android.com/tools/releases/platform-tools) |
 | Apktool | APK 反编译/回编译、必要时 aapt2 回退 | [Apktool 官方](https://apktool.org/) / [源码与 Releases](https://github.com/iBotPeaches/Apktool) |
+| Eclipse ECJ 3.33.0（仅构建时） | 编译 `assets/DexBridge.java` 为嵌入程序的 Java 桥；不随运行包部署 | [Eclipse JDT](https://github.com/eclipse-jdt/eclipse.jdt.core) / [Maven Central](https://repo.maven.apache.org/maven2/org/eclipse/jdt/ecj/3.33.0/ecj-3.33.0.jar) |
 | Android SDK Build-Tools 中的 apksigner.jar | APK 签名与验证 | [apksigner 文档](https://developer.android.com/tools/apksigner)，JAR 通常在 Build-Tools 的 `lib` 中 |
 | Eclipse Temurin Java 17 | 运行 Java 工具，keytool 创建本地调试密钥 | [Adoptium](https://adoptium.net/temurin/releases/?version=17) |
 | HybridFileXfer Android v3.0.0 | 可选 HFX 手机端及部分真实 APK 测试样本 | [上游](https://github.com/weixiansen574/HybridFileXfer)，源码提交与修改见下文 |
