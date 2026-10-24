@@ -34,7 +34,7 @@ CMake 必须在 PATH，或传入 `-CMake 'C:\Program Files\CMake\bin\cmake.exe'`
   -ToolRoot 'C:\TwinFileTools' -Package
 ```
 
-脚本会配置 Release、编译、执行五组 QtTest，再用 `windeployqt` 部署到 `dist\TwinFile`，复制工具、SDK、示例 DLL、许可和文档。测试结果为 `build\native-test-results.txt`、`migration-test-results.txt`、`extension-test-results.txt`、`agent-test-results.txt`、`mcp-test-results.txt`。
+脚本会配置 Release、编译、执行六组 QtTest，再用 `windeployqt` 部署到 `dist\TwinFile`，复制工具、SDK、示例 DLL、许可和文档。测试结果为 `build\native-test-results.txt`、`migration-test-results.txt`、`extension-test-results.txt`、`agent-test-results.txt`、`mcp-test-results.txt`、`download-test-results.txt`。直链下载测试只访问本机 HTTP 模拟服务，不下载真实固件。
 
 DEX 编辑界面和文件操作使用 C++/Qt；构建时以 Eclipse ECJ 3.33.0 编译仓库 `assets/DexBridge.java`，嵌入两个 class 资源，运行时调用发行包既有 Java 17 / Apktool 3.0.3 内的 smali 3.0.9-dev API。ECJ 仅用于构建、不部署；没有 ECJ 的核心构建会明确警告并禁用 DEX 后端，完整测试/打包拒绝缺失依赖。不同 Apktool 内部 API 版本可能不兼容，必须实际编译和往返验证，不应随意替换 JAR。
 

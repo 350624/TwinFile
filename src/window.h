@@ -32,6 +32,7 @@ public:
     void showAppearanceSettings();
     void showUpdateSettings(bool checkNow = true);
     void showMcpSettings();
+    void showDownload();
     void setReducedMotion(bool enabled);
 protected:
     void closeEvent(QCloseEvent *event) override;

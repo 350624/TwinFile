@@ -57,8 +57,13 @@ $McpResults = Join-Path $Build 'mcp-test-results.txt'
 $McpExitCode = $LASTEXITCODE
 Get-Content -LiteralPath $McpResults
 if ($McpExitCode -ne 0) { throw 'MCP regression tests failed' }
+$DownloadResults = Join-Path $Build 'download-test-results.txt'
+& "$Build\bin\twinfile_download_tests.exe" -platform offscreen -o "$DownloadResults,txt"
+$DownloadExitCode = $LASTEXITCODE
+Get-Content -LiteralPath $DownloadResults
+if ($DownloadExitCode -ne 0) { throw 'Direct download regression tests failed' }
 New-Item -ItemType Directory -Path "$Root\verification\test-results" -Force | Out-Null
-Copy-Item -LiteralPath $TestResults,$MigrationResults,$ExtensionResults,$AgentResults,$McpResults -Destination "$Root\verification\test-results" -Force
+Copy-Item -LiteralPath $TestResults,$MigrationResults,$ExtensionResults,$AgentResults,$McpResults,$DownloadResults -Destination "$Root\verification\test-results" -Force
 } else {
     Write-Output 'Test execution skipped; this is not a passing test result.'
 }

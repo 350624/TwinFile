@@ -50,6 +50,12 @@ try {
     if (-not $Process.WaitForExit(30000)) { $Process.Kill(); throw 'MCP UI check timed out' }
     Get-Content -LiteralPath $McpResults
     if ($Process.ExitCode -ne 0) { throw 'MCP UI check failed' }
+    $DownloadExecutable = Join-Path $PSScriptRoot 'build\bin\twinfile_download_tests.exe'
+    $DownloadResults = Join-Path $Evidence 'download-ui-test-results.txt'
+    $Process = Start-Process -FilePath $DownloadExecutable -ArgumentList @('-platform','windows','dialogRendersAndOperates','closeConfirmsCancellation','windowMenuOpensSingleDialog','-o',('"' + $DownloadResults + ',txt"')) -WindowStyle Hidden -PassThru
+    if (-not $Process.WaitForExit(30000)) { $Process.Kill(); throw 'Direct download UI check timed out' }
+    Get-Content -LiteralPath $DownloadResults
+    if ($Process.ExitCode -ne 0) { throw 'Direct download UI check failed' }
 } finally {
     foreach ($Name in $Previous.Keys) { [Environment]::SetEnvironmentVariable($Name, $Previous[$Name]) }
 }

@@ -12,6 +12,7 @@
 #include "appearance.h"
 #include "updates.h"
 #include "mcp.h"
+#include "download.h"
 
 #include <QApplication>
 #include <QActionGroup>
@@ -424,6 +425,17 @@ void Window::showMcpSettings() {
         settings_.insert(QStringLiteral("mcp"), value.json());
         saveSettings();
     });
+}
+
+void Window::showDownload() {
+    auto *dialog = findChild<DownloadDialog *>(QStringLiteral("directDownloadDialog"), Qt::FindDirectChildrenOnly);
+    if (!dialog) {
+        const auto location = active_->location();
+        const QString directory = location.source == Source::Local ? location.path : QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+        dialog = new DownloadDialog(directory, this); dialog->setAttribute(Qt::WA_DeleteOnClose);
+        connect(dialog, &QObject::destroyed, this, [this] { if (!closing_) refreshActive(); });
+    }
+    dialog->show(); dialog->raise(); dialog->activateWindow();
 }
 
 void Window::buildActions() {
@@ -1032,6 +1044,8 @@ void Window::menu(const QPoint &position) {
 
 void Window::moreMenu() {
     QMenu popup(this);
+    popup.addAction(QStringLiteral("直链下载…"), this, &Window::showDownload);
+    popup.addSeparator();
     auto *settings = popup.addMenu(QStringLiteral("设置"));
     settings->addAction(QStringLiteral("外观…"), this, &Window::showAppearanceSettings);
     settings->addAction(QStringLiteral("软件更新…"), this, [this] { showUpdateSettings(); });
