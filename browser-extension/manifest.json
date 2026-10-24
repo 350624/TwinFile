@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "TwinFile Downloader Bridge",
+  "version": "1.0.0",
+  "description": "Send browser downloads to TwinFile Downloader.",
+  "permissions": ["downloads", "nativeMessaging", "contextMenus", "storage"],
+  "action": { "default_title": "TwinFile Downloader", "default_popup": "popup.html" },
+  "background": { "service_worker": "background.js" }
+}

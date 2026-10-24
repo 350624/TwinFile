@@ -22,8 +22,11 @@ if (-not $VersionMatch.Success) { throw 'Cannot read project version' }
 $Version = $VersionMatch.Groups[1].Value
 $Tag = "v$Version"
 $InstallerDefinition = Get-Content -LiteralPath "$PSScriptRoot\installer.iss" -Raw
-if ($InstallerDefinition -notmatch ('(?m)^#define MyAppVersion "' + [regex]::Escape($Version) + '"') -or
-    $InstallerDefinition -notmatch ('(?m)^VersionInfoVersion=' + [regex]::Escape($Version) + '\.0\s*$')) { throw 'Installer and project versions differ' }
+foreach ($InstallerFile in @('installer.iss','downloader-installer.iss')) {
+    $InstallerDefinition = Get-Content -LiteralPath (Join-Path $PSScriptRoot $InstallerFile) -Raw
+    if ($InstallerDefinition -notmatch ('(?m)^#define MyAppVersion "' + [regex]::Escape($Version) + '"') -or
+        $InstallerDefinition -notmatch ('(?m)^VersionInfoVersion=' + [regex]::Escape($Version) + '\.0\s*$')) { throw "Installer and project versions differ: $InstallerFile" }
+}
 $Changelog = Get-Content -LiteralPath "$PSScriptRoot\CHANGELOG.md" -Raw
 $Section = [regex]::Match($Changelog, '(?ms)^## \[' + [regex]::Escape($Version) + '\] - \d{4}-\d{2}-\d{2}\s*\r?\n(.*?)(?=^## |^\[\d|\z)')
 if (-not $Section.Success -or $Section.Groups[1].Value.Trim().Length -lt 40) { throw 'Write a substantive changelog section for this version first' }
@@ -81,7 +84,7 @@ try {
         if (($TargetLine -split '\s+')[0] -ne $Commit) { throw 'Remote tag points to another commit; never overwrite a published version' }
     }
     if ($Existing -and -not $Existing.draft) {
-        $Expected = @("TwinFile-$Version-Windows-x64-Setup.exe", "TwinFile-$Version-source.zip", 'SHA256SUMS.txt', 'release-components.json')
+        $Expected = @("TwinFile-$Version-Windows-x64-Setup.exe", "TwinFile-Downloader-$Version-Windows-x64-Setup.exe", "TwinFile-Downloader-$Version-browser-extension.zip", "TwinFile-$Version-source.zip", 'SHA256SUMS.txt', 'release-components.json', 'TwinFile-Downloader-release-components.json')
         if (-not $RemoteTag -or @($Expected | Where-Object { $_ -notin $Existing.assets.name }).Count) { throw 'Published release is incomplete; inspect it manually, do not overwrite it' }
         Write-Output "Already published: $($Existing.html_url)"
         return
@@ -99,7 +102,13 @@ try {
     Invoke-Git @('archive','--format=zip',"--prefix=TwinFile-$Version/","--output=$Source",$Commit)
     $Components = Join-Path $ReleaseDirectory 'release-components.json'
     Copy-Item -LiteralPath "$PSScriptRoot\dist\TwinFile\release-components.json" -Destination $Components -Force
-    $Artifacts = @($Setup,$Source,$Components)
+    $DownloaderSetup = Join-Path $ReleaseDirectory "TwinFile-Downloader-$Version-Windows-x64-Setup.exe"
+    if (-not (Test-Path -LiteralPath $DownloaderSetup -PathType Leaf)) { throw 'Standalone downloader installer is missing' }
+    $ExtensionZip = Join-Path $ReleaseDirectory "TwinFile-Downloader-$Version-browser-extension.zip"
+    Copy-Item -LiteralPath "$PSScriptRoot\dist\TwinFileDownloader-$Version\browser-extension.zip" -Destination $ExtensionZip -Force
+    $DownloaderComponents = Join-Path $ReleaseDirectory 'TwinFile-Downloader-release-components.json'
+    Copy-Item -LiteralPath "$PSScriptRoot\dist\TwinFileDownloader-$Version\release-components.json" -Destination $DownloaderComponents -Force
+    $Artifacts = @($Setup,$DownloaderSetup,$ExtensionZip,$Source,$Components,$DownloaderComponents)
     $Sums = Join-Path $ReleaseDirectory 'SHA256SUMS.txt'
     $Lines = foreach ($Artifact in $Artifacts) { "$((Get-FileHash -LiteralPath $Artifact -Algorithm SHA256).Hash.ToLowerInvariant())  $([IO.Path]::GetFileName($Artifact))" }
     [IO.File]::WriteAllLines($Sums, $Lines, [Text.UTF8Encoding]::new($false))
@@ -107,7 +116,7 @@ try {
     Invoke-Git @('push','origin','main')
     if (-not $LocalTag) { Invoke-Git @('tag','-a',$Tag,$Commit,'-m',"TwinFile $Version") }
     Invoke-Git @('push','origin',"refs/tags/$Tag")
-    $Notes = $Section.Groups[1].Value.Trim() + "`n`n安装：下载 ``TwinFile-$Version-Windows-x64-Setup.exe``，校验 SHA256 后运行。源码 ZIP 不能直接运行。`n`n源码提交：$Commit`n`n完整说明：https://github.com/$Repository/blob/$Tag/docs/INSTALL.md"
+    $Notes = $Section.Groups[1].Value.Trim() + "`n`n安装：下载 ``TwinFile-$Version-Windows-x64-Setup.exe``；独立下载器为 ``TwinFile-Downloader-$Version-Windows-x64-Setup.exe``。可选浏览器扩展压缩包为 ``TwinFile-Downloader-$Version-browser-extension.zip``。运行安装包前请核对 ``SHA256SUMS.txt``。源码 ZIP 不能直接运行。`n`n源码提交：$Commit`n`n完整说明：https://github.com/$Repository/blob/$Tag/docs/INSTALL.md 与 https://github.com/$Repository/blob/$Tag/browser-extension/README.md"
     if (-not $Existing) { $Existing = Invoke-Api 'releases' 'Post' @{ tag_name=$Tag; target_commitish=$Commit; name="TwinFile $Version · Windows x64"; body=$Notes; draft=$true; prerelease=$false } }
     else { $Existing = Invoke-Api "releases/$($Existing.id)" 'Patch' @{ body=$Notes; name="TwinFile $Version · Windows x64" } }
     foreach ($Artifact in $Artifacts) {

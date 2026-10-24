@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TwinFile Downloader</title>
+<style>
+body{font:14px "Segoe UI",sans-serif;width:300px;margin:16px;color:#202124}h1{font-size:16px;font-weight:600;margin:0 0 14px}.row{display:flex;align-items:center;justify-content:space-between;gap:16px}input{width:18px;height:18px;accent-color:#635bff}p{color:#5f6368;font-size:12px;line-height:1.5;margin:12px 0 0}#status{color:#b42318;overflow-wrap:anywhere}
+</style>
+<h1>TwinFile Downloader</h1>
+<label class="row" for="takeover"><span>接管浏览器下载</span><input id="takeover" type="checkbox"></label>
+<p>仅处理 HTTP / HTTPS 直链。不会携带浏览器 Cookie 或登录状态；关闭接管可继续用浏览器原生下载。也可在链接上右键手动发送。</p>
+<p id="status" role="status"></p>
+<script src="popup.js"></script>
+</html>

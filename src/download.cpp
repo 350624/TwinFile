@@ -269,7 +269,7 @@ void DirectDownload::finish(const QString &error) {
 
 void DirectDownload::cancel() { finish(QStringLiteral("已取消，临时文件已清理")); }
 
-DownloadDialog::DownloadDialog(const QString &directory, QWidget *parent) : QDialog(parent), download_(this) {
+DownloadDialog::DownloadDialog(const QString &directory, QWidget *parent, const QUrl &initialUrl, const QString &initialFileName, bool startImmediately) : QDialog(parent), download_(this) {
     setObjectName(QStringLiteral("directDownloadDialog")); setWindowTitle(QStringLiteral("直链下载")); resize(600, 330);
     auto *layout = new QVBoxLayout(this); layout->setSpacing(12);
     auto *form = new QFormLayout;
@@ -305,6 +305,14 @@ DownloadDialog::DownloadDialog(const QString &directory, QWidget *parent) : QDia
     });
     connect(&download_, &DirectDownload::completed, this, [bar, detail, state](const QString &saved) { state(false); bar->setRange(0, 1000); bar->setValue(1000); detail->setText(QStringLiteral("已完成：") + saved); });
     connect(&download_, &DirectDownload::failed, this, [bar, detail, state](const QString &error) { state(false); bar->setRange(0, 1000); detail->setText(error); });
+    if (!initialUrl.isEmpty() && initialUrl.isValid()) {
+        url->setText(initialUrl.toString(QUrl::FullyEncoded));
+        const QString fileName = QFileInfo(initialFileName).fileName();
+        path->setText(QDir(directory).filePath(fileName.isEmpty() ? QStringLiteral("download.bin") : fileName));
+        if (startImmediately) QTimer::singleShot(0, start, &QPushButton::click);
+    } else if (parent == nullptr) {
+        path->setText(QDir(directory).filePath(QStringLiteral("download.bin")));
+    }
 }
 
 void DownloadDialog::closeEvent(QCloseEvent *event) {

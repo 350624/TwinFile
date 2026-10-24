@@ -63,7 +63,7 @@ private:
 class DownloadDialog : public QDialog {
     Q_OBJECT
 public:
-    explicit DownloadDialog(const QString &directory, QWidget *parent = nullptr);
+    explicit DownloadDialog(const QString &directory, QWidget *parent = nullptr, const QUrl &initialUrl = {}, const QString &initialFileName = {}, bool startImmediately = false);
 protected:
     void closeEvent(QCloseEvent *event) override;
     void reject() override;

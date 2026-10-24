@@ -8,6 +8,13 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $Root = $PSScriptRoot
+$VersionMatch = [regex]::Match((Get-Content -LiteralPath "$Root\CMakeLists.txt" -Raw), 'project\(TwinFileNative VERSION (\d+\.\d+\.\d+)')
+if (-not $VersionMatch.Success) { throw 'Cannot read project version' }
+$Version = $VersionMatch.Groups[1].Value
+$Node = @(Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Where-Object { $_.Source -is [string] } | Select-Object -First 1)
+if (-not $Node.Count) { throw 'Node.js is required for browser bridge tests' }
+& $Node[0].Path "$Root\tests\browser_bridge_tests.cjs"
+if ($LASTEXITCODE -ne 0) { throw 'Browser bridge regression tests failed' }
 $Build = Join-Path $Root 'build'
 $QtRoot = (Resolve-Path -LiteralPath $QtRoot).Path
 $CompilerRoot = (Resolve-Path -LiteralPath $CompilerRoot).Path
@@ -73,6 +80,17 @@ if ($Package) {
     Copy-Item -LiteralPath "$Build\bin\TwinFile.exe" -Destination $Destination -Force
     & "$QtRoot\bin\windeployqt.exe" --release --compiler-runtime --no-translations "$Destination\TwinFile.exe"
     if ($LASTEXITCODE -ne 0) { throw 'Qt deployment failed' }
+    $DownloaderDestination = Join-Path $Root "dist\TwinFileDownloader-$Version"
+    New-Item -ItemType Directory -Path $DownloaderDestination -Force | Out-Null
+    foreach ($Name in @('TwinFileDownloader.exe','TwinFileDownloadHost.exe')) {
+        Copy-Item -LiteralPath "$Build\bin\$Name" -Destination $DownloaderDestination -Force
+        & "$QtRoot\bin\windeployqt.exe" --release --compiler-runtime --no-translations "$DownloaderDestination\$Name"
+        if ($LASTEXITCODE -ne 0) { throw "Qt deployment failed: $Name" }
+    }
+    $Bridge = Join-Path $DownloaderDestination 'browser-bridge'
+    New-Item -ItemType Directory -Path $Bridge -Force | Out-Null
+    Copy-Item -LiteralPath "$Root\browser-extension\manifest.json","$Root\browser-extension\background.js","$Root\browser-extension\popup.html","$Root\browser-extension\popup.js","$Root\browser-extension\register-browser-bridge.ps1","$Root\browser-extension\README.md" -Destination $Bridge -Force
+    if ($env:OS -eq 'Windows_NT') { $null = Get-Command Compress-Archive -ErrorAction Stop; Compress-Archive -Path "$Root\browser-extension\manifest.json","$Root\browser-extension\background.js","$Root\browser-extension\popup.html","$Root\browser-extension\popup.js" -DestinationPath "$DownloaderDestination\browser-extension.zip" -Force }
     $ToolSource = $ToolRoot
     $ToolDestination = Join-Path $Destination 'tools'
     New-Item -ItemType Directory -Path "$ToolDestination\adb" -Force | Out-Null
@@ -102,6 +120,24 @@ if ($Package) {
     Copy-Item -LiteralPath "$Root\vendor\webp\COPYING" -Destination "$Destination\licenses\libwebp-BSD.txt" -Force
     Copy-Item -LiteralPath "$Root\vendor\webp\PATENTS" -Destination "$Destination\licenses\libwebp-PATENTS.txt" -Force
     if (Test-Path -LiteralPath "$Root\licenses") { Get-ChildItem -LiteralPath "$Root\licenses" | Copy-Item -Destination "$Destination\licenses" -Recurse -Force }
+    New-Item -ItemType Directory -Path "$DownloaderDestination\licenses" -Force | Out-Null
+    if (Test-Path -LiteralPath "$Root\licenses") { Get-ChildItem -LiteralPath "$Root\licenses" | Copy-Item -Destination "$DownloaderDestination\licenses" -Recurse -Force }
+    foreach ($Name in @('LICENSE','NOTICE.md')) { Copy-Item -LiteralPath "$Root\$Name" -Destination "$DownloaderDestination\licenses" -Force }
+    New-Item -ItemType Directory -Path "$DownloaderDestination\licenses\mingw","$DownloaderDestination\licenses\qt-sbom" -Force | Out-Null
+    foreach ($Name in @('gcc','mingw-w64','winpthreads')) {
+        $LicenseDirectory = Join-Path $CompilerRoot "licenses\$Name"
+        if (-not (Test-Path -LiteralPath $LicenseDirectory)) { throw "Missing runtime notices: $Name" }
+        Copy-Item -LiteralPath $LicenseDirectory -Destination "$DownloaderDestination\licenses\mingw" -Recurse -Force
+    }
+    foreach ($Module in @('qtbase')) {
+        $Sbom = @(Get-ChildItem -LiteralPath "$QtRoot\sbom" -Filter "$Module-*.cdx.json")
+        if ($Sbom.Count -ne 1) { throw "Expected one SDK SBOM for $Module" }
+        Copy-Item -LiteralPath $Sbom[0].FullName -Destination "$DownloaderDestination\licenses\qt-sbom" -Force
+    }
+    $DownloaderComponents = foreach ($File in (Get-ChildItem -LiteralPath $DownloaderDestination -Recurse -File | Where-Object { $_.Extension -in @('.exe','.dll') } | Sort-Object FullName)) {
+        [ordered]@{ path=[IO.Path]::GetRelativePath($DownloaderDestination,$File.FullName).Replace('\','/'); size=$File.Length; sha256=(Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); fileVersion=$File.VersionInfo.FileVersion }
+    }
+    [ordered]@{ schema=1; components=@($DownloaderComponents); sources='licenses/SOURCES.md' } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath "$DownloaderDestination\release-components.json" -Encoding utf8
     New-Item -ItemType Directory -Path "$Destination\licenses\mingw","$Destination\licenses\qt-sbom" -Force | Out-Null
     foreach ($Name in @('gcc','mingw-w64','winpthreads')) {
         $LicenseDirectory = Join-Path $CompilerRoot "licenses\$Name"

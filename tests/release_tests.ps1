@@ -13,8 +13,10 @@ function Test-Preflight {
     $Directory = Join-Path $FixtureRoot $Name
     New-Item -ItemType Directory -Path $Directory | Out-Null
     Copy-Item -LiteralPath "$Source\publish.ps1" -Destination $Directory
+    Copy-Item -LiteralPath "$Source\downloader-installer.iss" -Destination $Directory
     'project(TwinFileNative VERSION 3.1.1 LANGUAGES C CXX RC)' | Set-Content -LiteralPath "$Directory\CMakeLists.txt"
     "#define MyAppVersion `"3.1.1`"`nVersionInfoVersion=3.1.1.0" | Set-Content -LiteralPath "$Directory\installer.iss"
+    "#define MyAppVersion `"3.1.1`"`nVersionInfoVersion=3.1.1.0" | Set-Content -LiteralPath "$Directory\downloader-installer.iss"
     "## [3.1.1] - 2026-10-22`n`nA substantive release note with actual user-visible changes and verification limits." | Set-Content -LiteralPath "$Directory\CHANGELOG.md"
     Invoke-FixtureGit $Directory @('init','-b','main')
     Invoke-FixtureGit $Directory @('config','user.name','TwinFile Test')
