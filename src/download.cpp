@@ -53,13 +53,17 @@ struct DirectDownload::Part {
     QNetworkAccessManager *network = nullptr;
     QPointer<QNetworkReply> reply;
     qint64 start = 0, end = 0, received = 0, requestStart = 0;
+    qint64 lastDataAt = 0, windowAt = 0, windowBytes = 0;
     int retries = 0;
-    bool validated = false, done = false;
+    bool validated = false, done = false, waiting = false;
 };
 
-DirectDownload::DirectDownload(QObject *parent) : QObject(parent), network_(this), deadline_(this) {
+DirectDownload::DirectDownload(QObject *parent) : QObject(parent), network_(this), watchdog_(this), deadline_(this) {
     progressTimer_.setInterval(250);
     connect(&progressTimer_, &QTimer::timeout, this, &DirectDownload::notify);
+    watchdog_.setInterval(1000);
+    watchdog_.setObjectName(QStringLiteral("downloadWatchdog"));
+    connect(&watchdog_, &QTimer::timeout, this, &DirectDownload::watchTransfers);
     deadline_.setSingleShot(true); deadline_.setInterval(24 * 60 * 60 * 1000);
     deadline_.setObjectName(QStringLiteral("downloadDeadline"));
     connect(&deadline_, &QTimer::timeout, this, [this] { finish(QStringLiteral("下载超时，请重新开始")); });
@@ -94,7 +98,8 @@ bool DirectDownload::start(const QUrl &url, const QString &destination, int conn
     url_ = url; destination_ = target.absoluteFilePath(); requested_ = connections;
     total_ = -1; received_ = 0; connections_ = 1; validator_.clear(); etag_.clear(); modified_.clear(); probeBytes_.clear();
     singleResponse_ = false; singleValidated_ = false; active_ = true; ++generation_;
-    elapsed_.start(); progressTimer_.start(); deadline_.start();
+    lastProgressBytes_ = 0; lastProgressAt_ = 0;
+    elapsed_.start(); progressTimer_.start(); deadline_.start(); watchdog_.start();
     emit status(QStringLiteral("正在检测分段支持…"));
     const auto generation = generation_;
     QTimer::singleShot(0, this, [this, generation] { if (active_ && generation == generation_) probe(); });
@@ -137,7 +142,7 @@ void DirectDownload::probeFinished() {
     reply_->deleteLater(); reply_ = nullptr;
     if (validator_.isEmpty() || requested_ == 1 || ranges(total_, requested_).size() == 1) { single(); return; }
     const auto planned = ranges(total_, requested_); connections_ = planned.size();
-    emit status(QStringLiteral("分段下载 · %1 并发").arg(connections_));
+    emit status(QStringLiteral("分段下载中"));
     for (const auto &range : planned) {
         auto part = std::make_shared<Part>(); part->start = range.first; part->end = range.second;
         if (parts_.size() % 6 == 0) networks_.append(new QNetworkAccessManager(this));
@@ -148,7 +153,9 @@ void DirectDownload::probeFinished() {
 
 void DirectDownload::requestPart(const std::shared_ptr<Part> &part) {
     if (!active_) return;
+    part->waiting = false;
     part->validated = false; part->requestStart = part->start + part->received;
+    part->lastDataAt = part->windowAt = elapsed_.elapsed(); part->windowBytes = part->received;
     auto request = requestFor(url_);
     request.setRawHeader("Range", "bytes=" + QByteArray::number(part->requestStart) + '-' + QByteArray::number(part->end));
     request.setRawHeader("If-Range", validator_);
@@ -172,6 +179,7 @@ void DirectDownload::partData(const std::shared_ptr<Part> &part) {
         if (bytes.size() > part->end - part->start + 1 - part->received) { finish(QStringLiteral("分段数据超出请求范围")); return; }
         if (!write(part->start + part->received, bytes)) return;
         part->received += bytes.size(); received_ += bytes.size();
+        part->lastDataAt = elapsed_.elapsed();
     }
 }
 
@@ -186,10 +194,64 @@ void DirectDownload::partFinished(const std::shared_ptr<Part> &part) {
         if (std::all_of(parts_.cbegin(), parts_.cend(), [](const auto &item) { return item->done; })) finish();
         return;
     }
-    if (++part->retries <= 2 && (code == 429 || code >= 500 || error == QNetworkReply::RemoteHostClosedError || error == QNetworkReply::TimeoutError || error == QNetworkReply::TemporaryNetworkFailureError) && part->start + part->received <= part->end) {
-        emit status(QStringLiteral("连接中断，正在重试分段…")); const auto generation = generation_;
-        QTimer::singleShot(part->retries * 1000, this, [this, part, generation] { if (active_ && generation == generation_) requestPart(part); });
+    if ((code == 429 || code >= 500 || error == QNetworkReply::RemoteHostClosedError || error == QNetworkReply::TimeoutError || error == QNetworkReply::OperationCanceledError || error == QNetworkReply::TemporaryNetworkFailureError) && part->start + part->received <= part->end) {
+        retryPart(part, QStringLiteral("连接中断"));
     } else finish(QStringLiteral("分段下载失败：HTTP %1 / 网络错误 %2，可尝试降低并发").arg(code).arg(int(error)));
+}
+
+void DirectDownload::retryPart(const std::shared_ptr<Part> &part, const QString &reason, bool redistribute) {
+    if (!active_ || part->done || part->waiting) return;
+    if (part->received >= part->end - part->start + 1) { finish(QStringLiteral("服务器分段响应未正常结束，请重新开始")); return; }
+    if (++part->retries > 2) { finish(QStringLiteral("%1，分段重试已用尽，可尝试降低并发").arg(reason)); return; }
+    if (part->reply) {
+        disconnect(part->reply, nullptr, this, nullptr);
+        part->reply->abort(); part->reply->deleteLater(); part->reply = nullptr;
+    }
+    QList<std::shared_ptr<Part>> pending{part};
+    if (redistribute) {
+        int unfinished = 0;
+        for (const auto &item : parts_) if (!item->done && item != part) ++unfinished;
+        const auto planned = ranges(part->end - part->start + 1 - part->received, qMin(4, requested_ - unfinished));
+        if (planned.size() > 1) {
+            pending.clear();
+            const qint64 start = part->start + part->received;
+            for (const auto &range : planned) {
+                auto child = std::make_shared<Part>();
+                child->start = start + range.first; child->end = start + range.second;
+                child->retries = part->retries;
+                parts_.append(child); pending.append(child);
+            }
+            part->end = start - 1; part->done = true;
+        }
+    }
+    const auto generation = generation_;
+    for (const auto &item : pending) {
+        item->waiting = true;
+        if (!recoveryNetwork_ || recoverySlots_ == 6) {
+            recoveryNetwork_ = new QNetworkAccessManager(this);
+            networks_.append(recoveryNetwork_); recoverySlots_ = 0;
+        }
+        item->network = recoveryNetwork_; ++recoverySlots_;
+        QTimer::singleShot(item->retries * 1000, this, [this, item, generation] { if (active_ && generation == generation_) requestPart(item); });
+    }
+    emit status(QStringLiteral("%1，正在恢复 %2 个未完成分段（%3/2）…").arg(reason).arg(pending.size()).arg(part->retries));
+}
+
+void DirectDownload::watchTransfers() {
+    if (!active_ || parts_.isEmpty()) return;
+    const qint64 now = elapsed_.elapsed();
+    const auto snapshot = parts_;
+    for (const auto &part : snapshot) {
+        if (!active_) return;
+        if (part->done || part->waiting || !part->reply) continue;
+        const bool tail = total_ > 0 && received_ >= total_ * 9 / 10;
+        const int idleLimit = part->validated ? stallTimeoutMs_ : handshakeTimeoutMs_;
+        if (now - part->lastDataAt >= idleLimit) { retryPart(part, QStringLiteral("分段长时间无数据"), tail); continue; }
+        if (now - part->windowAt >= slowWindowMs_) {
+            if (tail && part->received - part->windowBytes < 32 * 1024) retryPart(part, QStringLiteral("尾段长时间低速"), true);
+            else { part->windowAt = now; part->windowBytes = part->received; }
+        }
+    }
 }
 
 void DirectDownload::single() {
@@ -237,11 +299,17 @@ bool DirectDownload::write(qint64 offset, const QByteArray &bytes) {
 }
 
 void DirectDownload::notify() {
-    if (active_) emit progress(received_, total_, double(received_) * 1000.0 / qMax<qint64>(1, elapsed_.elapsed()), connections_);
+    if (!active_) return;
+    const qint64 now = elapsed_.elapsed();
+    const double speed = double(received_ - lastProgressBytes_) * 1000.0 / qMax<qint64>(1, now - lastProgressAt_);
+    lastProgressBytes_ = received_; lastProgressAt_ = now;
+    int count = parts_.isEmpty() && reply_ ? 1 : 0;
+    for (const auto &part : parts_) if (!part->done && part->reply) ++count;
+    emit progress(received_, total_, speed, count);
 }
 
 void DirectDownload::cleanup() {
-    progressTimer_.stop(); deadline_.stop();
+    progressTimer_.stop(); deadline_.stop(); watchdog_.stop();
     if (reply_) { disconnect(reply_, nullptr, this, nullptr); reply_->abort(); reply_->deleteLater(); reply_ = nullptr; }
     for (const auto &part : parts_) {
         if (part->reply) { disconnect(part->reply, nullptr, this, nullptr); part->reply->abort(); }
@@ -249,6 +317,7 @@ void DirectDownload::cleanup() {
     parts_.clear();
     for (auto *network : networks_) network->deleteLater();
     networks_.clear();
+    recoveryNetwork_ = nullptr; recoverySlots_ = 0;
     output_.reset();
 }
 
@@ -278,6 +347,7 @@ DownloadDialog::DownloadDialog(const QString &directory, QWidget *parent, const 
     auto *browse = new QPushButton(QStringLiteral("选择…")); auto *pathRow = new QHBoxLayout; pathRow->addWidget(path); pathRow->addWidget(browse);
     auto *connections = new QSpinBox; connections->setObjectName(QStringLiteral("downloadConnections")); connections->setRange(1, 512); connections->setValue(16); connections->setSuffix(QStringLiteral(" 并发"));
     form->addRow(QStringLiteral("下载链接"), url); form->addRow(QStringLiteral("保存到"), pathRow); form->addRow(QStringLiteral("连接数"), connections); layout->addLayout(form);
+    auto *status = new QLabel(QStringLiteral("就绪")); status->setObjectName(QStringLiteral("downloadStatus")); status->setWordWrap(true); layout->addWidget(status);
     auto *bar = new QProgressBar; bar->setObjectName(QStringLiteral("downloadProgress")); bar->setRange(0, 1000); bar->setValue(0); layout->addWidget(bar);
     auto *detail = new QLabel(QStringLiteral("支持 HTTP / HTTPS · 不覆盖已有文件")); detail->setObjectName(QStringLiteral("downloadDetail")); detail->setWordWrap(true); layout->addWidget(detail);
     auto *hint = new QLabel(QStringLiteral("最高 512 并发；不支持分段时自动单连接。并发越高不一定越快。")); hint->setWordWrap(true); hint->setObjectName(QStringLiteral("subtle")); layout->addWidget(hint); layout->addStretch();
@@ -298,13 +368,13 @@ DownloadDialog::DownloadDialog(const QString &directory, QWidget *parent, const 
     });
     connect(stop, &QPushButton::clicked, &download_, &DirectDownload::cancel);
     connect(close, &QPushButton::clicked, this, &DownloadDialog::close);
-    connect(&download_, &DirectDownload::status, detail, &QLabel::setText);
+    connect(&download_, &DirectDownload::status, status, &QLabel::setText);
     connect(&download_, &DirectDownload::progress, this, [bar, detail](qint64 received, qint64 total, double speed, int count) {
         if (total < 0) bar->setRange(0, 0); else { bar->setRange(0, 1000); bar->setValue(total ? int(received * 1000 / total) : 1000); }
         detail->setText(QStringLiteral("%1 / %2 · %3/s · %4 并发").arg(sizeText(received), sizeText(total), sizeText(qint64(speed))).arg(count));
     });
-    connect(&download_, &DirectDownload::completed, this, [bar, detail, state](const QString &saved) { state(false); bar->setRange(0, 1000); bar->setValue(1000); detail->setText(QStringLiteral("已完成：") + saved); });
-    connect(&download_, &DirectDownload::failed, this, [bar, detail, state](const QString &error) { state(false); bar->setRange(0, 1000); detail->setText(error); });
+    connect(&download_, &DirectDownload::completed, this, [bar, detail, status, state](const QString &saved) { state(false); bar->setRange(0, 1000); bar->setValue(1000); status->setText(QStringLiteral("下载完成")); detail->setText(QStringLiteral("已完成：") + saved); });
+    connect(&download_, &DirectDownload::failed, this, [bar, detail, status, state](const QString &error) { state(false); bar->setRange(0, 1000); status->setText(QStringLiteral("已停止")); detail->setText(error); });
     if (!initialUrl.isEmpty() && initialUrl.isValid()) {
         url->setText(initialUrl.toString(QUrl::FullyEncoded));
         const QString fileName = QFileInfo(initialFileName).fileName();

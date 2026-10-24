@@ -1,4 +1,4 @@
-# TwinFile 3.1.6 · C++ 原生版
+# TwinFile 3.1.7 · C++ 原生版
 
 **Windows 双栏文件管理器 · Android 工具箱 · 可选 AI / Agent · 原生插件扩展**
 
@@ -10,8 +10,8 @@ TwinFile 是面向 Windows 的双栏文件管理与 Android 工具箱。本版�
 
 ## 运行和安装
 
-- 面向 Windows x64。[下载 3.1.6 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.6/TwinFile-3.1.6-Windows-x64-Setup.exe)或[独立直链下载器](https://github.com/350624/TwinFile/releases/download/v3.1.6/TwinFile-Downloader-3.1.6-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
-- 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；独立下载器 `dist/TwinFileDownloader-3.1.6/TwinFileDownloader.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.6）。这些是构建后的路径，不是仓库已包含的文件。
+- 面向 Windows x64。[下载 3.1.7 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.7/TwinFile-3.1.7-Windows-x64-Setup.exe)或[独立直链下载器](https://github.com/350624/TwinFile/releases/download/v3.1.7/TwinFile-Downloader-3.1.7-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
+- 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；独立下载器 `dist/TwinFileDownloader-3.1.7/TwinFileDownloader.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.7）。这些是构建后的路径，不是仓库已包含的文件。
 - 完整发布包不需要安装 Python、Qt SDK 或编译器。手机需开启 USB 调试并授权电脑；HFX 需经用户确认安装配套手机端。源码编译与完整工具包的准备步骤不同，详见[安装说明](docs/INSTALL.md)。
 - 新配置：`%APPDATA%/TwinFileNative/settings.json`。在“更多 → 导入旧版设置 / 工作区”中可读取旧 JSON，不修改旧文件。
 - 第一次使用：点选左栏目录，再点选右栏目标目录，回到源栏选择文件，按 `F5` 复制到另一栏；顶部“助手”打开可选 AI，未配置 API 不影响文件管理。
@@ -26,7 +26,7 @@ TwinFile 原创部分使用 **GPL-3.0-only**，详见 [LICENSE](LICENSE) 和 [NO
 
 ### 直链下载
 
-点击“⋯ → 直链下载…”，粘贴 HTTP / HTTPS 文件链接，选择保存位置并开始。可设 **1–512 并发**，默认 16；显示进度、平均速度、大小及实际连接数。服务器支持可靠分段且提供文件版本标识时并行下载，否则自动单连接。失败分段最多重试两次；取消或关闭会中止连接并清理临时文件，不覆盖已有文件。高并发不保证更快，建议先用默认值。完整边界见[直链下载说明](docs/DOWNLOADS.md)。
+点击“⋯ → 直链下载…”，粘贴 HTTP / HTTPS 文件链接，选择保存位置并开始。可设 **1–512 并发**，默认 16；显示进度、实时采样速度、大小、当前未完成请求数及恢复状态。服务器支持可靠分段且提供文件版本标识时并行下载，否则自动单连接。停滞分段主动重连，低速尾段可在连接上限内拆分剩余内容，最多重试两次；取消或关闭会中止连接并清理临时文件，不覆盖已有文件。高并发不保证更快，建议先用默认值。完整边界见[直链下载说明](docs/DOWNLOADS.md)。
 
 也可单独安装 TwinFile Downloader，通过随附的 Chrome / Edge 扩展接管浏览器下载：首次在扩展管理页加载安装目录中的 `browser-bridge`，再按 `browser-bridge/README.md` 注册原生桥接。接管开关默认关闭，且不会继承浏览器 Cookie、登录状态或自定义请求头。安装步骤和限制见[浏览器接管说明](browser-extension/README.md)。
 
