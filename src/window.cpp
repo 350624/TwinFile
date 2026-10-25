@@ -350,7 +350,7 @@ void Window::updateDeviceNavigation() {
 void Window::setActive(Pane *pane) {
     if (!pane) return;
     const bool changed = active_ != pane;
-    if (changed && mtPlaces_) mtPlaces_->close();
+    if (changed) closeMtPlaces(false);
     if (changed) if (auto *path = findChild<QLineEdit *>(QStringLiteral("mtPath"))) path->clearFocus();
     active_ = pane;
     if (changed) updateTransferButtons();
@@ -386,6 +386,7 @@ void Window::report(const QString &message) { QMessageBox::warning(this, QString
 
 void Window::setReducedMotion(bool enabled) {
     settings_.insert(QStringLiteral("reduced_motion"), enabled);
+    if (enabled) settleMtAnimations();
     for (Pane *pane : {left_, right_}) {
         pane->setAnimationsEnabled(!enabled);
         if (enabled) pane->setGraphicsEffect(nullptr);
@@ -508,7 +509,11 @@ void Window::buildActions() {
     bind(QKeySequence(Qt::Key_F7), [this] { create(true); });
     bind(QKeySequence(QStringLiteral("Ctrl+M")), [this] { rename(true); });
     bind(QKeySequence::Find, &Window::searchFiles);
-    bind(QKeySequence(Qt::Key_Escape), [this] { if (mtPlaces_) mtPlaces_->close(); else active_->deselect(); });
+    bind(QKeySequence(Qt::Key_Escape), [this] {
+        if (mtPlaces_) mtPlaces_->close();
+        else if (auto *shade = findChild<QWidget *>(QStringLiteral("mtDrawerShade")); shade && shade->isVisible()) setMtDrawerVisible(false);
+        else active_->deselect();
+    });
 }
 
 void Window::searchFiles() {
@@ -1202,7 +1207,7 @@ bool Window::eventFilter(QObject *object, QEvent *event) {
             path->clearFocus(); updateMtHeader(); active_->view()->setFocus(); return true;
         }
     }
-    if (object == centralWidget() && event->type() == QEvent::Resize && mtPlaces_) mtPlaces_->close();
+    if (object == centralWidget() && event->type() == QEvent::Resize) closeMtPlaces(false);
     if (object == centralWidget() && event->type() == QEvent::Resize)
         QTimer::singleShot(0, this, &Window::positionMtDrawer);
     if (object->objectName() == QStringLiteral("workspaceToolbar") && (event->type() == QEvent::Resize || event->type() == QEvent::LayoutRequest))

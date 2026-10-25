@@ -43,6 +43,7 @@
 #include <QTest>
 #include <QTextBrowser>
 #include <QTouchEvent>
+#include <QVariantAnimation>
 #include <QWheelEvent>
 #include <limits>
 
@@ -577,7 +578,7 @@ private slots:
         capture(QStringLiteral("compact-drawer-assistant"), &window);
         window.setReducedMotion(false); swipe(bottom, -90);
         QPointer<QWidget> compactSheet = window.findChild<QWidget *>(QStringLiteral("mtPlaces")); QVERIFY(compactSheet);
-        QTest::qWait(220); QCOMPARE(compactSheet->width(), window.centralWidget()->width());
+        QTest::qWait(280); QCOMPARE(compactSheet->width(), window.centralWidget()->width());
         QVERIFY(window.centralWidget()->rect().contains(compactSheet->geometry())); capture(QStringLiteral("compact-recent-assistant"), &window);
         compactSheet->findChild<QToolButton *>(QStringLiteral("mtPlacesClose"))->click(); QTRY_VERIFY(compactSheet.isNull()); window.setReducedMotion(true);
         bool appearanceChecked = false;
@@ -596,6 +597,111 @@ private slots:
         window.setTheme(QStringLiteral("mt")); window.close();
         Window restored; restored.setAttribute(Qt::WA_DontShowOnScreen); restored.show(); QVERIFY(qApp->property("mtStyle").toBool()); QVERIFY(restored.findChild<QWidget *>(QStringLiteral("mtBottomBar"))->isVisible());
         restored.setTheme(QStringLiteral("twinfile")); restored.close();
+    }
+    void mtMotionTransitions_data() { mtOriginalLayoutAndActions_data(); }
+    void mtMotionTransitions() {
+        QFETCH(QString, mode);
+        Window window; window.setAttribute(Qt::WA_DontShowOnScreen); window.setTheme(QStringLiteral("mt")); window.setColorMode(mode);
+        window.setReducedMotion(false); window.resize(1280, 820); window.show(); QTest::qWait(30);
+        auto capture = [&](const QString &name) {
+            const QString output = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT");
+            if (!output.isEmpty()) QVERIFY(window.grab().save(QDir(output).filePath(QStringLiteral("native-mt-motion-") + name + QChar('-') + mode + QStringLiteral(".png"))));
+        };
+        auto *drawerButton = window.findChild<QPushButton *>(QStringLiteral("mtDrawer"));
+        auto *sidebar = window.findChild<QWidget *>(QStringLiteral("navigationSidebar"));
+        auto *drawerShade = window.findChild<QPushButton *>(QStringLiteral("mtDrawerShade"));
+        auto *drawerAnimation = drawerShade->findChild<QVariantAnimation *>(QStringLiteral("mtOverlayAnimation"));
+        QVERIFY(drawerAnimation); drawerButton->click(); QCOMPARE(drawerAnimation->state(), QAbstractAnimation::Running);
+        drawerAnimation->pause(); drawerAnimation->setCurrentTime(80);
+        QVERIFY(sidebar->x() > -sidebar->width()); QVERIFY(sidebar->x() < 0);
+        QVERIFY(drawerShade->property("mtMotionProgress").toReal() > 0); QVERIFY(drawerShade->property("mtMotionProgress").toReal() < 1);
+        capture(QStringLiteral("drawer-opening")); drawerAnimation->resume(); QTRY_COMPARE(sidebar->x(), 0);
+        drawerShade->click(); QVERIFY(sidebar->isVisible()); QVERIFY(drawerShade->property("mtClosing").toBool());
+        drawerAnimation->pause(); drawerAnimation->setCurrentTime(100); QVERIFY(sidebar->x() < 0); capture(QStringLiteral("drawer-closing"));
+        const int partial = sidebar->x(); drawerButton->click(); QVERIFY(!drawerShade->property("mtClosing").toBool());
+        QCOMPARE(sidebar->x(), partial); QTRY_COMPARE(sidebar->x(), 0);
+        QApplication::setActiveWindow(&window); QTest::keyClick(sidebar, Qt::Key_Escape);
+        QTRY_VERIFY(!sidebar->isVisible()); QVERIFY(!drawerShade->isVisible());
+        auto *bottom = window.findChild<QWidget *>(QStringLiteral("mtBottomBar"));
+        auto openPlaces = [&] {
+            QWheelEvent wheel(QPointF(bottom->rect().center()), bottom->mapToGlobal(bottom->rect().center()), QPoint(), QPoint(0, 120),
+                              Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(bottom, &wheel);
+        };
+        openPlaces(); QPointer<QWidget> sheet = window.findChild<QWidget *>(QStringLiteral("mtPlaces")); QVERIFY(sheet);
+        auto *shade = sheet->parentWidget(); auto *animation = shade->findChild<QVariantAnimation *>(QStringLiteral("mtOverlayAnimation"));
+        QVERIFY(animation); QCOMPARE(animation->state(), QAbstractAnimation::Running);
+        animation->pause(); animation->setCurrentTime(80); const int intermediate = sheet->y();
+        QVERIFY(intermediate < window.centralWidget()->height()); QVERIFY(intermediate > window.centralWidget()->height() - sheet->height());
+        capture(QStringLiteral("sheet-opening")); animation->resume(); QTRY_COMPARE(animation->state(), QAbstractAnimation::Stopped);
+        const int expanded = sheet->y(); sheet->findChild<QToolButton *>(QStringLiteral("mtPlacesClose"))->click();
+        QVERIFY(sheet); QVERIFY(shade->property("mtClosing").toBool()); QVERIFY(!sheet->isEnabled());
+        animation->pause(); animation->setCurrentTime(100); QVERIFY(sheet->y() > expanded); QVERIFY(sheet->y() < window.centralWidget()->height());
+        capture(QStringLiteral("sheet-closing")); shade->close(); QCOMPARE(animation->state(), QAbstractAnimation::Paused);
+        animation->resume(); QTRY_VERIFY(sheet.isNull());
+        openPlaces(); sheet = window.findChild<QWidget *>(QStringLiteral("mtPlaces")); QVERIFY(sheet);
+        window.setReducedMotion(true); QCOMPARE(sheet->y(), window.centralWidget()->height() - sheet->height());
+        sheet->findChild<QToolButton *>(QStringLiteral("mtPlacesClose"))->click(); QVERIFY(!sheet->isVisible()); QTRY_VERIFY(sheet.isNull());
+        window.setReducedMotion(false); openPlaces(); sheet = window.findChild<QWidget *>(QStringLiteral("mtPlaces")); QVERIFY(sheet);
+        sheet->parentWidget()->close(); window.setReducedMotion(true); QTRY_VERIFY(sheet.isNull());
+        drawerButton->click(); QCOMPARE(sidebar->x(), 0); drawerShade->click(); QVERIFY(!sidebar->isVisible());
+        window.setReducedMotion(false); drawerButton->click(); window.resize(1100, 650); QTest::qWait(280);
+        QVERIFY(window.centralWidget()->rect().contains(sidebar->geometry()));
+        window.setTheme(QStringLiteral("twinfile")); QVERIFY(sidebar->isVisible()); QVERIFY(!drawerShade->isVisible());
+        window.setTheme(QStringLiteral("mt")); window.setReducedMotion(false); openPlaces();
+        sheet = window.findChild<QWidget *>(QStringLiteral("mtPlaces")); QVERIFY(sheet);
+        window.resize(1200, 700); QTRY_VERIFY(sheet.isNull());
+        bool menuChecked = false;
+        QTimer::singleShot(0, &window, [&] {
+            auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget()); if (!popup) return;
+            const auto cleanup = qScopeGuard([popup] { popup->close(); });
+            auto *enter = popup->findChild<QVariantAnimation *>(QStringLiteral("mtMenuAnimation")); QVERIFY(enter);
+            QCOMPARE(enter->state(), QAbstractAnimation::Running); enter->pause(); enter->setCurrentTime(60);
+            QVERIFY(popup->windowOpacity() > 0); QVERIFY(popup->windowOpacity() < 1); enter->resume();
+            QTest::qWait(200); QCOMPARE(popup->windowOpacity(), 1.0);
+            QMenu *tools = nullptr; for (auto *action : popup->actions()) if (action->text() == QStringLiteral("更多工具")) tools = action->menu();
+            QVERIFY(tools); tools->popup(popup->mapToGlobal(QPoint(popup->width(), 0)));
+            auto *submenuMotion = tools->findChild<QVariantAnimation *>(QStringLiteral("mtMenuAnimation")); QVERIFY(submenuMotion);
+            QCOMPARE(submenuMotion->state(), QAbstractAnimation::Running); submenuMotion->setCurrentTime(submenuMotion->duration());
+            QCOMPARE(tools->windowOpacity(), 1.0); tools->close(); menuChecked = true;
+        });
+        window.findChild<QPushButton *>(QStringLiteral("mtOverflow"))->click(); QVERIFY(menuChecked);
+        QPointer<QWidget> fade = window.findChild<QWidget *>(QStringLiteral("mtMenuFade")); QVERIFY(fade);
+        QVERIFY(fade->testAttribute(Qt::WA_TransparentForMouseEvents)); QVERIFY(!QApplication::activePopupWidget()); QTRY_VERIFY(fade.isNull());
+        bool reducedMenuChecked = false;
+        QTimer::singleShot(0, &window, [&] {
+            auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget()); if (!popup) return;
+            const auto cleanup = qScopeGuard([popup] { popup->close(); });
+            window.setReducedMotion(true);
+            auto *enter = popup->findChild<QVariantAnimation *>(QStringLiteral("mtMenuAnimation")); QVERIFY(enter);
+            QCOMPARE(enter->state(), QAbstractAnimation::Stopped); QCOMPARE(popup->windowOpacity(), 1.0); reducedMenuChecked = true;
+        });
+        window.findChild<QPushButton *>(QStringLiteral("mtOverflow"))->click(); QVERIFY(reducedMenuChecked);
+        QVERIFY(!window.findChild<QWidget *>(QStringLiteral("mtMenuFade")));
+        for (bool reduced : {false, true}) {
+            window.setReducedMotion(reduced); bool checked = false;
+            QTimer::singleShot(0, &window, [&] {
+                auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); if (!dialog) return;
+                const auto cleanup = qScopeGuard([dialog] { dialog->reject(); });
+                auto *enter = dialog->findChild<QVariantAnimation *>(QStringLiteral("mtDialogAnimation")); QVERIFY(enter);
+                QVERIFY(window.findChild<QWidget *>(QStringLiteral("mtDialogShade")));
+                if (reduced) QCOMPARE(enter->state(), QAbstractAnimation::Stopped);
+                else {
+                    QCOMPARE(enter->state(), QAbstractAnimation::Running); enter->pause(); enter->setCurrentTime(60);
+                    QVERIFY(dialog->windowOpacity() > 0); QVERIFY(dialog->windowOpacity() < 1);
+                    enter->resume(); QTest::qWait(200); QCOMPARE(dialog->windowOpacity(), 1.0);
+                }
+                dialog->reject();
+                if (!reduced) {
+                    QVERIFY(dialog->isVisible()); QVERIFY(dialog->property("mtClosing").toBool());
+                    QCOMPARE(enter->state(), QAbstractAnimation::Running); window.setReducedMotion(true); QVERIFY(!dialog->isVisible());
+                } else QVERIFY(!dialog->isVisible());
+                checked = true;
+            });
+            window.findChild<QToolButton *>(QStringLiteral("mt_add"))->click(); QVERIFY(checked);
+            QVERIFY(!window.findChild<QWidget *>(QStringLiteral("mtDialogShade"))); QVERIFY(!QApplication::activeModalWidget());
+        }
+        window.setTheme(QStringLiteral("twinfile")); window.close();
     }
     void keysUseDpapiAndCanBeForgotten() {
         QTemporaryDir root; AiSettings settings; settings.endpoint = QStringLiteral("https://example.com/v1"); settings.model = QStringLiteral("example"); settings.apiKey = QStringLiteral("private-key-中文-12345");

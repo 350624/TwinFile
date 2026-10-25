@@ -58,6 +58,9 @@ private:
     void updateMtHeader();
     void styleNavigation();
     void positionMtDrawer();
+    void setMtDrawerVisible(bool visible, bool animated = true);
+    void closeMtPlaces(bool animated = true);
+    void settleMtAnimations();
     void showMtMenu();
     void showMtPlaces();
     void createMtEntry();

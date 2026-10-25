@@ -1,7 +1,7 @@
 IDI_APP ICON "app.ico"
 1 VERSIONINFO
-FILEVERSION 3,1,14,0
-PRODUCTVERSION 3,1,14,0
+FILEVERSION 3,1,15,0
+PRODUCTVERSION 3,1,15,0
 FILETYPE 1
 BEGIN
     BLOCK "StringFileInfo"
@@ -10,9 +10,9 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "TwinFile\0"
             VALUE "FileDescription", "TwinFile Native C++\0"
-            VALUE "FileVersion", "3.1.14.0\0"
+            VALUE "FileVersion", "3.1.15.0\0"
             VALUE "ProductName", "TwinFile\0"
-            VALUE "ProductVersion", "3.1.14.0\0"
+            VALUE "ProductVersion", "3.1.15.0\0"
         END
     END
     BLOCK "VarFileInfo"

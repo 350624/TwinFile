@@ -1,4 +1,4 @@
-# TwinFile 3.1.14 · C++ 原生版
+# TwinFile 3.1.15 · C++ 原生版
 
 **Windows 双栏文件管理器 · Android 工具箱 · 可选 AI / Agent · 原生插件扩展**
 
@@ -10,8 +10,8 @@ TwinFile 是面向 Windows 的双栏文件管理与 Android 工具箱。本版�
 
 ## 运行和安装
 
-- 面向 Windows x64。[下载 3.1.14 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.14/TwinFile-3.1.14-Windows-x64-Setup.exe)或[独立直链下载器](https://github.com/350624/TwinFile/releases/download/v3.1.14/TwinFile-Downloader-3.1.14-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
-- 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；独立下载器 `dist/TwinFileDownloader-3.1.14/TwinFileDownloader.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.14）。这些是构建后的路径，不是仓库已包含的文件。
+- 面向 Windows x64。[下载 3.1.15 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.15/TwinFile-3.1.15-Windows-x64-Setup.exe)或[独立直链下载器](https://github.com/350624/TwinFile/releases/download/v3.1.15/TwinFile-Downloader-3.1.15-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
+- 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；独立下载器 `dist/TwinFileDownloader-3.1.15/TwinFileDownloader.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.15）。这些是构建后的路径，不是仓库已包含的文件。
 - 完整发布包不需要安装 Python、Qt SDK 或编译器。手机需开启 USB 调试并授权电脑；HFX 需经用户确认安装配套手机端。源码编译与完整工具包的准备步骤不同，详见[安装说明](docs/INSTALL.md)。
 - 新配置：`%APPDATA%/TwinFileNative/settings.json`。配置与旧版独立，菜单不再提供旧版设置/工作区导入入口。
 - 第一次使用：点选左栏目录，再点选右栏目标目录，回到源栏选择文件，按 `F5` 复制到另一栏；顶部“助手”打开可选 AI，未配置 API 不影响文件管理。
@@ -84,7 +84,7 @@ AI 服务由用户自行提供基础地址、模型 ID 和密钥，支持 OpenAI
 
 每栏导航区带刷新按钮，目录读取期间显示旋转提示。刷新完成后列表轻微上移淡入（180ms）；进入文件夹从右侧轻滑淡入，返回上一级或退出文件夹则从左侧轻滑淡入（220ms），前进/后退按目录关系选择方向，包内浏览同样支持。动效不延迟后台读取，只重绘可见行，不复制整张列表、不为每帧重新加载缩略图；刷新保留选择和滚动位置。点击、键盘操作、滚动、调整列表大小或切换主题会结束当前过渡，避免影响命中与拖拽。设备轮询不反复播放动画。
 
-“更多 → 外观 → 减少动画”会立即停止两栏的旋转、目录过渡和活动栏淡入，下次启动继续保留该设置。
+“更多 → 外观 → 减少动画”会立即停止两栏的旋转、目录过渡和活动栏淡入，以及 MT 侧栏、最近/书签、菜单和新建窗口的过渡，下次启动继续保留该设置。MT 侧栏左右滑入/滑出，最近/书签面板上下展开/收起，遮罩随进度渐变；菜单淡入淡出，新建窗口轻移淡入/淡出。动画不延迟菜单动作或后台任务。
 
 支持本地、手机和 ZIP/APK 内部的浏览、文件名搜索、新建、复制、移动、删除和重命名。批量重命名支持替换、前后缀、顺序编号、可编辑预览和冲突检查。本地删除用回收站；手机和包内删除须留意永久性。跨卷移动在复制发布成功后再删除源文件；默认不覆盖已有目标。
 

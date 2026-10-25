@@ -397,7 +397,7 @@ QLabel#mtCreateTitle { font-size: 22px; padding-bottom: 16px; }
 QTabWidget#mtPlacesTabs::pane { border: none; border-top: 1px solid %1; border-radius: 0; }
 QFrame#mtPlaces { background: palette(base); border: 1px solid %1; border-radius: 2px; }
 QPushButton#mtDrawerShade, QPushButton#mtDrawerShade:hover, QPushButton#mtDrawerShade:pressed,
-QPushButton#mtPlacesShade, QPushButton#mtPlacesShade:hover, QPushButton#mtPlacesShade:pressed { background: rgba(0, 0, 0, 95); border: none; border-radius: 0; padding: 0; }
+QPushButton#mtPlacesShade, QPushButton#mtPlacesShade:hover, QPushButton#mtPlacesShade:pressed { background: transparent; border: none; border-radius: 0; padding: 0; }
 QTabWidget#mtPlacesTabs QTabBar::tab { border: none; border-bottom: 3px solid transparent; border-radius: 0; background: transparent; padding: 12px 24px; margin: 0; font-size: 15px; }
 QTabWidget#mtPlacesTabs QTabBar::tab:selected { border-bottom-color: %2; color: palette(text); }
 QListWidget#mtPlacesList { border: none; border-radius: 0; }

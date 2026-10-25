@@ -2,6 +2,7 @@
 #include "appearance.h"
 
 #include <QApplication>
+#include <QCloseEvent>
 #include <QDialog>
 #include <QDir>
 #include <QFileInfo>
@@ -14,17 +15,192 @@
 #include <QPainter>
 #include <QPropertyAnimation>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QToolButton>
 #include <QTouchEvent>
+#include <QVariantAnimation>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
 namespace twinfile {
 namespace {
+
+class MotionShade : public QPushButton {
+public:
+    MotionShade(QWidget *parent, std::function<bool()> motion)
+        : QPushButton(parent), motion_(std::move(motion)) {
+        animation_ = new QVariantAnimation(this); animation_->setObjectName(QStringLiteral("mtOverlayAnimation"));
+        connect(animation_, &QVariantAnimation::valueChanged, this, [this](const QVariant &value) { progress_ = value.toReal(); render(); });
+        connect(animation_, &QVariantAnimation::finished, this, [this] { if (closing_) finishClose(); });
+    }
+    bool closing() const { return closing_; }
+    void bounds(const QRect &destination, const QRect &collapsed) {
+        destination_ = destination; collapsed_ = collapsed; render();
+    }
+    void open(QWidget *panel, const QRect &destination, const QRect &collapsed) {
+        panel_ = panel; bounds(destination, collapsed); closing_ = false;
+        setProperty("mtClosing", false); panel->setEnabled(true); show(); raise(); panel->show(); panel->raise();
+        animate(1);
+    }
+    void settle() {
+        if (!isVisible()) return;
+        animation_->stop();
+        if (closing_) finishClose();
+        else { progress_ = 1; render(); }
+    }
+    void finishClose() {
+        animation_->stop(); closing_ = true; setProperty("mtClosing", true); progress_ = 0; render();
+        if (panel_) { panel_->hide(); panel_->setEnabled(true); }
+        hide();
+        if (testAttribute(Qt::WA_DeleteOnClose)) deleteLater();
+    }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter painter(this); painter.fillRect(rect(), QColor(0, 0, 0, qRound(95 * progress_)));
+    }
+    void closeEvent(QCloseEvent *event) override {
+        event->ignore();
+        if (closing_) return;
+        closing_ = true; setProperty("mtClosing", true);
+        if (panel_) panel_->setEnabled(false);
+        animate(0);
+    }
+private:
+    void animate(qreal target) {
+        animation_->stop();
+        if (!motion_() || qFuzzyCompare(progress_ + 1, target + 1)) {
+            progress_ = target; render(); if (closing_) finishClose(); return;
+        }
+        const qreal from = progress_;
+        {
+            const QSignalBlocker blocker(animation_);
+            animation_->setDuration(qMax(1, qRound((target ? 240 : 200) * qAbs(target - from))));
+            animation_->setEasingCurve(target ? QEasingCurve::OutCubic : QEasingCurve::InCubic);
+            animation_->setStartValue(from); animation_->setEndValue(target);
+        }
+        animation_->start();
+    }
+    void render() {
+        setProperty("mtMotionProgress", progress_);
+        if (panel_) {
+            const QPoint delta = destination_.topLeft() - collapsed_.topLeft();
+            panel_->setGeometry(QRect(collapsed_.topLeft() + QPoint(qRound(delta.x() * progress_), qRound(delta.y() * progress_)), destination_.size()));
+        }
+        update();
+    }
+    std::function<bool()> motion_;
+    QVariantAnimation *animation_;
+    QPointer<QWidget> panel_;
+    QRect destination_, collapsed_;
+    qreal progress_ = 0;
+    bool closing_ = false;
+};
+
+class DialogShade : public QWidget {
+public:
+    explicit DialogShade(QWidget *parent) : QWidget(parent) {}
+    void setProgress(qreal progress) { progress_ = progress; update(); }
+protected:
+    void paintEvent(QPaintEvent *) override { QPainter painter(this); painter.fillRect(rect(), QColor(0, 0, 0, qRound(95 * progress_))); }
+private:
+    qreal progress_ = 1;
+};
+
+class MotionDialog : public QDialog {
+public:
+    MotionDialog(QWidget *parent, std::function<bool()> motion)
+        : QDialog(parent), motion_(std::move(motion)) {
+        animation_ = new QVariantAnimation(this); animation_->setObjectName(QStringLiteral("mtDialogAnimation"));
+        connect(animation_, &QVariantAnimation::valueChanged, this, [this](const QVariant &value) {
+            const qreal progress = value.toReal(); setWindowOpacity(progress);
+            move(destination_ + QPoint(0, qRound((1 - progress) * 12)));
+            if (shade_) {
+                shade_->setGeometry(parentWidget()->rect()); shade_->setProgress(progress);
+            }
+        });
+        connect(animation_, &QVariantAnimation::finished, this, [this] {
+            if (closing_) QDialog::done(result_);
+        });
+    }
+    ~MotionDialog() override { delete shade_; }
+    void done(int result) override {
+        if (closing_) return;
+        animation_->stop(); closing_ = true; result_ = result;
+        if (!motion_()) { QDialog::done(result); return; }
+        setProperty("mtClosing", true); setEnabled(false);
+        const qreal from = windowOpacity();
+        {
+            const QSignalBlocker blocker(animation_);
+            animation_->setStartValue(from); animation_->setEndValue(0.0);
+            animation_->setDuration(140); animation_->setEasingCurve(QEasingCurve::InCubic);
+        }
+        animation_->start();
+    }
+protected:
+    void showEvent(QShowEvent *event) override {
+        QDialog::showEvent(event); destination_ = pos();
+        shade_ = new DialogShade(parentWidget()); shade_->setObjectName(QStringLiteral("mtDialogShade"));
+        shade_->setGeometry(parentWidget()->rect()); shade_->show(); shade_->raise();
+        if (!motion_()) return;
+        setWindowOpacity(0);
+        animation_->setDuration(180); animation_->setEasingCurve(QEasingCurve::OutCubic);
+        animation_->setStartValue(0.0); animation_->setEndValue(1.0); animation_->start();
+    }
+private:
+    std::function<bool()> motion_;
+    QVariantAnimation *animation_;
+    QPoint destination_;
+    QPointer<DialogShade> shade_;
+    int result_ = QDialog::Rejected;
+    bool closing_ = false;
+};
+
+// A non-interactive snapshot lets QMenu release its popup grab immediately on dismissal.
+class MenuFade : public QWidget {
+public:
+    MenuFade(QWidget *owner, const QPixmap &image, const QRect &geometry, qreal opacity)
+        : QWidget(owner, Qt::ToolTip | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint | Qt::WindowTransparentForInput), image_(image), opacity_(opacity) {
+        setObjectName(QStringLiteral("mtMenuFade")); setAttribute(Qt::WA_TranslucentBackground);
+        setAttribute(Qt::WA_TransparentForMouseEvents); setAttribute(Qt::WA_ShowWithoutActivating); setFocusPolicy(Qt::NoFocus);
+        setGeometry(geometry);
+        auto *animation = new QVariantAnimation(this); animation->setObjectName(QStringLiteral("mtMenuExitAnimation"));
+        animation->setDuration(120); animation->setStartValue(opacity); animation->setEndValue(0.0);
+        connect(animation, &QVariantAnimation::valueChanged, this, [this](const QVariant &value) { opacity_ = value.toReal(); update(); });
+        connect(animation, &QVariantAnimation::finished, this, &QObject::deleteLater);
+        show(); animation->start();
+    }
+protected:
+    void paintEvent(QPaintEvent *) override { QPainter painter(this); painter.setOpacity(opacity_); painter.drawPixmap(rect(), image_); }
+private:
+    QPixmap image_;
+    qreal opacity_;
+};
+
+class MotionMenu : public QMenu {
+public:
+    MotionMenu(QWidget *parent, std::function<bool()> motion) : QMenu(parent), motion_(std::move(motion)) {
+        animation_ = new QPropertyAnimation(this, "windowOpacity", this); animation_->setObjectName(QStringLiteral("mtMenuAnimation"));
+        animation_->setDuration(160); animation_->setEasingCurve(QEasingCurve::OutCubic);
+    }
+protected:
+    void showEvent(QShowEvent *event) override {
+        QMenu::showEvent(event);
+        if (!motion_()) { setWindowOpacity(1); return; }
+        setWindowOpacity(0); animation_->setStartValue(0.0); animation_->setEndValue(1.0); animation_->start();
+    }
+    void hideEvent(QHideEvent *event) override {
+        animation_->stop();
+        if (motion_() && windowOpacity() > 0) new MenuFade(parentWidget(), grab(), geometry(), windowOpacity());
+        QMenu::hideEvent(event);
+    }
+private:
+    std::function<bool()> motion_;
+    QPropertyAnimation *animation_;
+};
 
 class PathLabel : public QLabel {
 public:
@@ -106,12 +282,12 @@ QIcon navigationBadge(const QIcon &icon) {
 }
 
 void Window::buildMtChrome(QVBoxLayout *root, QHBoxLayout *heading) {
-    auto *shade = new QPushButton(centralWidget()); shade->setObjectName(QStringLiteral("mtDrawerShade")); shade->setFocusPolicy(Qt::NoFocus);
+    auto *shade = new MotionShade(centralWidget(), [this] { return !settings_.value(QStringLiteral("reduced_motion")).toBool(); }); shade->setObjectName(QStringLiteral("mtDrawerShade")); shade->setFocusPolicy(Qt::NoFocus);
     shade->setAccessibleName(QStringLiteral("收起位置侧栏")); shade->hide();
-    connect(shade, &QPushButton::clicked, this, [this] { sidebar_->hide(); positionMtDrawer(); });
+    connect(shade, &QPushButton::clicked, shade, &QWidget::close);
     auto *drawer = new QPushButton; drawer->setObjectName(QStringLiteral("mtDrawer")); drawer->setProperty("symbol", QStringLiteral("menu"));
     drawer->setFixedSize(42, 44); drawer->setToolTip(QStringLiteral("位置与工具")); drawer->setAccessibleName(drawer->toolTip());
-    connect(drawer, &QPushButton::clicked, this, [this] { sidebar_->setVisible(!sidebar_->isVisible()); positionMtDrawer(); }); heading->insertWidget(0, drawer); drawer->hide();
+    connect(drawer, &QPushButton::clicked, this, [this, shade] { setMtDrawerVisible(!shade->isVisible() || shade->closing()); }); heading->insertWidget(0, drawer); drawer->hide();
     auto *location = new QWidget; location->setObjectName(QStringLiteral("mtLocation"));
     location->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred); location->setMinimumWidth(0);
     auto *labels = new QVBoxLayout(location); labels->setContentsMargins(4, 0, 4, 0); labels->setSpacing(3);
@@ -149,7 +325,8 @@ void Window::buildMtChrome(QVBoxLayout *root, QHBoxLayout *heading) {
 }
 
 void Window::applyMtChrome(bool enabled) {
-    if (mtPlaces_) mtPlaces_->close();
+    closeMtPlaces(false);
+    setMtDrawerVisible(false, false);
     centralWidget()->layout()->setContentsMargins(0, 0, enabled ? 0 : 12, 0);
     auto *header = findChild<QWidget *>(QStringLiteral("workspaceHeader"));
     header->layout()->setContentsMargins(enabled ? 10 : 20, enabled ? 10 : 14, enabled ? 10 : 2, enabled ? 10 : 14);
@@ -185,14 +362,41 @@ void Window::applyMtChrome(bool enabled) {
 }
 
 void Window::positionMtDrawer() {
-    auto *shade = findChild<QWidget *>(QStringLiteral("mtDrawerShade"));
+    auto *shade = static_cast<MotionShade *>(findChild<QPushButton *>(QStringLiteral("mtDrawerShade")));
     if (!shade) return;
     if (!sidebar_->property("mtStyle").toBool()) { shade->hide(); return; }
     const int top = findChild<QWidget *>(QStringLiteral("workspaceHeader"))->geometry().bottom() + 1;
     const int bottom = findChild<QWidget *>(QStringLiteral("mtBottomBar"))->geometry().top();
     shade->setGeometry(0, top, centralWidget()->width(), qMax(0, bottom - top));
-    shade->setVisible(sidebar_->isVisible()); shade->raise();
-    sidebar_->setGeometry(0, top, 232, qMax(0, bottom - top)); sidebar_->raise();
+    const QRect destination(0, top, 232, qMax(0, bottom - top));
+    shade->bounds(destination, destination.translated(-232, 0));
+    if (shade->isVisible()) { shade->raise(); sidebar_->raise(); }
+}
+
+void Window::setMtDrawerVisible(bool visible, bool animated) {
+    auto *shade = static_cast<MotionShade *>(findChild<QPushButton *>(QStringLiteral("mtDrawerShade")));
+    if (!shade) return;
+    if (!visible) { if (animated) shade->close(); else shade->finishClose(); return; }
+    closeMtPlaces(false); positionMtDrawer();
+    const int top = shade->geometry().top();
+    const QRect destination(0, top, 232, shade->height());
+    shade->open(sidebar_, destination, destination.translated(-232, 0));
+    if (!animated) shade->settle();
+}
+
+void Window::closeMtPlaces(bool animated) {
+    if (!mtPlaces_) return;
+    auto *shade = static_cast<MotionShade *>(mtPlaces_.data());
+    if (animated) shade->close(); else { mtPlaces_ = nullptr; shade->finishClose(); }
+}
+
+void Window::settleMtAnimations() {
+    for (const auto &name : {QStringLiteral("mtDrawerShade"), QStringLiteral("mtPlacesShade")})
+        if (auto *shade = static_cast<MotionShade *>(findChild<QPushButton *>(name))) shade->settle();
+    for (auto *animation : findChildren<QVariantAnimation *>()) {
+        if (animation->objectName() == QStringLiteral("mtDialogAnimation") || animation->objectName() == QStringLiteral("mtMenuAnimation") || animation->objectName() == QStringLiteral("mtMenuExitAnimation"))
+            if (animation->state() == QAbstractAnimation::Running) animation->setCurrentTime(animation->duration());
+    }
 }
 
 void Window::styleNavigation() {
@@ -205,7 +409,7 @@ void Window::styleNavigation() {
         button->setIcon(mt ? navigationBadge(icon) : icon); button->setIconSize(QSize(mt ? 30 : 18, mt ? 30 : 18));
         if (!button->property("mtDrawerConnected").toBool()) {
             button->setProperty("mtDrawerConnected", true);
-            connect(button, &QPushButton::clicked, this, [this] { if (sidebar_->property("mtStyle").toBool()) { sidebar_->hide(); positionMtDrawer(); } });
+            connect(button, &QPushButton::clicked, this, [this] { if (sidebar_->property("mtStyle").toBool()) setMtDrawerVisible(false); });
         }
     }
 }
@@ -232,7 +436,7 @@ void Window::swapPanes() {
 }
 
 void Window::showMtMenu() {
-    QMenu menu(this); menu.setObjectName(QStringLiteral("mtMenu"));
+    MotionMenu menu(this, [this] { return !settings_.value(QStringLiteral("reduced_motion")).toBool(); }); menu.setObjectName(QStringLiteral("mtMenu"));
     auto add = [&](const QString &text, const QString &symbol, auto handler) { return menu.addAction(actionSymbol(symbol, palette().color(QPalette::Text)), text, this, handler); };
     add(QStringLiteral("刷新"), QStringLiteral("refresh"), &Window::refreshActive);
     add(QStringLiteral("搜索"), QStringLiteral("search"), &Window::searchFiles);
@@ -252,14 +456,16 @@ void Window::showMtMenu() {
     add(QStringLiteral("最近 / 书签"), QStringLiteral("bookmark"), &Window::showMtPlaces);
     add(QStringLiteral("交换窗口"), QStringLiteral("swap"), &Window::swapPanes);
     add(QStringLiteral("设置"), QStringLiteral("theme"), &Window::showAppearanceSettings);
-    auto *tools = menu.addMenu(actionSymbol(QStringLiteral("more"), palette().color(QPalette::Text)), QStringLiteral("更多工具")); populateMoreMenu(*tools);
+    auto *tools = new MotionMenu(&menu, [this] { return !settings_.value(QStringLiteral("reduced_motion")).toBool(); });
+    tools->setTitle(QStringLiteral("更多工具")); tools->setIcon(actionSymbol(QStringLiteral("more"), palette().color(QPalette::Text)));
+    menu.addMenu(tools); populateMoreMenu(*tools);
     menu.addSeparator(); add(QStringLiteral("退出"), QStringLiteral("move"), [this] { close(); });
     auto *anchor = findChild<QWidget *>(QStringLiteral("mtOverflow")); menu.exec(anchor->mapToGlobal(QPoint(anchor->width(), anchor->height())));
 }
 
 void Window::createMtEntry() {
     const Location target = active_->location();
-    QDialog dialog(this); dialog.setObjectName(QStringLiteral("mtCreate")); dialog.setWindowTitle(QStringLiteral("新建")); dialog.setMinimumWidth(430);
+    MotionDialog dialog(this, [this] { return !settings_.value(QStringLiteral("reduced_motion")).toBool(); }); dialog.setObjectName(QStringLiteral("mtCreate")); dialog.setWindowTitle(QStringLiteral("新建")); dialog.setMinimumWidth(430);
     auto *layout = new QVBoxLayout(&dialog); layout->setContentsMargins(28, 24, 28, 20); layout->setSpacing(18);
     auto *title = new QLabel(QStringLiteral("新建")); title->setObjectName(QStringLiteral("mtCreateTitle")); layout->addWidget(title);
     auto *name = new QLineEdit; name->setObjectName(QStringLiteral("mtCreateName")); name->setAccessibleName(QStringLiteral("名称")); layout->addWidget(name);
@@ -283,8 +489,8 @@ void Window::createMtEntry() {
 
 void Window::showMtPlaces() {
     if (mtPlaces_) { mtPlaces_->close(); return; }
-    sidebar_->hide(); positionMtDrawer();
-    auto *overlay = new QPushButton(centralWidget()); overlay->setObjectName(QStringLiteral("mtPlacesShade")); overlay->setAttribute(Qt::WA_DeleteOnClose);
+    setMtDrawerVisible(false, false);
+    auto *overlay = new MotionShade(centralWidget(), [this] { return !settings_.value(QStringLiteral("reduced_motion")).toBool(); }); overlay->setObjectName(QStringLiteral("mtPlacesShade")); overlay->setAttribute(Qt::WA_DeleteOnClose);
     overlay->setGeometry(centralWidget()->rect()); overlay->setFocusPolicy(Qt::NoFocus); overlay->setAccessibleName(QStringLiteral("收起最近与书签"));
     connect(overlay, &QPushButton::clicked, overlay, &QWidget::close); mtPlaces_ = overlay;
     auto *sheet = new QFrame(overlay); sheet->setObjectName(QStringLiteral("mtPlaces"));
@@ -315,11 +521,7 @@ void Window::showMtPlaces() {
     auto *swipe = new SwipeHandler(collapse, false, [overlay] { overlay->close(); }); swipe->watch(tabs->tabBar());
     const QRect area = centralWidget()->rect(); const int height = qMin(440, area.height() - 120);
     const QRect destination(0, area.height() - height, area.width(), height);
-    sheet->setGeometry(destination); overlay->show(); overlay->raise(); sheet->show(); tabs->setFocus();
-    if (!settings_.value(QStringLiteral("reduced_motion")).toBool()) {
-        auto *animation = new QPropertyAnimation(sheet, "geometry", sheet); animation->setDuration(180); animation->setEasingCurve(QEasingCurve::OutCubic);
-        animation->setStartValue(destination.translated(0, height)); animation->setEndValue(destination); animation->start(QAbstractAnimation::DeleteWhenStopped);
-    }
+    overlay->open(sheet, destination, destination.translated(0, height)); tabs->setFocus();
 }
 
 }
