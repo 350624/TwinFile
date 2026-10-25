@@ -96,11 +96,13 @@ Pane::Pane(QWidget *parent) : QFrame(parent) {
     setObjectName(QStringLiteral("filePane"));
     setMinimumWidth(260);
     auto *layout = new QVBoxLayout(this); layout->setContentsMargins(10, 10, 10, 0); layout->setSpacing(6);
+    auto *chrome = new QWidget; chrome->setObjectName(QStringLiteral("paneChrome"));
+    auto *chromeLayout = new QVBoxLayout(chrome); chromeLayout->setContentsMargins(0, 0, 0, 0); chromeLayout->setSpacing(6);
     auto *tabLayout = new QHBoxLayout; tabLayout->setSpacing(4);
     auto *indicator = new QLabel(QStringLiteral("●")); indicator->setObjectName(QStringLiteral("paneIndicator")); indicator->setToolTip(QStringLiteral("点击此栏后，操作作用于此栏")); tabLayout->addWidget(indicator);
     tabs_ = new QTabBar; tabs_->setObjectName(QStringLiteral("paneTabs")); tabs_->setDrawBase(false); tabs_->setExpanding(false); tabs_->setTabsClosable(true); tabs_->setUsesScrollButtons(true); tabs_->setElideMode(Qt::ElideMiddle); tabs_->addTab(QStringLiteral("此电脑"));
     auto *add = new QToolButton; add->setProperty("symbol", QStringLiteral("add")); add->setIcon(actionSymbol(QStringLiteral("add"), palette().color(QPalette::Text))); add->setFixedSize(28, 28); add->setToolTip(QStringLiteral("新标签 Ctrl+T")); add->setAccessibleName(QStringLiteral("新建标签页"));
-    tabLayout->addWidget(tabs_, 1); tabLayout->addWidget(add); layout->addLayout(tabLayout);
+    tabLayout->addWidget(tabs_, 1); tabLayout->addWidget(add); chromeLayout->addLayout(tabLayout);
     auto *navigation = new QHBoxLayout; navigation->setSpacing(2);
     auto addNavigation = [&](const QString &text, const QString &tip, auto handler) {
         auto *button = new QToolButton; button->setProperty("symbol", text); button->setIcon(actionSymbol(text, palette().color(QPalette::Text))); button->setToolTip(tip); button->setAccessibleName(tip); button->setFixedSize(28, 30); button->setAutoRaise(true);
@@ -111,7 +113,7 @@ Pane::Pane(QWidget *parent) : QFrame(parent) {
     addNavigation(QStringLiteral("up"), QStringLiteral("上一级 Backspace"), &Pane::goUp);
     refresh_ = new RefreshButton; navigation->addWidget(refresh_); connect(refresh_, &QToolButton::clicked, this, [this] { emit activated(this); refresh(); });
     path_ = new QLineEdit(QStringLiteral("此电脑")); path_->setObjectName(QStringLiteral("panePath")); path_->setClearButtonEnabled(true); path_->setMinimumWidth(70); path_->setAccessibleName(QStringLiteral("当前路径，可输入地址跳转"));
-    navigation->addWidget(path_, 1); layout->addLayout(navigation);
+    navigation->addWidget(path_, 1); chromeLayout->addLayout(navigation); layout->addWidget(chrome);
     auto *columns = new QWidget; columns->setObjectName(QStringLiteral("paneColumns")); auto *columnLayout = new QHBoxLayout(columns); columnLayout->setContentsMargins(12, 4, 12, 4);
     auto *nameColumn = new QLabel(QStringLiteral("名称")); nameColumn->setObjectName(QStringLiteral("paneColumnLabel")); columnLayout->addWidget(nameColumn); columnLayout->addStretch();
     auto *sourceColumn = new QLabel(QStringLiteral("位置")); sourceColumn->setObjectName(QStringLiteral("paneSourceLabel")); columnLayout->addWidget(sourceColumn); layout->addWidget(columns);
@@ -142,11 +144,7 @@ Pane::Pane(QWidget *parent) : QFrame(parent) {
         emit menuRequested(view_->viewport()->mapToGlobal(position));
     });
     connect(path_, &QLineEdit::returnPressed, this, [this] {
-        const QString path = QDir::fromNativeSeparators(path_->text().trimmed());
-        if (path.isEmpty() || path == QStringLiteral("此电脑")) navigate({});
-        else if (QFileInfo(path).isDir()) navigate({Source::Local, QFileInfo(path).absoluteFilePath(), {}, {}});
-        else if (isArchive(path) && QFileInfo(path).isFile()) navigate({Source::Archive, path, {}, {}});
-        else path_->setToolTip(QStringLiteral("目录不存在"));
+        if (!navigatePath(path_->text())) path_->setToolTip(QStringLiteral("目录不存在或路径无效"));
     });
     thumbnailTimer_.setSingleShot(true); thumbnailTimer_.setInterval(16);
     connect(&thumbnailTimer_, &QTimer::timeout, this, &Pane::loadThumbnails);
@@ -257,6 +255,7 @@ void Pane::setMtStyle(bool enabled) {
     setProperty("mtStyle", enabled);
     layout()->setContentsMargins(enabled ? 0 : 10, enabled ? 0 : 10, enabled ? 0 : 10, 0);
     layout()->setSpacing(enabled ? 0 : 6);
+    findChild<QWidget *>(QStringLiteral("paneChrome"))->setVisible(!enabled);
     findChild<QWidget *>(QStringLiteral("paneColumns"))->setVisible(!enabled);
     auto *parentEntry = findChild<QToolButton *>(QStringLiteral("mtParent"));
     Entry folder; folder.directory = true; parentEntry->setIcon(entryIcon(folder));
@@ -267,6 +266,31 @@ void Pane::setMtStyle(bool enabled) {
 
 bool Pane::canGoBack() const { return states_[tab_].historyIndex > 0; }
 bool Pane::canGoForward() const { return states_[tab_].historyIndex + 1 < states_[tab_].history.size(); }
+
+bool Pane::navigatePath(const QString &text) {
+    QString path = QDir::fromNativeSeparators(text.trimmed());
+    if (path.contains(QChar(0))) return false;
+    if (path.isEmpty() || path == QStringLiteral("此电脑")) { navigate({}); return true; }
+    const Location current = location();
+    const QString phonePrefix = current.path + QChar(':');
+    if (current.source == Source::Phone && (path.startsWith(phonePrefix) || (path.startsWith(QChar('/')) && !path.startsWith(QStringLiteral("//"))))) {
+        const QString inner = QDir::cleanPath(path.startsWith(phonePrefix) ? path.mid(phonePrefix.size()) : path);
+        if (!inner.startsWith(QChar('/'))) return false;
+        navigate({Source::Phone, current.path, inner, current.label}); return true;
+    }
+    const qsizetype separator = path.indexOf(QStringLiteral("!/"));
+    if (separator >= 0) {
+        const QFileInfo archive(path.left(separator));
+        const QString inner = path.mid(separator + 2);
+        if (!archive.isFile() || !isArchive(archive.fileName()) || (!inner.isEmpty() && safeArchiveName(inner).isEmpty())) return false;
+        navigate({Source::Archive, archive.absoluteFilePath(), inner, {}}); return true;
+    }
+    if (QDir::isRelativePath(path) && current.source == Source::Local) path = QDir(current.path).filePath(path);
+    const QFileInfo info(path);
+    if (info.isDir()) { navigate({Source::Local, info.absoluteFilePath(), {}, {}}); return true; }
+    if (info.isFile() && isArchive(info.fileName())) { navigate({Source::Archive, info.absoluteFilePath(), {}, {}}); return true; }
+    return false;
+}
 
 void Pane::navigate(const Location &destination) {
     navigateTo(destination, navigationTransition(location(), destination, FileView::Transition::EnterFolder));

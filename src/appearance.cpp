@@ -350,7 +350,8 @@ QHeaderView::section { padding: 10px; color: %1; }
 QWidget#workspace, QWidget#workspaceContent { background: palette(base); }
 QWidget#workspaceHeader { background: %4; }
 QWidget#workspaceHeader QLabel { background: transparent; color: white; }
-QLabel#mtPath { font-size: 22px; font-weight: 400; }
+QLineEdit#mtPath { font-size: 22px; font-weight: 400; background: transparent; color: white; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 0; selection-background-color: %2; selection-color: white; }
+QLineEdit#mtPath:focus { border-bottom-color: %2; }
 QLabel#mtStatistics { color: #cccccc; font-size: 12px; }
 QWidget#workspaceHeader QPushButton { background: transparent; border: none; border-radius: 0; color: white; padding: 0; }
 QWidget#workspaceHeader QPushButton:hover { background: #454545; }

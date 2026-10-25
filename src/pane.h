@@ -32,6 +32,7 @@ public:
     QJsonObject workspace() const;
     void restore(const QJsonObject &workspace);
     void navigate(const Location &location);
+    bool navigatePath(const QString &text);
     void refresh(bool preserve = true);
     void newTab();
     void closeTab();

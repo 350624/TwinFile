@@ -10,14 +10,18 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QPainter>
+#include <QPropertyAnimation>
 #include <QPushButton>
-#include <QShortcut>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QToolButton>
+#include <QTouchEvent>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 
 namespace twinfile {
 namespace {
@@ -30,6 +34,64 @@ protected:
         QPainter painter(this); painter.setFont(font()); painter.setPen(palette().windowText().color());
         painter.drawText(contentsRect(), Qt::AlignLeft | Qt::AlignVCenter, fontMetrics().elidedText(text(), Qt::ElideMiddle, contentsRect().width()));
     }
+};
+
+class SwipeHandler : public QObject {
+public:
+    SwipeHandler(QWidget *parent, bool upwards, std::function<void()> action)
+        : QObject(parent), upwards_(upwards), action_(std::move(action)) { watch(parent); }
+    void watch(QWidget *widget) { widget->setAttribute(Qt::WA_AcceptTouchEvents); widget->installEventFilter(this); }
+protected:
+    bool eventFilter(QObject *object, QEvent *event) override {
+        auto *widget = qobject_cast<QWidget *>(object);
+        if (!widget) return false;
+        if (event->type() == QEvent::Hide || event->type() == QEvent::UngrabMouse) tracking_ = false;
+        if (!widget->isVisible()) return false;
+        if (event->type() == QEvent::Wheel && upwards_) {
+            const auto *wheel = static_cast<QWheelEvent *>(event);
+            if (wheel->angleDelta().y() > 0 || wheel->pixelDelta().y() > 0) { action_(); return true; }
+        }
+        if (event->type() == QEvent::MouseButtonPress) {
+            const auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() == Qt::LeftButton) { start_ = mouse->globalPosition(); tracking_ = true; swiped_ = false; }
+        } else if (event->type() == QEvent::MouseMove && tracking_) {
+            const auto *mouse = static_cast<QMouseEvent *>(event);
+            swiped_ = swiped_ || matches(mouse->globalPosition());
+            if (swiped_) { if (auto *button = qobject_cast<QAbstractButton *>(widget)) button->setDown(false); return true; }
+        } else if (event->type() == QEvent::MouseButtonRelease && tracking_) {
+            const auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() != Qt::LeftButton) return false;
+            tracking_ = false;
+            if (swiped_ || matches(mouse->globalPosition())) {
+                if (auto *button = qobject_cast<QAbstractButton *>(widget)) button->setDown(false);
+                action_(); return true;
+            }
+        } else if (event->type() == QEvent::TouchBegin || event->type() == QEvent::TouchUpdate || event->type() == QEvent::TouchEnd) {
+            const auto *touch = static_cast<QTouchEvent *>(event);
+            if (touch->points().size() != 1) { tracking_ = false; event->accept(); return true; }
+            const auto &point = touch->points().first();
+            if (event->type() == QEvent::TouchBegin) { start_ = point.globalPosition(); tracking_ = true; swiped_ = false; }
+            if (tracking_) swiped_ = swiped_ || matches(point.globalPosition());
+            if (event->type() == QEvent::TouchEnd && tracking_) {
+                tracking_ = false;
+                if (swiped_) action_();
+                else if (auto *button = qobject_cast<QAbstractButton *>(widget); button && widget->rect().contains(point.position().toPoint())) button->click();
+                else if (auto *tabs = qobject_cast<QTabBar *>(widget)) {
+                    const int index = tabs->tabAt(point.position().toPoint()); if (index >= 0) tabs->setCurrentIndex(index);
+                }
+            }
+            event->accept(); return true;
+        } else if (event->type() == QEvent::TouchCancel) { tracking_ = false; event->accept(); return true; }
+        return false;
+    }
+private:
+    bool matches(const QPointF &point) const {
+        const QPointF delta = point - start_;
+        return (upwards_ ? -delta.y() : delta.y()) >= 28 && qAbs(delta.y()) > qAbs(delta.x()) * 1.3;
+    }
+    QPointF start_;
+    bool upwards_, tracking_ = false, swiped_ = false;
+    std::function<void()> action_;
 };
 
 QIcon navigationBadge(const QIcon &icon) {
@@ -50,22 +112,32 @@ void Window::buildMtChrome(QVBoxLayout *root, QHBoxLayout *heading) {
     auto *drawer = new QPushButton; drawer->setObjectName(QStringLiteral("mtDrawer")); drawer->setProperty("symbol", QStringLiteral("menu"));
     drawer->setFixedSize(42, 44); drawer->setToolTip(QStringLiteral("位置与工具")); drawer->setAccessibleName(drawer->toolTip());
     connect(drawer, &QPushButton::clicked, this, [this] { sidebar_->setVisible(!sidebar_->isVisible()); positionMtDrawer(); }); heading->insertWidget(0, drawer); drawer->hide();
-    auto *location = new QPushButton; location->setObjectName(QStringLiteral("mtLocation")); location->setToolTip(QStringLiteral("最近与书签"));
-    location->setAccessibleName(location->toolTip()); location->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred); location->setMinimumWidth(0);
+    auto *location = new QWidget; location->setObjectName(QStringLiteral("mtLocation"));
+    location->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred); location->setMinimumWidth(0);
     auto *labels = new QVBoxLayout(location); labels->setContentsMargins(4, 0, 4, 0); labels->setSpacing(3);
-    auto *path = new PathLabel; path->setObjectName(QStringLiteral("mtPath")); path->setMinimumWidth(0); path->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    auto *path = new QLineEdit; path->setObjectName(QStringLiteral("mtPath")); path->setMinimumWidth(0); path->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    path->setAccessibleName(QStringLiteral("当前路径，可输入地址跳转")); path->installEventFilter(this); labels->addWidget(path);
     auto *statistics = new PathLabel; statistics->setObjectName(QStringLiteral("mtStatistics")); statistics->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    for (auto *label : {path, statistics}) { label->setAttribute(Qt::WA_TransparentForMouseEvents); labels->addWidget(label); }
-    heading->insertWidget(1, location, 1); location->hide(); connect(location, &QPushButton::clicked, this, &Window::showMtPlaces);
+    statistics->setAttribute(Qt::WA_TransparentForMouseEvents); labels->addWidget(statistics);
+    heading->insertWidget(1, location, 1); location->hide();
+    connect(path, &QLineEdit::returnPressed, this, [this, path] {
+        if (!active_->navigatePath(path->text())) {
+            path->setToolTip(QStringLiteral("目录不存在或路径无效")); statusBar()->showMessage(path->toolTip(), 5000); path->selectAll(); return;
+        }
+        path->clearFocus(); updateMtHeader(); active_->view()->setFocus();
+    });
+    connect(path, &QLineEdit::editingFinished, this, &Window::updateMtHeader);
     auto *more = new QPushButton; more->setObjectName(QStringLiteral("mtOverflow")); more->setProperty("symbol", QStringLiteral("more-vertical"));
     more->setFixedSize(38, 44); more->setToolTip(QStringLiteral("菜单")); more->setAccessibleName(more->toolTip());
     connect(more, &QPushButton::clicked, this, &Window::showMtMenu); heading->addWidget(more); more->hide();
 
     auto *bottom = new QWidget; bottom->setObjectName(QStringLiteral("mtBottomBar")); auto *navigation = new QHBoxLayout(bottom);
     navigation->setContentsMargins(16, 0, 16, 0); navigation->setSpacing(0); bottom->setFixedHeight(52);
+    auto *swipe = new SwipeHandler(bottom, true, [this] { if (!mtPlaces_) showMtPlaces(); });
     auto add = [&](const QString &symbol, const QString &tip, auto handler) {
         auto *button = new QToolButton; button->setObjectName(QStringLiteral("mt_") + symbol); button->setProperty("symbol", symbol);
         button->setToolTip(tip); button->setAccessibleName(tip); button->setIconSize(QSize(24, 24)); button->setFixedSize(64, 50);
+        swipe->watch(button);
         connect(button, &QToolButton::clicked, this, handler); navigation->addWidget(button); return button;
     };
     add(QStringLiteral("back"), QStringLiteral("后退"), [this] { active_->goBack(); }); navigation->addStretch();
@@ -140,8 +212,9 @@ void Window::styleNavigation() {
 
 void Window::updateMtHeader() {
     if (!active_ || settings_.value(QStringLiteral("theme")).toString() != QStringLiteral("mt")) return;
-    auto *path = findChild<QLabel *>(QStringLiteral("mtPath")); if (!path) return;
-    const auto location = active_->location(); path->setText(location.display()); path->setToolTip(location.display());
+    auto *path = findChild<QLineEdit *>(QStringLiteral("mtPath")); if (!path) return;
+    const auto location = active_->location();
+    if (!path->hasFocus()) { path->setText(location.display()); path->setToolTip(location.display()); }
     int folders = 0, files = 0;
     for (const Entry &entry : active_->fileModel()->entries()) entry.directory ? ++folders : ++files;
     QString detail = QStringLiteral("文件夹: %1   文件: %2").arg(folders).arg(files);
@@ -239,9 +312,14 @@ void Window::showMtPlaces() {
     auto *collapse = new QToolButton; collapse->setObjectName(QStringLiteral("mtPlacesClose")); collapse->setIcon(actionSymbol(QStringLiteral("down"), palette().color(QPalette::Text)));
     collapse->setToolTip(QStringLiteral("收起")); collapse->setAccessibleName(collapse->toolTip()); collapse->setFixedHeight(36); collapse->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     layout->addWidget(collapse); connect(collapse, &QToolButton::clicked, overlay, &QWidget::close);
-    auto *escape = new QShortcut(QKeySequence(Qt::Key_Escape), sheet); escape->setContext(Qt::WidgetWithChildrenShortcut); connect(escape, &QShortcut::activated, overlay, &QWidget::close);
-    const QRect area = centralWidget()->rect(); const int width = qMin(650, area.width()), height = qMin(440, area.height() - 120);
-    sheet->setGeometry((area.width() - width) / 2, area.height() - height, width, height); overlay->show(); overlay->raise(); sheet->show(); tabs->setFocus();
+    auto *swipe = new SwipeHandler(collapse, false, [overlay] { overlay->close(); }); swipe->watch(tabs->tabBar());
+    const QRect area = centralWidget()->rect(); const int height = qMin(440, area.height() - 120);
+    const QRect destination(0, area.height() - height, area.width(), height);
+    sheet->setGeometry(destination); overlay->show(); overlay->raise(); sheet->show(); tabs->setFocus();
+    if (!settings_.value(QStringLiteral("reduced_motion")).toBool()) {
+        auto *animation = new QPropertyAnimation(sheet, "geometry", sheet); animation->setDuration(180); animation->setEasingCurve(QEasingCurve::OutCubic);
+        animation->setStartValue(destination.translated(0, height)); animation->setEndValue(destination); animation->start(QAbstractAnimation::DeleteWhenStopped);
+    }
 }
 
 }

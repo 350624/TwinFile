@@ -351,6 +351,7 @@ void Window::setActive(Pane *pane) {
     if (!pane) return;
     const bool changed = active_ != pane;
     if (changed && mtPlaces_) mtPlaces_->close();
+    if (changed) if (auto *path = findChild<QLineEdit *>(QStringLiteral("mtPath"))) path->clearFocus();
     active_ = pane;
     if (changed) updateTransferButtons();
     updateNavigation();
@@ -490,7 +491,11 @@ void Window::buildActions() {
     bind(QKeySequence(QStringLiteral("Ctrl+W")), [this] { active_->closeTab(); });
     bind(QKeySequence(QStringLiteral("Ctrl+Tab")), [this] { active_->cycleTab(1); });
     bind(QKeySequence(QStringLiteral("Ctrl+Shift+Tab")), [this] { active_->cycleTab(-1); });
-    bind(QKeySequence(QStringLiteral("Ctrl+L")), [this] { active_->focusPath(); });
+    bind(QKeySequence(QStringLiteral("Ctrl+L")), [this] {
+        if (settings_.value(QStringLiteral("theme")).toString() == QStringLiteral("mt")) {
+            auto *path = findChild<QLineEdit *>(QStringLiteral("mtPath")); path->setFocus(); path->selectAll();
+        } else active_->focusPath();
+    });
     bind(QKeySequence(QStringLiteral("Alt+Left")), [this] { active_->goBack(); });
     bind(QKeySequence(QStringLiteral("Alt+Right")), [this] { active_->goForward(); });
     bind(QKeySequence(Qt::Key_Backspace), [this] { if (!qobject_cast<QLineEdit *>(QApplication::focusWidget())) active_->goUp(); });
@@ -503,7 +508,7 @@ void Window::buildActions() {
     bind(QKeySequence(Qt::Key_F7), [this] { create(true); });
     bind(QKeySequence(QStringLiteral("Ctrl+M")), [this] { rename(true); });
     bind(QKeySequence::Find, &Window::searchFiles);
-    bind(QKeySequence(Qt::Key_Escape), [this] { active_->deselect(); });
+    bind(QKeySequence(Qt::Key_Escape), [this] { if (mtPlaces_) mtPlaces_->close(); else active_->deselect(); });
 }
 
 void Window::searchFiles() {
@@ -1187,6 +1192,16 @@ void Window::populateMoreMenu(QMenu &popup) {
 }
 
 bool Window::eventFilter(QObject *object, QEvent *event) {
+    if (object->objectName() == QStringLiteral("mtPath")) {
+        auto *path = static_cast<QLineEdit *>(object);
+        if (event->type() == QEvent::FocusIn) QTimer::singleShot(0, path, [path] { if (path->hasFocus()) path->selectAll(); });
+        if (event->type() == QEvent::ShortcutOverride && static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape) {
+            event->accept(); return true;
+        }
+        if (event->type() == QEvent::KeyPress && static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape) {
+            path->clearFocus(); updateMtHeader(); active_->view()->setFocus(); return true;
+        }
+    }
     if (object == centralWidget() && event->type() == QEvent::Resize && mtPlaces_) mtPlaces_->close();
     if (object == centralWidget() && event->type() == QEvent::Resize)
         QTimer::singleShot(0, this, &Window::positionMtDrawer);

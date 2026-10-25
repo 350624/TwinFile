@@ -25,6 +25,7 @@
 #include <QListWidget>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalSpy>
@@ -41,6 +42,8 @@
 #include <QTimer>
 #include <QTest>
 #include <QTextBrowser>
+#include <QTouchEvent>
+#include <QWheelEvent>
 #include <limits>
 
 using namespace twinfile;
@@ -400,6 +403,32 @@ private slots:
         QTest::newRow("light") << QStringLiteral("light");
         QTest::newRow("dark") << QStringLiteral("dark");
     }
+    void paneAddressNavigation() {
+        QTemporaryDir root; QVERIFY(root.isValid());
+        const QString folder = root.filePath(QStringLiteral("nested"));
+        QVERIFY(QDir().mkpath(folder));
+        const QString file = root.filePath(QStringLiteral("notes.txt")), archive = root.filePath(QStringLiteral("fixture.zip"));
+        { QFile output(file); QVERIFY(output.open(QIODevice::WriteOnly)); output.write("address fixture"); }
+        QVERIFY(createArchive({folder, file}, archive).ok);
+        Pane pane;
+        QVERIFY(pane.navigatePath(root.path())); QCOMPARE(pane.location().source, Source::Local);
+        QVERIFY(pane.navigatePath(QStringLiteral("nested"))); QCOMPARE(pane.location().path, folder);
+        QVERIFY(pane.navigatePath(QStringLiteral(".."))); QCOMPARE(pane.location().path, root.path());
+        const Location before = pane.location();
+        QVERIFY(!pane.navigatePath(QStringLiteral("missing"))); QVERIFY(pane.location() == before);
+        QVERIFY(!pane.navigatePath(file)); QVERIFY(pane.location() == before);
+        QVERIFY(pane.navigatePath(archive)); QCOMPARE(pane.location().source, Source::Archive);
+        QVERIFY(pane.navigatePath(archive + QStringLiteral("!/nested"))); QCOMPARE(pane.location().inner, QStringLiteral("nested"));
+        QVERIFY(!pane.navigatePath(archive + QStringLiteral("!/../outside"))); QCOMPARE(pane.location().inner, QStringLiteral("nested"));
+        QVERIFY(pane.navigatePath(QStringLiteral("此电脑"))); QCOMPARE(pane.location().source, Source::Drive);
+        NavigationPhoneApi phone;
+        pane.navigate({Source::Phone, QStringLiteral("address-phone"), QStringLiteral("/sdcard"), QStringLiteral("Phone fixture")});
+        QVERIFY(pane.navigatePath(QStringLiteral("address-phone:/sdcard/Download"))); QCOMPARE(pane.location().inner, QStringLiteral("/sdcard/Download"));
+        QVERIFY(pane.navigatePath(QStringLiteral("/sdcard/../storage"))); QCOMPARE(pane.location().inner, QStringLiteral("/storage"));
+        QVERIFY(!pane.navigatePath(QStringLiteral("address-phone:relative"))); QCOMPARE(pane.location().inner, QStringLiteral("/storage"));
+        QVERIFY(pane.navigatePath(root.path())); QCOMPARE(pane.location().source, Source::Local);
+        QTRY_COMPARE(phone.listings, 3); QTest::qWait(20);
+    }
     void mtOriginalLayoutAndActions() {
         QFETCH(QString, mode); QTemporaryDir root;
         const QString left = root.filePath(QStringLiteral("Download")), right = root.filePath(QStringLiteral("appshare"));
@@ -412,16 +441,41 @@ private slots:
         first->navigate({Source::Local, left, {}, {}}); second->navigate({Source::Local, right, {}, {}});
         QTRY_COMPARE(first->fileModel()->rowCount(), 2); QTRY_COMPARE(second->fileModel()->rowCount(), 1); window.setActive(first);
         QCOMPARE(themeName(QStringLiteral("mt")), QStringLiteral("MT 原版")); QVERIFY(qApp->property("mtStyle").toBool());
-        auto *headerPath = window.findChild<QLabel *>(QStringLiteral("mtPath")); auto *statistics = window.findChild<QLabel *>(QStringLiteral("mtStatistics"));
+        auto *headerPath = window.findChild<QLineEdit *>(QStringLiteral("mtPath")); auto *statistics = window.findChild<QLabel *>(QStringLiteral("mtStatistics"));
+        QVERIFY(headerPath);
         QCOMPARE(headerPath->text(), first->location().display()); QVERIFY(statistics->text().contains(QStringLiteral("文件夹: 1   文件: 1")));
         auto *bottom = window.findChild<QWidget *>(QStringLiteral("mtBottomBar")); QVERIFY(bottom->isVisible());
         auto *sidebar = window.findChild<QWidget *>(QStringLiteral("navigationSidebar")); QVERIFY(!sidebar->isVisible());
         QVERIFY(!first->findChild<QWidget *>(QStringLiteral("paneColumns"))->isVisible()); QCOMPARE(window.findChild<QSplitter *>(QStringLiteral("fileSplitter"))->handleWidth(), 3);
+        for (Pane *pane : {first, second}) {
+            QVERIFY(!pane->findChild<QWidget *>(QStringLiteral("paneChrome"))->isVisible());
+            QVERIFY(!pane->findChild<QLineEdit *>(QStringLiteral("panePath"))->isVisible());
+            QVERIFY(!pane->findChild<QTabBar *>(QStringLiteral("paneTabs"))->isVisible());
+        }
         const QString output = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT");
         auto capture = [&](const QString &name, QWidget *widget) {
             if (!output.isEmpty()) QVERIFY(widget->grab().save(QDir(output).filePath(QStringLiteral("native-mt-original-") + name + QChar('-') + mode + QStringLiteral(".png"))));
         };
         QTest::qWait(50); capture(QStringLiteral("workspace"), &window);
+        QApplication::setActiveWindow(&window); headerPath->setFocus(); QTRY_VERIFY(headerPath->hasFocus());
+        QTest::mouseClick(headerPath, Qt::LeftButton); QTest::qWait(10);
+        QVERIFY(!window.findChild<QWidget *>(QStringLiteral("mtPlaces")));
+        headerPath->setText(QStringLiteral("Android"));
+        capture(QStringLiteral("path-edit"), &window);
+        QTest::keyClick(headerPath, Qt::Key_Return); QCOMPARE(first->location().path, left + QStringLiteral("/Android")); QCOMPARE(second->location().path, right);
+        window.findChild<QToolButton *>(QStringLiteral("mt_back"))->click(); QCOMPARE(first->location().path, left);
+        headerPath->setFocus(); headerPath->setText(root.filePath(QStringLiteral("does-not-exist")));
+        QTest::keyClick(headerPath, Qt::Key_Return); QCOMPARE(first->location().path, left); QVERIFY2(headerPath->toolTip().contains(QStringLiteral("路径无效")), qPrintable(headerPath->toolTip()));
+        QTest::keyClick(headerPath, Qt::Key_Escape); QCOMPARE(headerPath->text(), first->location().display());
+        QTest::keyClick(first->view(), Qt::Key_L, Qt::ControlModifier); QTRY_VERIFY(headerPath->hasFocus()); QCOMPARE(headerPath->selectedText(), headerPath->text());
+        QTest::keyClick(headerPath, Qt::Key_Escape);
+        headerPath->setFocus(); headerPath->setText(QStringLiteral("keep-editing"));
+        first->refresh(); QTRY_COMPARE(first->fileModel()->rowCount(), 2); QCOMPARE(headerPath->text(), QStringLiteral("keep-editing"));
+        QTest::keyClick(headerPath, Qt::Key_Escape);
+        headerPath->setFocus(); headerPath->setText(QStringLiteral("unfinished"));
+        window.setActive(second); QCOMPARE(headerPath->text(), second->location().display()); window.setActive(first);
+        headerPath->setText(QDir::toNativeSeparators(right)); QTest::keyClick(headerPath, Qt::Key_Return); QCOMPARE(first->location().path, right);
+        window.findChild<QToolButton *>(QStringLiteral("mt_back"))->click(); QTRY_COMPARE(first->fileModel()->rowCount(), 2);
         const QImage folderIcon = entryIcon(first->fileModel()->entry(0)).pixmap(96, 96).toImage();
         QCOMPARE(folderIcon.pixelColor(48, 48), QColor(Qt::white)); QCOMPARE(folderIcon.pixelColor(12, 48), QColor(QStringLiteral("#303030")));
         window.findChild<QPushButton *>(QStringLiteral("mtDrawer"))->click(); QTest::qWait(20); QVERIFY(sidebar->isVisible()); capture(QStringLiteral("drawer"), &window);
@@ -468,22 +522,64 @@ private slots:
             capture(QStringLiteral("menu"), menu); menuChecked = true;
         });
         window.findChild<QPushButton *>(QStringLiteral("mtOverflow"))->click(); QVERIFY(menuChecked);
-        window.findChild<QPushButton *>(QStringLiteral("mtLocation"))->click(); QTest::qWait(20);
+        auto swipe = [](QWidget *widget, int dy, int dx = 0) {
+            const QPointF from(widget->rect().center()), to = from + QPointF(dx, dy);
+            QMouseEvent press(QEvent::MouseButtonPress, from, widget->mapToGlobal(from.toPoint()), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier); QApplication::sendEvent(widget, &press);
+            QMouseEvent move(QEvent::MouseMove, to, widget->mapToGlobal(to.toPoint()), Qt::NoButton, Qt::LeftButton, Qt::NoModifier); QApplication::sendEvent(widget, &move);
+            QMouseEvent release(QEvent::MouseButtonRelease, to, widget->mapToGlobal(to.toPoint()), Qt::LeftButton, Qt::NoButton, Qt::NoModifier); QApplication::sendEvent(widget, &release);
+        };
+        swipe(bottom, -8); QVERIFY(!window.findChild<QWidget *>(QStringLiteral("mtPlaces")));
+        swipe(bottom, -35, 100); QVERIFY(!window.findChild<QWidget *>(QStringLiteral("mtPlaces")));
+        swipe(window.findChild<QToolButton *>(QStringLiteral("mt_add")), -90); QTest::qWait(20);
+        QVERIFY(!QApplication::activeModalWidget());
         QPointer<QWidget> sheet = window.findChild<QWidget *>(QStringLiteral("mtPlaces")); QVERIFY(sheet); QVERIFY(sheet->isVisible());
         QVERIFY(window.centralWidget()->rect().contains(sheet->geometry())); auto *tabs = sheet->findChild<QTabWidget *>(QStringLiteral("mtPlacesTabs")); QCOMPARE(tabs->count(), 2);
         capture(QStringLiteral("recent"), &window);
         tabs->setCurrentIndex(1); auto *bookmarks = qobject_cast<QListWidget *>(tabs->currentWidget()); QVERIFY(bookmarks); QCOMPARE(bookmarks->count(), 1);
         auto *item = bookmarks->item(0); QTest::mouseClick(bookmarks->viewport(), Qt::LeftButton, Qt::NoModifier, bookmarks->visualItemRect(item).center());
         QTRY_VERIFY(sheet.isNull()); QCOMPARE(first->location().path, right); QCOMPARE(second->location().path, right);
-        window.findChild<QPushButton *>(QStringLiteral("mtLocation"))->click();
+        swipe(window.findChild<QToolButton *>(QStringLiteral("mt_swap")), -90); QCOMPARE(window.leftPane(), first); QCOMPARE(window.rightPane(), second);
         auto *placesShade = window.findChild<QPushButton *>(QStringLiteral("mtPlacesShade")); QVERIFY(placesShade);
         QPointer<QWidget> dismissSheet = window.findChild<QWidget *>(QStringLiteral("mtPlaces"));
         QTest::mouseClick(placesShade, Qt::LeftButton, Qt::NoModifier, QPoint(10, 10)); QTRY_VERIFY(dismissSheet.isNull());
+        swipe(bottom, -90); QPointer<QWidget> downSheet = window.findChild<QWidget *>(QStringLiteral("mtPlaces")); QVERIFY(downSheet);
+        swipe(downSheet->findChild<QToolButton *>(QStringLiteral("mtPlacesClose")), 90); QTRY_VERIFY(downSheet.isNull());
+        QWheelEvent wheel(QPointF(bottom->rect().center()), bottom->mapToGlobal(bottom->rect().center()), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(bottom, &wheel); QPointer<QWidget> wheelSheet = window.findChild<QWidget *>(QStringLiteral("mtPlaces")); QVERIFY(wheelSheet);
+        QApplication::setActiveWindow(&window);
+        QTest::keyClick(wheelSheet->findChild<QTabWidget *>(QStringLiteral("mtPlacesTabs")), Qt::Key_Escape); QTRY_VERIFY(wheelSheet.isNull());
+        auto *device = QTest::createTouchDevice();
+        // Hidden test windows bypass native touch routing; deliver the widget events directly.
+        auto touch = [device](QWidget *widget, QPoint from, QPoint to) {
+            auto send = [&](QEvent::Type type, QEventPoint::State state, const QPoint &position) {
+                QEventPoint point(0, state, position, widget->mapToGlobal(position)); QtGuiTest::setEventPointPosition(point, position);
+                QTouchEvent event(type, device, Qt::NoModifier, {point}); QApplication::sendEvent(widget, &event);
+            };
+            send(QEvent::TouchBegin, QEventPoint::Pressed, from);
+            send(QEvent::TouchUpdate, QEventPoint::Updated, to);
+            send(QEvent::TouchEnd, QEventPoint::Released, to);
+        };
+        touch(bottom, bottom->rect().center(), bottom->rect().center() - QPoint(0, 90));
+        QPointer<QWidget> touchSheet = window.findChild<QWidget *>(QStringLiteral("mtPlaces")); QVERIFY(touchSheet);
+        auto *touchTabs = touchSheet->findChild<QTabWidget *>(QStringLiteral("mtPlacesTabs"))->tabBar();
+        const QPoint bookmarkTab = touchTabs->tabRect(1).center();
+        touch(touchTabs, bookmarkTab, bookmarkTab); QCOMPARE(touchTabs->currentIndex(), 1);
+        swipe(touchTabs, 90); QTRY_VERIFY(touchSheet.isNull());
+        touch(bottom, bottom->rect().center(), bottom->rect().center() - QPoint(0, 90));
+        touchSheet = window.findChild<QWidget *>(QStringLiteral("mtPlaces")); QVERIFY(touchSheet);
+        window.resize(1200, 780); QTRY_VERIFY(touchSheet.isNull());
+        const int tabsBefore = first->workspace().value(QStringLiteral("tabs")).toArray().size();
+        first->newTab(); QCOMPARE(first->workspace().value(QStringLiteral("tabs")).toArray().size(), tabsBefore + 1); first->closeTab();
         window.findChild<QPushButton *>(QStringLiteral("assistantToggle"))->click(); window.findChild<QPushButton *>(QStringLiteral("mtDrawer"))->click();
         window.resize(1100, 650); QTest::qWait(50); QCOMPARE(window.size(), QSize(1100, 650)); QVERIFY(sidebar->isVisible());
         QVERIFY(window.centralWidget()->rect().contains(sidebar->geometry()));
         for (Pane *pane : {first, second}) { QVERIFY(pane->width() >= 260); QVERIFY(pane->rect().contains(QRect(pane->view()->mapTo(pane, QPoint()), pane->view()->size()))); }
         capture(QStringLiteral("compact-drawer-assistant"), &window);
+        window.setReducedMotion(false); swipe(bottom, -90);
+        QPointer<QWidget> compactSheet = window.findChild<QWidget *>(QStringLiteral("mtPlaces")); QVERIFY(compactSheet);
+        QTest::qWait(220); QCOMPARE(compactSheet->width(), window.centralWidget()->width());
+        QVERIFY(window.centralWidget()->rect().contains(compactSheet->geometry())); capture(QStringLiteral("compact-recent-assistant"), &window);
+        compactSheet->findChild<QToolButton *>(QStringLiteral("mtPlacesClose"))->click(); QTRY_VERIFY(compactSheet.isNull()); window.setReducedMotion(true);
         bool appearanceChecked = false;
         QTimer::singleShot(0, &window, [&] {
             auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); if (!dialog) return;
@@ -494,6 +590,8 @@ private slots:
         window.showAppearanceSettings(); QVERIFY(appearanceChecked);
         window.setTheme(QStringLiteral("twinfile")); QVERIFY(!qApp->property("mtStyle").toBool()); QVERIFY(!bottom->isVisible()); QVERIFY(sidebar->isVisible());
         QVERIFY(first->findChild<QWidget *>(QStringLiteral("paneColumns"))->isVisible()); QVERIFY(!first->findChild<QToolButton *>(QStringLiteral("mtParent"))->isVisible());
+        QVERIFY(first->findChild<QWidget *>(QStringLiteral("paneChrome"))->isVisible());
+        QVERIFY(first->findChild<QLineEdit *>(QStringLiteral("panePath"))->isVisible());
         const QImage normalIcon = entryIcon(first->fileModel()->entry(0)).pixmap(96, 96).toImage(); QVERIFY(normalIcon != folderIcon);
         window.setTheme(QStringLiteral("mt")); window.close();
         Window restored; restored.setAttribute(Qt::WA_DontShowOnScreen); restored.show(); QVERIFY(qApp->property("mtStyle").toBool()); QVERIFY(restored.findChild<QWidget *>(QStringLiteral("mtBottomBar"))->isVisible());
