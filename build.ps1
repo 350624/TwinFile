@@ -96,7 +96,11 @@ if ($Package) {
     New-Item -ItemType Directory -Path "$ToolDestination\adb" -Force | Out-Null
     Copy-Item -LiteralPath "$Root\tools\README.md" -Destination $ToolDestination -Force
     foreach ($Name in @('adb.exe','AdbWinApi.dll','AdbWinUsbApi.dll','fastboot.exe')) {
-        Copy-Item -LiteralPath "$ToolSource\adb\$Name" -Destination "$ToolDestination\adb" -Force
+        $SourceFile = Join-Path "$ToolSource\adb" $Name
+        $TargetFile = Join-Path "$ToolDestination\adb" $Name
+        if ((Test-Path -LiteralPath $TargetFile -PathType Leaf) -and
+            (Get-FileHash -LiteralPath $SourceFile -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $TargetFile -Algorithm SHA256).Hash) { continue }
+        Copy-Item -LiteralPath $SourceFile -Destination $TargetFile -Force
     }
     foreach ($Name in @('apktool.jar','apksigner.jar')) {
         Copy-Item -LiteralPath "$ToolSource\$Name" -Destination $ToolDestination -Force

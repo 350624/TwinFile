@@ -71,11 +71,13 @@
 #include <QStyle>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QVideoWidget>
 #include <QWheelEvent>
 #include <QtConcurrent>
+#include <mutex>
 
 namespace twinfile {
 
@@ -482,22 +484,45 @@ void Window::sortMenu(QWidget *anchor) {
 }
 
 void Window::runJob(const QString &title, std::function<Result(const Cancellation &)> function, std::function<void(const Result &)> completed, std::function<void()> settled, bool writeBack) {
+    runJob(title, [function = std::move(function)](const Cancellation &cancel, const Progress &) { return function(cancel); }, std::move(completed), std::move(settled), writeBack);
+}
+
+void Window::runJob(const QString &title, std::function<Result(const Cancellation &, const Progress &)> function, std::function<void(const Result &)> completed, std::function<void()> settled, bool writeBack) {
     if (busy_) { report(QStringLiteral("请等待当前操作完成")); return; }
     busy_ = true; cancellation_ = std::make_shared<std::atomic_bool>(false);
+    struct JobProgress { std::mutex mutex; qint64 done = 0, total = 0; QString stage; bool changed = false; };
+    const auto state = std::make_shared<JobProgress>();
     auto *progress = new QProgressDialog(title, QStringLiteral("取消"), 0, 0, this);
-    progress->setWindowModality(Qt::WindowModal); progress->setMinimumDuration(0);
+    progress->setObjectName(QStringLiteral("jobProgress"));
+    progress->setWindowModality(Qt::WindowModal); progress->setMinimumDuration(0); progress->setMinimumWidth(400); progress->setAutoClose(false); progress->setAutoReset(false);
     connect(progress, &QProgressDialog::canceled, this, [cancel = cancellation_] { cancel->store(true); });
+    auto *timer = new QTimer(progress); timer->setInterval(100);
+    connect(timer, &QTimer::timeout, progress, [progress, state] {
+        qint64 done, total; QString stage;
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if (!state->changed || progress->wasCanceled()) return;
+            state->changed = false; done = state->done; total = state->total; stage = state->stage;
+        }
+        progress->setLabelText(stage);
+        progress->setRange(0, total > 0 ? 1000 : 0);
+        if (total > 0) progress->setValue(int(qBound(0.0, double(done) / double(total), 1.0) * 1000));
+    });
+    timer->start();
     auto *watcher = new QFutureWatcher<Result>(this);
-    connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, progress, completed, settled] {
-        const Result result = watcher->result(); watcher->deleteLater(); progress->deleteLater(); busy_ = false;
+    connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, progress, timer, completed, settled] {
+        const Result result = watcher->result(); watcher->deleteLater(); timer->stop(); progress->close(); progress->deleteLater(); busy_ = false;
         left_->refresh(); right_->refresh();
         if (settled) settled();
         if (!result.ok) report(result.error);
         else { statusBar()->showMessage(QStringLiteral("操作完成"), 5000); if (completed) completed(result); }
     });
     const auto cancel = cancellation_;
-    watcher->setFuture(QtConcurrent::run([function = std::move(function), cancel, mounts = mounts_, writeBack] {
-        try { Result result = function(cancel); if (result.ok && writeBack) { const Result committed = commitArchiveMounts(mounts, cancel); if (!committed.ok) return committed; } return result; }
+    watcher->setFuture(QtConcurrent::run([function = std::move(function), cancel, state, mounts = mounts_, writeBack] {
+        const Progress notify = [state](qint64 done, qint64 total, const QString &stage) {
+            std::lock_guard<std::mutex> lock(state->mutex); state->done = done; state->total = total; state->stage = stage; state->changed = true;
+        };
+        try { Result result = function(cancel, notify); if (result.ok && writeBack) { const Result committed = commitArchiveMounts(mounts, cancel); if (!committed.ok) return committed; } return result; }
         catch (const std::exception &exception) { return Result{false, QString::fromUtf8(exception.what()), {}, {}}; }
     }));
 }
@@ -949,31 +974,32 @@ void Window::payload() {
     if (!accepted) return;
     QString source;
     PayloadOptions options;
+    int threads = qBound(1, settings_.value(QStringLiteral("payload_threads")).toInt(4), 8);
     if (method.startsWith(QStringLiteral("本地"))) source = QFileDialog::getOpenFileName(this, QStringLiteral("选择 Payload 或 OTA ZIP"), {}, QStringLiteral("Payload / OTA (*.bin *.zip);;所有文件 (*)"));
     else {
-        QDialog dialog(this); dialog.setWindowTitle(QStringLiteral("远程 Payload · HTTP(S) Range")); dialog.resize(720, 230); auto *layout = new QVBoxLayout(&dialog);
-        layout->addWidget(new QLabel(QStringLiteral("仅读取所需区段；压缩 ZIP 中的 payload 需完整解压缓存。")));
-        QLineEdit url(settings_.value(QStringLiteral("payload_last_url")).toString()); url.setPlaceholderText(QStringLiteral("https://…/payload.bin 或 OTA.zip")); layout->addWidget(&url);
-        layout->addWidget(new QLabel(QStringLiteral("User-Agent"))); QLineEdit agent(settings_.value(QStringLiteral("payload_user_agent")).toString(options.userAgent)); agent.setMaxLength(512); layout->addWidget(&agent);
+        QDialog dialog(this); dialog.setObjectName(QStringLiteral("remotePayloadDialog")); dialog.setWindowTitle(QStringLiteral("远程 Payload · HTTP(S) Range")); dialog.resize(720, 230); auto *layout = new QVBoxLayout(&dialog);
+        QLineEdit url(settings_.value(QStringLiteral("payload_last_url")).toString()); url.setObjectName(QStringLiteral("payloadUrl")); url.setPlaceholderText(QStringLiteral("https://…/payload.bin 或 OTA.zip")); layout->addWidget(&url);
+        layout->addWidget(new QLabel(QStringLiteral("线程数量"))); QSpinBox workers; workers.setObjectName(QStringLiteral("payloadThreads")); workers.setRange(1, 8); workers.setValue(threads); layout->addWidget(&workers);
         QCheckBox remember(QStringLiteral("记住直链（可能含令牌，将以明文保存到本机设置）")); remember.setChecked(settings_.value(QStringLiteral("payload_remember_url")).toBool()); layout->addWidget(&remember);
         QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); layout->addWidget(&buttons); connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
         if (dialog.exec() != QDialog::Accepted) return;
-        source = url.text().trimmed(); options.userAgent = agent.text();
+        source = url.text().trimmed(); threads = workers.value();
         const QUrl parsed(source); if (!parsed.isValid() || (parsed.scheme() != QStringLiteral("http") && parsed.scheme() != QStringLiteral("https"))) { report(QStringLiteral("请输入有效的 HTTP(S) 直链")); return; }
-        settings_.insert(QStringLiteral("payload_user_agent"), options.userAgent); settings_.insert(QStringLiteral("payload_remember_url"), remember.isChecked());
+        settings_.remove(QStringLiteral("payload_user_agent")); settings_.insert(QStringLiteral("payload_threads"), threads); settings_.insert(QStringLiteral("payload_remember_url"), remember.isChecked());
         if (remember.isChecked()) settings_.insert(QStringLiteral("payload_last_url"), source); else settings_.remove(QStringLiteral("payload_last_url"));
     }
     if (source.isEmpty() || (method.startsWith(QStringLiteral("远程")) && !accepted)) return;
-    runJob(QStringLiteral("解析 Payload 分区"), [source, options](const Cancellation &cancel) { return inspectPayload(source, cancel, options); }, [this, source, options](const Result &result) {
-        QDialog dialog(this); dialog.setWindowTitle(QStringLiteral("选择要提取的分区")); dialog.resize(650, 550); auto *layout = new QVBoxLayout(&dialog);
+    runJob(QStringLiteral("解析 Payload 分区"), [source, options](const Cancellation &cancel, const Progress &progress) { return inspectPayload(source, cancel, options, progress); }, [this, source, options, threads](const Result &result) {
+        QDialog dialog(this); dialog.setObjectName(QStringLiteral("payloadPartitionsDialog")); dialog.setWindowTitle(QStringLiteral("选择要提取的分区")); dialog.resize(650, 550); auto *layout = new QVBoxLayout(&dialog);
         layout->addWidget(new QLabel(QStringLiteral("完整 OTA · 支持 REPLACE / BZ2 / XZ / ZSTD / ZERO\n输出为 .img，已有文件不会覆盖；含增量操作的 OTA 将拒绝提取。")));
         QListWidget choices; const QStringList descriptions = result.output.split(QChar('\n'), Qt::SkipEmptyParts);
         for (qsizetype index = 0; index < result.paths.size(); ++index) { auto *item = new QListWidgetItem(descriptions.value(index, result.paths[index]), &choices); item->setData(Qt::UserRole, result.paths[index]); item->setCheckState(Qt::Checked); }
-        layout->addWidget(&choices); QSpinBox workers; workers.setRange(1, 8); workers.setValue(4); layout->addWidget(new QLabel(QStringLiteral("并行分区数（1–8）"))); layout->addWidget(&workers);
+        layout->addWidget(&choices); QSpinBox workers; workers.setObjectName(QStringLiteral("payloadThreads")); workers.setRange(1, 8); workers.setValue(threads); layout->addWidget(new QLabel(QStringLiteral("线程数量"))); layout->addWidget(&workers);
         QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); layout->addWidget(&buttons); connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
         if (dialog.exec() != QDialog::Accepted) return; QStringList names; for (int index = 0; index < choices.count(); ++index) if (choices.item(index)->checkState() == Qt::Checked) names.append(choices.item(index)->data(Qt::UserRole).toString()); if (names.isEmpty()) return;
+        settings_.insert(QStringLiteral("payload_threads"), workers.value());
         const QString destination = QFileDialog::getExistingDirectory(this, QStringLiteral("选择分区输出文件夹")); if (destination.isEmpty()) return;
-        runJob(QStringLiteral("提取并校验 Payload 分区"), [source, names, destination, options, concurrency = workers.value()](const Cancellation &cancel) { return extractPayload(source, names, destination, concurrency, cancel, {}, options); }, [this](const Result &extracted) { showText(QStringLiteral("Payload 提取完成"), extracted.output + QChar('\n') + extracted.paths.join(QChar('\n'))); });
+        runJob(QStringLiteral("提取并校验 Payload 分区"), [source, names, destination, options, concurrency = workers.value()](const Cancellation &cancel, const Progress &progress) { return extractPayload(source, names, destination, concurrency, cancel, progress, options); }, [this](const Result &extracted) { showText(QStringLiteral("Payload 提取完成"), extracted.output + QChar('\n') + extracted.paths.join(QChar('\n'))); });
     });
 }
 

@@ -4,7 +4,7 @@
 
 ## 安装
 
-1. 安装 `TwinFile-Downloader-3.1.7-Windows-x64-Setup.exe`，或运行便携包 `dist/TwinFileDownloader-3.1.7/TwinFileDownloader.exe`。
+1. 安装 `TwinFile-Downloader-3.1.8-Windows-x64-Setup.exe`，或运行便携包 `dist/TwinFileDownloader-3.1.8/TwinFileDownloader.exe`。
 2. 在浏览器打开扩展管理页面并启用开发者模式，选择“加载已解压的扩展程序”，指向下载器安装目录下的 `browser-bridge` 文件夹。
 3. 复制浏览器显示的扩展 ID，然后只注册需要使用的浏览器：
 

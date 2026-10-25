@@ -38,6 +38,7 @@ protected:
     void closeEvent(QCloseEvent *event) override;
     bool eventFilter(QObject *object, QEvent *event) override;
 private:
+    friend class PayloadTestAccess;
     void buildSidebar(QWidget *sidebar);
     void buildActions();
     void searchFiles();
@@ -48,6 +49,8 @@ private:
     void menu(const QPoint &position);
     void moreMenu();
     void runJob(const QString &title, std::function<Result(const Cancellation &)> function,
+                std::function<void(const Result &)> completed = {}, std::function<void()> settled = {}, bool writeBack = false);
+    void runJob(const QString &title, std::function<Result(const Cancellation &, const Progress &)> function,
                 std::function<void(const Result &)> completed = {}, std::function<void()> settled = {}, bool writeBack = false);
     void transfer(bool move, bool clipboard = false);
     void paste();

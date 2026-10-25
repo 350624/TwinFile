@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <future>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -44,8 +45,9 @@ quint64 little64(const QByteArray &bytes, qsizetype offset) { ensure(offset >= 0
 
 class Proto {
 public:
-    explicit Proto(QByteArray bytes) : bytes_(std::move(bytes)) {}
+    explicit Proto(QByteArray bytes, Cancellation cancel = {}) : bytes_(std::move(bytes)), cancel_(std::move(cancel)) {}
     bool next() {
+        checkCancel(cancel_);
         if (position_ == bytes_.size()) return false;
         const quint64 tag = integer(); field = tag >> 3; wire = tag & 7;
         ensure(field > 0, QStringLiteral("protobuf 字段编号无效")); value = 0; data.clear();
@@ -72,6 +74,7 @@ private:
         throw PayloadError(QStringLiteral("protobuf 整数过长"));
     }
     QByteArray bytes_;
+    Cancellation cancel_;
     qsizetype position_ = 0;
 };
 
@@ -82,6 +85,14 @@ public:
     QByteArray etag, modified;
     quint64 total = 0, base = 0, length = 0;
     std::shared_ptr<QTemporaryFile> temporary;
+    PayloadOptions options;
+    Progress progress;
+    QString stage = QStringLiteral("读取 Payload 文件信息");
+    quint64 stageOffset = 0, stageTotal = 0;
+
+    void notify(quint64 done, quint64 count, const QString &detail = {}) const {
+        if (progress) progress(qint64(stageOffset + done), qint64(stageTotal ? stageTotal : count), stage + detail);
+    }
 
     QByteArray raw(quint64 offset, quint64 count, const Cancellation &cancel) {
         checkCancel(cancel); ensure(count <= 8 * 1024 * 1024 && offset <= quint64(std::numeric_limits<qint64>::max()) && count <= quint64(std::numeric_limits<qint64>::max()) - offset, QStringLiteral("读取范围过大或越界"));
@@ -89,7 +100,7 @@ public:
             QFile file(source); ensure(file.open(QIODevice::ReadOnly), file.errorString());
             if (total) ensure(total == quint64(file.size()), QStringLiteral("源文件大小在提取期间发生变化"));
             total = quint64(file.size()); ensure(fits(offset, count, total) && file.seek(qint64(offset)), QStringLiteral("读取超出源文件"));
-            const QByteArray bytes = file.read(qint64(count)); ensure(quint64(bytes.size()) == count, QStringLiteral("源文件读取不完整")); return bytes;
+            const QByteArray bytes = file.read(qint64(count)); ensure(quint64(bytes.size()) == count, QStringLiteral("源文件读取不完整")); notify(count, count); return bytes;
         }
         ensure(count > 0, QStringLiteral("HTTP Range 长度为空"));
         QString lastError;
@@ -101,20 +112,36 @@ public:
             request.setRawHeader("User-Agent", userAgent);
             if (!etag.isEmpty()) request.setRawHeader("If-Match", etag);
             else if (!modified.isEmpty()) request.setRawHeader("If-Unmodified-Since", modified);
-            request.setTransferTimeout(60000);
+            request.setTransferTimeout(options.idleTimeoutMs);
             QNetworkReply *reply = manager.get(request); QEventLoop loop; QTimer poll; poll.setInterval(50); QByteArray bytes;
-            bool oversized = false;
-            QObject::connect(&poll, &QTimer::timeout, &loop, [&] { if (cancel && cancel->load()) reply->abort(); });
+            bool oversized = false, timedOut = false, rejected = false;
+            QElapsedTimer elapsed; elapsed.start();
+            const QString detail = QStringLiteral(" · 请求 %1/3").arg(attempt + 1);
+            notify(0, count, detail);
+            QObject::connect(&poll, &QTimer::timeout, &loop, [&] {
+                if (cancel && cancel->load()) reply->abort();
+                else if (elapsed.elapsed() >= options.requestTimeoutMs) { timedOut = true; reply->abort(); }
+                notify(quint64(bytes.size()), count, detail);
+            });
+            QObject::connect(reply, &QNetworkReply::metaDataChanged, &loop, [&] {
+                const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                // Redirects and transient HTTP failures are handled separately from rejected Range responses.
+                if (status >= 200 && status < 300 && status != 206) { rejected = true; reply->abort(); }
+            });
             QObject::connect(reply, &QNetworkReply::readyRead, &loop, [&] {
                 bytes += reply->read(qint64(count + 1 - quint64(bytes.size())));
                 if (quint64(bytes.size()) > count) { oversized = true; reply->abort(); }
             });
             QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit); poll.start(); loop.exec();
-            bytes += reply->read(qint64(count + 1 - quint64(bytes.size()))); checkCancel(cancel);
+            if (reply->isOpen()) bytes += reply->read(qint64(count + 1 - quint64(bytes.size())));
+            checkCancel(cancel);
+            ensure(!rejected, QStringLiteral("HTTP 服务必须支持严格的 206 Range，服务器忽略了范围请求"));
             ensure(!oversized && quint64(bytes.size()) <= count, QStringLiteral("服务器忽略 Range 或响应超出范围"));
             const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             ensure(status == 206 || status >= 500 || status == 429 || status == 0, QStringLiteral("HTTP 服务必须支持严格的 206 Range（状态 %1）").arg(status));
-            if (reply->error() != QNetworkReply::NoError || status != 206 || quint64(bytes.size()) != count) { lastError = reply->errorString(); continue; }
+            if (reply->error() != QNetworkReply::NoError || status != 206 || quint64(bytes.size()) != count) {
+                lastError = timedOut || reply->error() == QNetworkReply::TimeoutError ? QStringLiteral("网络请求超时") : reply->errorString(); continue;
+            }
             const QRegularExpression range(QStringLiteral("^bytes (\\d+)-(\\d+)/(\\d+)$"));
             const auto match = range.match(QString::fromLatin1(reply->rawHeader("Content-Range")));
             ensure(match.hasMatch() && match.captured(1).toULongLong() == offset && match.captured(2).toULongLong() == offset + count - 1, QStringLiteral("服务器返回了错误的 Content-Range"));
@@ -123,7 +150,7 @@ public:
             const QByteArray currentTag = reply->rawHeader("ETag"), currentModified = reply->rawHeader("Last-Modified");
             ensure(etag.isEmpty() || currentTag == etag, QStringLiteral("远程文件 ETag 发生变化"));
             ensure(modified.isEmpty() || currentModified == modified, QStringLiteral("远程文件修改时间变化"));
-            total = size; if (!currentTag.startsWith("W/")) etag = currentTag; modified = currentModified; return bytes;
+            total = size; if (!currentTag.startsWith("W/")) etag = currentTag; modified = currentModified; notify(count, count, detail); return bytes;
         }
         throw PayloadError(QStringLiteral("Range 请求重试失败：") + lastError);
     }
@@ -132,11 +159,13 @@ public:
     }
 };
 
-RangeSource locate(QString source, const Cancellation &cancel, const PayloadOptions &options) {
-    RangeSource reader; reader.source = std::move(source); reader.userAgent = options.userAgent.toUtf8();
+RangeSource locate(QString source, const Cancellation &cancel, const PayloadOptions &options, bool metadataOnly, const Progress &progress) {
+    RangeSource reader; reader.source = std::move(source); reader.userAgent = options.userAgent.toUtf8(); reader.options = options; reader.progress = progress;
+    ensure(options.idleTimeoutMs > 0 && options.requestTimeoutMs > 0, QStringLiteral("网络超时必须大于零"));
     ensure(!reader.userAgent.isEmpty() && reader.userAgent.size() <= 512 && std::all_of(reader.userAgent.cbegin(), reader.userAgent.cend(), [](char value) { return quint8(value) >= 32 && quint8(value) <= 126; }), QStringLiteral("User-Agent 只能包含 1–512 个可打印 ASCII 字符"));
     const QByteArray magic = reader.raw(0, 4, cancel); reader.length = reader.total;
     if (magic == "CrAU") return reader;
+    reader.stage = QStringLiteral("读取 OTA ZIP 目录");
     ensure(magic.startsWith("PK"), QStringLiteral("不是 Payload 或 ZIP 文件"));
     const quint64 tailSize = qMin<quint64>(reader.total, 65557); const quint64 tailOffset = reader.total - tailSize;
     const QByteArray tail = reader.raw(tailOffset, tailSize, cancel);
@@ -159,6 +188,7 @@ RangeSource locate(QString source, const Cancellation &cancel, const PayloadOpti
     for (quint64 offset = 0; offset < directorySize; offset += 4 * 1024 * 1024) directory += reader.raw(directoryOffset + offset, qMin<quint64>(4 * 1024 * 1024, directorySize - offset), cancel);
     qsizetype cursor = 0; bool found = false; quint64 compressed = 0, uncompressed = 0, localOffset = 0; quint16 method = 0, flags = 0; quint32 expectedCrc = 0;
     for (quint64 index = 0; index < count; ++index) {
+        checkCancel(cancel);
         ensure(cursor + 46 <= directory.size() && directory.mid(cursor, 4) == QByteArray("PK\x01\x02", 4), QStringLiteral("ZIP 中央目录损坏"));
         const int nameLength = little16(directory, cursor + 28), extraLength = little16(directory, cursor + 30), commentLength = little16(directory, cursor + 32);
         ensure(cursor + 46 + nameLength + extraLength + commentLength <= directory.size(), QStringLiteral("ZIP 条目越界"));
@@ -188,34 +218,55 @@ RangeSource locate(QString source, const Cancellation &cancel, const PayloadOpti
     if (method == 0) { ensure(compressed == uncompressed, QStringLiteral("STORED ZIP 尺寸不匹配")); reader.base = start; reader.length = uncompressed; return reader; }
     auto temporary = std::make_shared<QTemporaryFile>(); ensure(temporary->open(), QStringLiteral("不能创建 Payload 解压缓存"));
     z_stream stream{}; ensure(inflateInit2(&stream, -MAX_WBITS) == Z_OK, QStringLiteral("不能初始化 ZIP 解压"));
-    quint64 written = 0; quint32 crc = crc32(0, nullptr, 0); int status = Z_OK; QByteArray output(1024 * 1024, '\0');
+    quint64 written = 0, required = metadataOnly ? 24 : uncompressed;
+    quint32 crc = crc32(0, nullptr, 0); int status = Z_OK; QByteArray output(1024 * 1024, '\0');
+    reader.stage = metadataOnly ? QStringLiteral("读取压缩 Payload 元数据") : QStringLiteral("下载并解压 Payload 缓存");
+    reader.stageTotal = compressed;
+    const quint64 inputSize = metadataOnly ? 64 * 1024 : 1024 * 1024;
     try {
-        for (quint64 offset = 0; offset < compressed; offset += 1024 * 1024) {
-            QByteArray input = reader.raw(start + offset, qMin<quint64>(1024 * 1024, compressed - offset), cancel);
+        for (quint64 offset = 0; offset < compressed && (!metadataOnly || written < required); offset += inputSize) {
+            reader.stageOffset = offset;
+            QByteArray input = reader.raw(start + offset, qMin<quint64>(inputSize, compressed - offset), cancel);
             stream.next_in = reinterpret_cast<Bytef *>(input.data()); stream.avail_in = uInt(input.size());
             do {
-                checkCancel(cancel); stream.next_out = reinterpret_cast<Bytef *>(output.data()); stream.avail_out = uInt(output.size()); status = inflate(&stream, Z_NO_FLUSH);
-                ensure(status == Z_OK || status == Z_STREAM_END, QStringLiteral("payload.bin ZIP 解压失败")); const quint64 produced = output.size() - stream.avail_out;
+                checkCancel(cancel); stream.next_out = reinterpret_cast<Bytef *>(output.data());
+                const uInt capacity = uInt(metadataOnly ? qMin<quint64>(output.size(), required - written) : quint64(output.size()));
+                stream.avail_out = capacity; status = inflate(&stream, Z_NO_FLUSH);
+                const quint64 produced = capacity - stream.avail_out;
+                if (status == Z_BUF_ERROR && !stream.avail_in && !produced) break;
+                ensure(status == Z_OK || status == Z_STREAM_END, QStringLiteral("payload.bin ZIP 解压失败"));
                 ensure(fits(written, produced, uncompressed), QStringLiteral("ZIP 解压超出声明大小"));
                 ensure(temporary->write(output.constData(), qint64(produced)) == qint64(produced), temporary->errorString()); crc = crc32(crc, reinterpret_cast<const Bytef *>(output.constData()), uInt(produced)); written += produced;
+                if (metadataOnly && written == 24 && required == 24) {
+                    ensure(temporary->seek(0), temporary->errorString()); const QByteArray header = temporary->read(24);
+                    ensure(header.startsWith("CrAU") && qFromBigEndian<quint64>(header.constData() + 4) == 2, QStringLiteral("仅支持 CrAU v2 Payload"));
+                    const quint64 manifestSize = qFromBigEndian<quint64>(header.constData() + 12), signatureSize = qFromBigEndian<quint32>(header.constData() + 20);
+                    ensure(manifestSize > 0 && manifestSize <= 64 * 1024 * 1024 && fits(24, manifestSize + signatureSize, uncompressed), QStringLiteral("Payload 元数据长度无效"));
+                    required = 24 + manifestSize; ensure(temporary->seek(qint64(written)), temporary->errorString());
+                }
+                // Listing partitions only needs the header and manifest. Full extraction still verifies the complete ZIP CRC.
+                if (metadataOnly && written == required) break;
                 if (status == Z_STREAM_END) { ensure(!stream.avail_in && offset + quint64(input.size()) == compressed, QStringLiteral("ZIP 压缩数据存在尾随内容")); break; }
             } while (stream.avail_in || !stream.avail_out);
         }
-        ensure(status == Z_STREAM_END && written == uncompressed && crc == expectedCrc, QStringLiteral("ZIP 解压尺寸或 CRC 校验失败"));
+        ensure(metadataOnly ? written == required : status == Z_STREAM_END && written == uncompressed && crc == expectedCrc, QStringLiteral("ZIP 解压尺寸或 CRC 校验失败"));
         ensure(temporary->flush(), temporary->errorString()); inflateEnd(&stream);
     } catch (...) { inflateEnd(&stream); throw; }
-    reader.source = temporary->fileName(); temporary->close(); reader.temporary = temporary; reader.etag.clear(); reader.modified.clear(); reader.base = 0; reader.total = reader.length = uncompressed; return reader;
+    reader.source = temporary->fileName(); temporary->close(); reader.temporary = temporary; reader.etag.clear(); reader.modified.clear(); reader.base = 0; reader.total = written; reader.length = uncompressed; reader.stageOffset = reader.stageTotal = 0; return reader;
 }
 
 struct OpenPayload { RangeSource source; PayloadManifest manifest; quint64 dataOffset = 0; };
-OpenPayload openPayload(const QString &source, const Cancellation &cancel, const PayloadOptions &options) {
-    OpenPayload payload; payload.source = locate(source, cancel, options); const QByteArray header = payload.source.read(0, 24, cancel);
+OpenPayload openPayload(const QString &source, const Cancellation &cancel, const PayloadOptions &options, bool metadataOnly, const Progress &progress) {
+    OpenPayload payload; payload.source = locate(source, cancel, options, metadataOnly, progress); payload.source.stage = QStringLiteral("读取 Payload 元数据"); const QByteArray header = payload.source.read(0, 24, cancel);
     ensure(header.startsWith("CrAU") && qFromBigEndian<quint64>(header.constData() + 4) == 2, QStringLiteral("仅支持 CrAU v2 Payload"));
     const quint64 manifestSize = qFromBigEndian<quint64>(header.constData() + 12), signatureSize = qFromBigEndian<quint32>(header.constData() + 20);
     ensure(manifestSize > 0 && manifestSize <= 64 * 1024 * 1024 && fits(24, manifestSize + signatureSize, payload.source.length), QStringLiteral("Payload 元数据长度无效"));
     QByteArray bytes;
-    for (quint64 offset = 0; offset < manifestSize; offset += 4 * 1024 * 1024) bytes += payload.source.read(24 + offset, qMin<quint64>(4 * 1024 * 1024, manifestSize - offset), cancel);
-    const Result parsed = parsePayloadManifest(bytes, &payload.manifest); ensure(parsed.ok, parsed.error); payload.dataOffset = 24 + manifestSize + signatureSize; return payload;
+    payload.source.stageTotal = manifestSize;
+    for (quint64 offset = 0; offset < manifestSize; offset += 4 * 1024 * 1024) { payload.source.stageOffset = offset; bytes += payload.source.read(24 + offset, qMin<quint64>(4 * 1024 * 1024, manifestSize - offset), cancel); }
+    if (progress) progress(0, 0, QStringLiteral("解析 Payload 分区表"));
+    const Result parsed = parsePayloadManifest(bytes, &payload.manifest, cancel); ensure(parsed.ok, parsed.error); payload.dataOffset = 24 + manifestSize + signatureSize;
+    payload.source.progress = {}; payload.source.stageOffset = payload.source.stageTotal = 0; return payload;
 }
 
 void extractPartition(RangeSource source, const PayloadPartition &partition, quint64 blockSize, quint64 dataOffset,
@@ -234,6 +285,7 @@ void extractPartition(RangeSource source, const PayloadPartition &partition, qui
                 const auto &extent = operation.extents[extentIndex]; const quint64 count = qMin(size, extent.blocks * blockSize - extentPosition);
                 ensure(count > 0 && output.seek(qint64(extent.start * blockSize + extentPosition)) && output.write(bytes, qint64(count)) == qint64(count), QStringLiteral("分区写入失败"));
                 bytes += count; size -= count; produced += count; extentPosition += count;
+                if (progress) progress(qint64(done + produced), qint64(partition.size), QStringLiteral("提取分区 · ") + partition.name);
                 if (extentPosition == extent.blocks * blockSize) { extentPosition = 0; ++extentIndex; }
             }
         };
@@ -279,28 +331,28 @@ void extractPartition(RangeSource source, const PayloadPartition &partition, qui
     ensure(output.flush(), output.errorString());
     if (!partition.hash.isEmpty()) {
         ensure(output.seek(0), output.errorString()); QCryptographicHash hash(QCryptographicHash::Sha256);
-        while (!output.atEnd()) { checkCancel(cancel); const QByteArray block = output.read(1024 * 1024); ensure(output.error() == QFile::NoError, output.errorString()); hash.addData(block); }
+        while (!output.atEnd()) { checkCancel(cancel); const QByteArray block = output.read(1024 * 1024); ensure(output.error() == QFile::NoError, output.errorString()); hash.addData(block); if (progress) progress(qint64(done), qint64(partition.size), QStringLiteral("校验分区 · ") + partition.name); }
         ensure(hash.result() == partition.hash, QStringLiteral("分区 SHA256 校验失败：") + partition.name);
     }
 }
 
 }
 
-Result parsePayloadManifest(const QByteArray &bytes, PayloadManifest *manifest) {
+Result parsePayloadManifest(const QByteArray &bytes, PayloadManifest *manifest, const Cancellation &cancel) {
     try {
         ensure(manifest && bytes.size() <= 64 * 1024 * 1024, QStringLiteral("无效的 Payload 元数据")); PayloadManifest parsed; QSet<QString> names; quint64 operationCount = 0;
-        Proto root(bytes);
+        checkCancel(cancel); Proto root(bytes, cancel);
         while (root.next()) {
             if (root.field == 3 && root.wire == 0) parsed.blockSize = root.value;
             if (root.field != 13 || root.wire != 2) continue;
-            ensure(parsed.partitions.size() < 1024, QStringLiteral("分区数量超过限制")); PayloadPartition partition; Proto fields(root.data);
+            ensure(parsed.partitions.size() < 1024, QStringLiteral("分区数量超过限制")); PayloadPartition partition; Proto fields(root.data, cancel);
             while (fields.next()) {
                 if (fields.field == 1 && fields.wire == 2) partition.name = QString::fromUtf8(fields.data);
                 if (fields.field == 7 && fields.wire == 2) {
-                    Proto info(fields.data); while (info.next()) { if (info.field == 1 && info.wire == 0) partition.size = info.value; if (info.field == 2 && info.wire == 2) partition.hash = info.data; }
+                    Proto info(fields.data, cancel); while (info.next()) { if (info.field == 1 && info.wire == 0) partition.size = info.value; if (info.field == 2 && info.wire == 2) partition.hash = info.data; }
                 }
                 if (fields.field != 8 || fields.wire != 2) continue;
-                ensure(++operationCount <= 2000000, QStringLiteral("Payload 操作数量超过限制")); PayloadOperation operation; Proto operationFields(fields.data);
+                ensure(++operationCount <= 2000000, QStringLiteral("Payload 操作数量超过限制")); PayloadOperation operation; Proto operationFields(fields.data, cancel);
                 while (operationFields.next()) {
                     if (operationFields.wire == 0) {
                         if (operationFields.field == 1) operation.type = operationFields.value;
@@ -309,7 +361,7 @@ Result parsePayloadManifest(const QByteArray &bytes, PayloadManifest *manifest) 
                     }
                     if (operationFields.field == 8 && operationFields.wire == 2) operation.hash = operationFields.data;
                     if (operationFields.field == 6 && operationFields.wire == 2) {
-                        ensure(operation.extents.size() < 200000, QStringLiteral("extent 数量超过限制")); PayloadExtent extent; Proto extentFields(operationFields.data);
+                        ensure(operation.extents.size() < 200000, QStringLiteral("extent 数量超过限制")); PayloadExtent extent; Proto extentFields(operationFields.data, cancel);
                         while (extentFields.next()) if (extentFields.wire == 0) { if (extentFields.field == 1) extent.start = extentFields.value; if (extentFields.field == 2) extent.blocks = extentFields.value; }
                         operation.extents.append(extent);
                     }
@@ -324,6 +376,7 @@ Result parsePayloadManifest(const QByteArray &bytes, PayloadManifest *manifest) 
         for (const auto &partition : parsed.partitions) {
             QList<QPair<quint64, quint64>> intervals;
             for (const auto &operation : partition.operations) {
+                checkCancel(cancel);
                 ensure(operation.type == 0 || operation.type == 1 || operation.type == 6 || operation.type == 7 || operation.type == 8 || operation.type == 14, QStringLiteral("此 Payload 含增量操作 %1，需要旧版本分区，不是可独立提取的完整 OTA").arg(operation.type));
                 ensure(!operation.extents.isEmpty(), QStringLiteral("操作缺少目标 extent"));
                 quint64 total = 0;
@@ -340,9 +393,9 @@ Result parsePayloadManifest(const QByteArray &bytes, PayloadManifest *manifest) 
     } catch (const std::exception &exception) { return {false, QString::fromUtf8(exception.what()), {}, {}}; }
 }
 
-Result inspectPayload(const QString &source, const Cancellation &cancel, const PayloadOptions &options) {
+Result inspectPayload(const QString &source, const Cancellation &cancel, const PayloadOptions &options, const Progress &progress) {
     try {
-        const auto payload = openPayload(source, cancel, options); Result result;
+        const auto payload = openPayload(source, cancel, options, true, progress); Result result;
         for (const auto &partition : payload.manifest.partitions) { result.paths.append(partition.name); result.output += QStringLiteral("%1\t%2\t%3 个操作\n").arg(partition.name, humanSize(qint64(partition.size))).arg(partition.operations.size()); }
         return result;
     } catch (const std::exception &exception) { return {false, QString::fromUtf8(exception.what()), {}, {}}; }
@@ -351,7 +404,7 @@ Result inspectPayload(const QString &source, const Cancellation &cancel, const P
 Result extractPayload(const QString &source, const QStringList &partitions, const QString &destination, int workers, const Cancellation &cancel, const Progress &progress, const PayloadOptions &options) {
     try {
         checkCancel(cancel); ensure(QFileInfo(destination).isDir() && !partitions.isEmpty(), QStringLiteral("请选择输出目录和分区"));
-        auto payload = openPayload(source, cancel, options); QList<PayloadPartition> selected; QSet<QString> selectedNames; quint64 total = 0;
+        auto payload = openPayload(source, cancel, options, false, progress); QList<PayloadPartition> selected; QSet<QString> selectedNames; quint64 total = 0;
         for (const auto &partition : payload.manifest.partitions) if (partitions.contains(partition.name)) {
             ensure(!QFileInfo::exists(QDir(destination).filePath(partition.name + QStringLiteral(".img"))), QStringLiteral("输出已存在：") + partition.name);
             total += partition.size; selected.append(partition); selectedNames.insert(partition.name);
@@ -360,9 +413,14 @@ Result extractPayload(const QString &source, const QStringList &partitions, cons
         const QStorageInfo storage(destination); ensure(!storage.isValid() || storage.bytesAvailable() < 0 || quint64(storage.bytesAvailable()) >= total, QStringLiteral("磁盘空间不足"));
         QTemporaryDir staging(QDir(destination).filePath(QStringLiteral(".twinfile-payload-XXXXXX"))); ensure(staging.isValid(), QStringLiteral("无法创建分区暂存目录"));
         std::atomic<qsizetype> next{0}; const int concurrency = qBound(1, qMin(workers, int(selected.size())), 8); std::vector<std::future<void>> tasks;
+        std::mutex progressMutex; std::vector<qint64> completed(size_t(selected.size()), 0); qint64 done = 0;
         for (int worker = 0; worker < concurrency; ++worker) tasks.emplace_back(std::async(std::launch::async, [&] {
             for (;;) { const qsizetype index = next.fetch_add(1); if (index >= selected.size()) break;
-                extractPartition(payload.source, selected[index], payload.manifest.blockSize, payload.dataOffset, staging.filePath(selected[index].name + QStringLiteral(".img")), cancel, progress);
+                extractPartition(payload.source, selected[index], payload.manifest.blockSize, payload.dataOffset, staging.filePath(selected[index].name + QStringLiteral(".img")), cancel,
+                    [&](qint64 current, qint64, const QString &stage) {
+                        if (!progress) return;
+                        std::lock_guard<std::mutex> lock(progressMutex); done += current - completed[size_t(index)]; completed[size_t(index)] = current; progress(done, qint64(total), stage);
+                    });
             }
         }));
         std::exception_ptr error; for (auto &task : tasks) { try { task.get(); } catch (...) { if (!error) error = std::current_exception(); } } if (error) std::rethrow_exception(error);

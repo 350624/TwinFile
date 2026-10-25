@@ -22,10 +22,14 @@ struct PayloadManifest {
     quint64 blockSize = 4096;
     QList<PayloadPartition> partitions;
 };
-struct PayloadOptions { QString userAgent = QStringLiteral("TwinFileNative/" TWINFILE_VERSION); };
+struct PayloadOptions {
+    QString userAgent = QStringLiteral("TwinFileNative/" TWINFILE_VERSION);
+    int idleTimeoutMs = 15000;
+    int requestTimeoutMs = 60000;
+};
 
-Result parsePayloadManifest(const QByteArray &bytes, PayloadManifest *manifest);
-Result inspectPayload(const QString &source, const Cancellation &cancel = {}, const PayloadOptions &options = {});
+Result parsePayloadManifest(const QByteArray &bytes, PayloadManifest *manifest, const Cancellation &cancel = {});
+Result inspectPayload(const QString &source, const Cancellation &cancel = {}, const PayloadOptions &options = {}, const Progress &progress = {});
 Result extractPayload(const QString &source, const QStringList &partitions, const QString &destination,
                       int workers = 4, const Cancellation &cancel = {}, const Progress &progress = {}, const PayloadOptions &options = {});
 

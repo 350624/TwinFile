@@ -15,6 +15,16 @@
 #include <QFile>
 #include <QHostAddress>
 #include <QJsonArray>
+#include <QComboBox>
+#include <QDialog>
+#include <QInputDialog>
+#include <QLineEdit>
+#include <QProgressDialog>
+#include <QPushButton>
+#include <QRandomGenerator>
+#include <QSpinBox>
+#include <QScopeGuard>
+#include <QTimer>
 #include <QTableView>
 #include "window.h"
 #include <QRegularExpression>
@@ -28,8 +38,21 @@
 #include <zstd.h>
 #include <chrono>
 #include <future>
+#include <thread>
 
 using namespace twinfile;
+
+namespace twinfile {
+class PayloadTestAccess {
+public:
+    static void open(Window &window) { window.payload(); }
+    static bool busy(const Window &window) { return window.busy_; }
+    static QJsonObject settings(const Window &window) { return window.settings_; }
+    static void job(Window &window, std::function<Result(const Cancellation &, const Progress &)> work) {
+        window.runJob(QStringLiteral("解析 Payload 分区"), std::move(work));
+    }
+};
+}
 
 static bool writeFile(const QString &path, const QByteArray &bytes) { QFile output(path); return output.open(QIODevice::WriteOnly) && output.write(bytes) == bytes.size(); }
 static QByteArray readFile(const QString &path) { QFile input(path); if (!input.open(QIODevice::ReadOnly)) return {}; return input.readAll(); }
@@ -119,6 +142,50 @@ static QByteArray encodePayload(const QByteArray &data, int type = 0, bool badHa
     const QByteArray manifest = integer(3, 4096) + message(13, partition);
     return QByteArray("CrAU") + network<quint64>(2) + network<quint64>(quint64(manifest.size())) + network<quint32>(0) + manifest + compressed;
 }
+
+class PayloadHttpFixture : public QObject {
+public:
+    enum Mode { Range, Silent, Trickle, IgnoredRange };
+    QTcpServer server;
+    QByteArray bytes;
+    Mode mode = Range;
+    qint64 transferred = 0;
+    int requests = 0, active = 0, peak = 0;
+    qint64 delayedFrom = -1;
+    explicit PayloadHttpFixture(QByteArray data = {}, Mode behavior = Range) : bytes(std::move(data)), mode(behavior) {
+        server.listen(QHostAddress::LocalHost);
+        connect(&server, &QTcpServer::newConnection, this, [this] {
+            while (server.hasPendingConnections()) {
+                auto *client = server.nextPendingConnection(); auto request = std::make_shared<QByteArray>();
+                connect(client, &QTcpSocket::disconnected, client, &QObject::deleteLater);
+                connect(client, &QTcpSocket::readyRead, client, [this, client, request] {
+                    *request += client->readAll(); if (!request->contains("\r\n\r\n") || client->property("handled").toBool()) return;
+                    client->setProperty("handled", true); ++requests;
+                    if (mode == Silent) return;
+                    if (mode == IgnoredRange) { client->write("HTTP/1.1 200 OK\r\nContent-Length: 999999999\r\n\r\n"); return; }
+                    if (mode == Trickle) {
+                        client->write("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-3/999\r\nContent-Length: 4\r\n\r\n");
+                        auto *timer = new QTimer(client); timer->setInterval(60);
+                        connect(timer, &QTimer::timeout, client, [client] { if (client->state() == QAbstractSocket::ConnectedState) client->write("C"); }); timer->start(); return;
+                    }
+                    const auto range = QRegularExpression(QStringLiteral("Range: bytes=(\\d+)-(\\d+)"), QRegularExpression::CaseInsensitiveOption).match(QString::fromLatin1(*request));
+                    const qint64 start = range.captured(1).toLongLong(), end = range.captured(2).toLongLong();
+                    if (!range.hasMatch() || start < 0 || end < start || end >= bytes.size()) { client->abort(); return; }
+                    const QByteArray body = bytes.mid(start, end - start + 1);
+                    const QByteArray response = QByteArray("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes ") + QByteArray::number(start) + '-' + QByteArray::number(end) + '/' + QByteArray::number(bytes.size())
+                        + "\r\nETag: \"payload-fixture\"\r\nContent-Length: " + QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
+                    transferred += body.size();
+                    if (delayedFrom >= 0 && start >= delayedFrom) {
+                        ++active; peak = qMax(peak, active);
+                        connect(client, &QTcpSocket::disconnected, client, [this] { --active; });
+                        QTimer::singleShot(100, client, [client, response] { client->write(response); client->disconnectFromHost(); });
+                    } else { client->write(response); client->disconnectFromHost(); }
+                });
+            }
+        });
+    }
+    QString url() const { return QStringLiteral("http://127.0.0.1:%1/payload").arg(server.serverPort()); }
+};
 
 class MigrationTests : public QObject {
     Q_OBJECT
@@ -330,6 +397,89 @@ private slots:
         QTemporaryDir root; const QString archive = root.filePath(QStringLiteral("ota.zip")); const QByteArray data(4096, 'z'); { ZipWriter writer(archive); writer.addFile(QStringLiteral("payload.bin"), encodePayload(data)); writer.close(); }
         const Result result = extractPayload(archive, {QStringLiteral("system")}, root.path()); QVERIFY2(result.ok, qPrintable(result.error)); QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), data);
     }
+    void payloadDeflatedInspectionReadsOnlyMetadata() {
+        QTemporaryDir root; QByteArray data(8 * 1024 * 1024, '\0'); QRandomGenerator random(77);
+        for (qsizetype index = 0; index < data.size(); index += 4) qToLittleEndian<quint32>(random.generate(), data.data() + index);
+        const QString archive = root.filePath(QStringLiteral("ota.zip"));
+        { ZipWriter writer(archive); writer.addFile(QStringLiteral("payload.bin"), encodePayload(data)); writer.close(); }
+        PayloadHttpFixture fixture(readFile(archive)); QVERIFY(fixture.server.isListening()); QVERIFY(fixture.bytes.size() > 8 * 1024 * 1024);
+        QStringList stages; auto task = std::async(std::launch::async, [&] { return inspectPayload(fixture.url(), {}, {}, [&](qint64, qint64, const QString &stage) { stages.append(stage); }); });
+        QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000);
+        const Result result = task.get(); QVERIFY2(result.ok, qPrintable(result.error)); QCOMPARE(result.paths, QStringList{QStringLiteral("system")});
+        QVERIFY2(fixture.transferred < 256 * 1024, qPrintable(QString::number(fixture.transferred))); QVERIFY(!stages.isEmpty());
+        const Result extracted = extractPayload(archive, result.paths, root.path()); QVERIFY2(extracted.ok, qPrintable(extracted.error)); QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), data);
+    }
+    void payloadDeflatedInspectionRejectsInvalidMetadataAndExtractionChecksCrc() {
+        QTemporaryDir root; const QString archive = root.filePath(QStringLiteral("ota.zip"));
+        QByteArray payload = encodePayload(QByteArray(4096, 'a')); qToBigEndian<quint64>(65ULL * 1024 * 1024, payload.data() + 12);
+        { ZipWriter writer(archive); writer.addFile(QStringLiteral("payload.bin"), payload); writer.close(); }
+        QVERIFY(!inspectPayload(archive).ok);
+        { ZipWriter writer(archive); writer.addFile(QStringLiteral("payload.bin"), encodePayload(QByteArray(4096, 'a'))); writer.close(); }
+        QByteArray corrupt = readFile(archive); const qsizetype directory = corrupt.indexOf(QByteArray("PK\x01\x02", 4)); QVERIFY(directory >= 0); corrupt[directory + 16] ^= 1; QVERIFY(writeFile(archive, corrupt));
+        QVERIFY(inspectPayload(archive).ok); const Result result = extractPayload(archive, {QStringLiteral("system")}, root.path());
+        QVERIFY(!result.ok); QVERIFY(result.error.contains(QStringLiteral("CRC"))); QVERIFY(!QFileInfo::exists(root.filePath(QStringLiteral("system.img"))));
+    }
+    void payloadDeflatedLargeManifestAndSignature() {
+        QTemporaryDir root; const QByteArray data(4096, 's'); const QByteArray original = encodePayload(data);
+        const qsizetype originalSize = qsizetype(qFromBigEndian<quint64>(original.constData() + 12));
+        QByteArray padding(256 * 1024, '\0'); QRandomGenerator random(123);
+        for (qsizetype index = 0; index < padding.size(); index += 4) qToLittleEndian<quint32>(random.generate(), padding.data() + index);
+        const QByteArray manifest = original.mid(24, originalSize) + message(100, padding);
+        const QByteArray signature(128, 'x');
+        const QByteArray payload = QByteArray("CrAU") + network<quint64>(2) + network<quint64>(quint64(manifest.size())) + network<quint32>(quint32(signature.size())) + manifest + signature + original.mid(24 + originalSize);
+        const QString archive = root.filePath(QStringLiteral("ota.zip"));
+        { ZipWriter writer(archive); writer.addFile(QStringLiteral("payload.bin"), payload); writer.close(); }
+        PayloadHttpFixture fixture(readFile(archive)); QVERIFY(fixture.bytes.size() > padding.size());
+        auto task = std::async(std::launch::async, [&] { return inspectPayload(fixture.url()); });
+        QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000);
+        const Result info = task.get(); QVERIFY2(info.ok, qPrintable(info.error)); QCOMPARE(info.paths, QStringList{QStringLiteral("system")});
+        const Result result = extractPayload(archive, info.paths, root.path()); QVERIFY2(result.ok, qPrintable(result.error)); QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), data);
+    }
+    void payloadNetworkDeadlines_data() {
+        QTest::addColumn<int>("mode"); QTest::addColumn<bool>("idle");
+        QTest::newRow("no-response") << int(PayloadHttpFixture::Silent) << false;
+        QTest::newRow("idle-timeout") << int(PayloadHttpFixture::Silent) << true;
+        QTest::newRow("slow-trickle") << int(PayloadHttpFixture::Trickle) << false;
+        QTest::newRow("ignored-range-headers") << int(PayloadHttpFixture::IgnoredRange) << false;
+    }
+    void payloadNetworkDeadlines() {
+        QFETCH(int, mode); QFETCH(bool, idle); PayloadHttpFixture fixture({}, PayloadHttpFixture::Mode(mode)); PayloadOptions options; options.idleTimeoutMs = idle ? 140 : 250; options.requestTimeoutMs = idle ? 2000 : 140;
+        auto task = std::async(std::launch::async, [&] { return inspectPayload(fixture.url(), {}, options); });
+        QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 3000);
+        const Result result = task.get(); QVERIFY(!result.ok); QCOMPARE(fixture.requests, mode == PayloadHttpFixture::IgnoredRange ? 1 : 3);
+        QVERIFY2(result.error.contains(mode == PayloadHttpFixture::IgnoredRange ? QStringLiteral("Range") : QStringLiteral("超时")), qPrintable(result.error));
+    }
+    void payloadCancelDuringNetworkAndManifest() {
+        PayloadHttpFixture fixture({}, PayloadHttpFixture::Silent); auto cancel = std::make_shared<std::atomic_bool>(false);
+        auto task = std::async(std::launch::async, [&] { return inspectPayload(fixture.url(), cancel); });
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.requests, 1, 2000); cancel->store(true);
+        QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 1000);
+        QVERIFY(task.get().error.contains(QStringLiteral("取消"))); QCOMPARE(fixture.requests, 1);
+        const QByteArray payload = encodePayload(QByteArray(4096, 'a')); PayloadManifest manifest;
+        QVERIFY(parsePayloadManifest(payload.mid(24, qsizetype(qFromBigEndian<quint64>(payload.constData() + 12))), &manifest, cancel).error.contains(QStringLiteral("取消")));
+    }
+    void payloadThreadCountControlsConcurrency_data() {
+        QTest::addColumn<int>("threads"); QTest::newRow("one-thread") << 1; QTest::newRow("two-threads") << 2;
+    }
+    void payloadThreadCountControlsConcurrency() {
+        QFETCH(int, threads); const QByteArray data(4096, 't'); QByteArray manifest = integer(3, 4096);
+        const QStringList names{QStringLiteral("system"), QStringLiteral("vendor"), QStringLiteral("boot")};
+        for (int index = 0; index < names.size(); ++index) {
+            const QByteArray operation = integer(1, 0) + integer(2, quint64(index * data.size())) + integer(3, quint64(data.size())) + message(6, integer(1, 0) + integer(2, 1));
+            manifest += message(13, message(1, names[index].toUtf8()) + message(7, integer(1, quint64(data.size()))) + message(8, operation));
+        }
+        PayloadHttpFixture fixture(QByteArray("CrAU") + network<quint64>(2) + network<quint64>(quint64(manifest.size())) + network<quint32>(0) + manifest + data.repeated(3));
+        fixture.delayedFrom = 24 + manifest.size(); QTemporaryDir root; qint64 previous = 0, reportedTotal = 0; bool monotonic = true;
+        auto task = std::async(std::launch::async, [&] {
+            return extractPayload(fixture.url(), names, root.path(), threads, {}, [&](qint64 done, qint64 total, const QString &stage) {
+                if (!stage.startsWith(QStringLiteral("提取分区"))) return;
+                monotonic &= done >= previous; previous = done; reportedTotal = total;
+            });
+        });
+        QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000);
+        const Result result = task.get(); QVERIFY2(result.ok, qPrintable(result.error)); QCOMPARE(fixture.peak, threads); QVERIFY(monotonic); QCOMPARE(previous, qint64(data.size() * 3)); QCOMPARE(reportedTotal, previous);
+        for (const QString &name : names) QCOMPARE(readFile(root.filePath(name + QStringLiteral(".img"))), data);
+    }
     void payloadHttpStrictRange_data() { QTest::addColumn<bool>("valid"); QTest::newRow("range") << true; QTest::newRow("ignored-range") << false; }
     void payloadHttpStrictRange() {
         QFETCH(bool, valid); QTemporaryDir root; const QByteArray payload = encodePayload(QByteArray(4096, 'r')); QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));
@@ -347,6 +497,60 @@ private slots:
     }
     void payloadCancellationLeavesNoOutput() { QTemporaryDir root; const QString source = root.filePath(QStringLiteral("payload.bin")); QVERIFY(writeFile(source, encodePayload(QByteArray(4096, 'a')))); QVERIFY(!extractPayload(source, {QStringLiteral("system")}, root.path(), 4, std::make_shared<std::atomic_bool>(true)).ok); QVERIFY(!QFileInfo::exists(root.filePath(QStringLiteral("system.img")))); }
     void payloadRejectsHeaderInjection() { QTemporaryDir root; const QString source = root.filePath(QStringLiteral("payload.bin")); QVERIFY(writeFile(source, encodePayload(QByteArray(4096, 'a')))); PayloadOptions options; options.userAgent = QStringLiteral("TwinFile\r\nInjected: x"); QVERIFY(!inspectPayload(source, {}, options).ok); }
+    void payloadDialogsAndProgress_data() {
+        QTest::addColumn<QString>("theme"); QTest::addColumn<QString>("mode");
+        for (const QString &theme : {QStringLiteral("dark"), QStringLiteral("light"), QStringLiteral("mt"), QStringLiteral("cream"), QStringLiteral("bataUI01")})
+            for (const QString &mode : {QStringLiteral("dark"), QStringLiteral("light")}) QTest::newRow(qPrintable(theme + QChar('-') + mode)) << theme << mode;
+    }
+    void payloadDialogsAndProgress() {
+        QFETCH(QString, theme); QFETCH(QString, mode); QTemporaryDir root; const QByteArray previous = qgetenv("TWINFILE_SETTINGS");
+        const auto restore = qScopeGuard([previous] { if (previous.isEmpty()) qunsetenv("TWINFILE_SETTINGS"); else qputenv("TWINFILE_SETTINGS", previous); });
+        const QString settingsFile = root.filePath(QStringLiteral("settings.json")); qputenv("TWINFILE_SETTINGS", settingsFile.toUtf8());
+        QVERIFY(writeSettings(settingsFile, {{QStringLiteral("payload_user_agent"), QStringLiteral("old-agent")}}));
+        PayloadHttpFixture fixture(encodePayload(QByteArray(4096, 'u'))); Window window; window.setAttribute(Qt::WA_DontShowOnScreen); window.setTheme(theme); window.setColorMode(mode); window.show();
+        const QString evidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT"); int step = 0; bool valid = true;
+        const auto screenshot = [&](QWidget *widget, const QString &name) {
+            const QPixmap image = widget->grab(); valid &= !image.isNull();
+            if (!evidence.isEmpty()) valid &= image.save(QDir(evidence).filePath(QStringLiteral("native-payload-") + name + QChar('-') + theme + QChar('-') + mode + QStringLiteral(".png")));
+        };
+        QTimer driver; driver.setInterval(20);
+        connect(&driver, &QTimer::timeout, &window, [&] {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); if (!dialog) return;
+            if (step == 0) {
+                auto *source = qobject_cast<QInputDialog *>(dialog); if (!source) return;
+                auto *combo = source->findChild<QComboBox *>(); valid &= combo != nullptr;
+                if (combo) combo->setCurrentIndex(1);
+                ++step; source->accept();
+            } else if (step == 1 && dialog->objectName() == QStringLiteral("remotePayloadDialog")) {
+                auto *threads = dialog->findChild<QSpinBox *>(QStringLiteral("payloadThreads")); auto *url = dialog->findChild<QLineEdit *>(QStringLiteral("payloadUrl"));
+                valid &= threads && url && dialog->findChildren<QLineEdit *>().size() == 2;
+                if (threads) { valid &= threads->value() == 4 && threads->minimum() == 1 && threads->maximum() == 8; threads->setValue(2); }
+                if (url) url->setText(fixture.url());
+                dialog->resize(480, dialog->height()); screenshot(dialog, QStringLiteral("remote"));
+                ++step; dialog->accept();
+            } else if (step == 2 && dialog->objectName() == QStringLiteral("payloadPartitionsDialog")) {
+                auto *threads = dialog->findChild<QSpinBox *>(QStringLiteral("payloadThreads")); valid &= threads && threads->value() == 2;
+                auto *oldProgress = window.findChild<QProgressDialog *>(QStringLiteral("jobProgress")); valid &= !oldProgress || !oldProgress->isVisible();
+                screenshot(dialog, QStringLiteral("partitions")); ++step; dialog->reject();
+            }
+        });
+        QTimer watchdog; watchdog.setInterval(7000); connect(&watchdog, &QTimer::timeout, &window, [&] { valid = false; if (auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget())) dialog->reject(); });
+        driver.start(); watchdog.start(); PayloadTestAccess::open(window);
+        QTRY_COMPARE_WITH_TIMEOUT(step, 3, 5000); driver.stop(); watchdog.stop(); QVERIFY(valid);
+        QCOMPARE(PayloadTestAccess::settings(window).value(QStringLiteral("payload_threads")).toInt(), 2);
+        QVERIFY(!PayloadTestAccess::settings(window).contains(QStringLiteral("payload_user_agent")));
+        auto sawCancel = std::make_shared<std::atomic_bool>(false);
+        PayloadTestAccess::job(window, [sawCancel](const Cancellation &cancel, const Progress &progress) {
+            progress(25, 100, QStringLiteral("提取分区 · system")); const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            while (!cancel->load() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            sawCancel->store(cancel->load()); return Result{};
+        });
+        QPointer<QProgressDialog> progress = window.findChild<QProgressDialog *>(QStringLiteral("jobProgress")); QVERIFY(progress);
+        QTRY_COMPARE_WITH_TIMEOUT(progress->value(), 250, 1000); QCOMPARE(progress->maximum(), 1000); QCOMPARE(progress->labelText(), QStringLiteral("提取分区 · system"));
+        screenshot(progress, QStringLiteral("progress")); auto *cancel = progress->findChild<QPushButton *>(); QVERIFY(cancel); QTest::mouseClick(cancel, Qt::LeftButton);
+        QTRY_VERIFY_WITH_TIMEOUT(!PayloadTestAccess::busy(window), 1000); QVERIFY(sawCancel->load()); QVERIFY(valid);
+        window.close(); QCOMPARE(readSettings(settingsFile).value(QStringLiteral("payload_threads")).toInt(), 2);
+    }
     void hfxLoopbackHandshakeAndListing() {
         HfxSession session; HfxOptions options; options.port = 0; options.interfaces = {{QStringLiteral("loopback"), QHostAddress::LocalHost}}; auto cancel = std::make_shared<std::atomic_bool>(false); std::promise<quint16> listening; auto port = listening.get_future();
         auto task = std::async(std::launch::async, [&] { return session.connect(options, cancel, [&](quint16 value) { listening.set_value(value); }); });
