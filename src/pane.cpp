@@ -96,6 +96,13 @@ Pane::Pane(QWidget *parent) : QFrame(parent) {
     setObjectName(QStringLiteral("filePane"));
     setMinimumWidth(260);
     auto *layout = new QVBoxLayout(this); layout->setContentsMargins(10, 10, 10, 0); layout->setSpacing(6);
+    auto *miuixHeading = new QWidget; miuixHeading->setObjectName(QStringLiteral("miuixPaneHeading"));
+    auto *miuixLayout = new QVBoxLayout(miuixHeading); miuixLayout->setContentsMargins(6, 6, 6, 8); miuixLayout->setSpacing(3);
+    for (const QString &name : {QStringLiteral("miuixFolderTitle"), QStringLiteral("miuixFolderDetails")}) {
+        auto *label = new QLabel; label->setObjectName(name); label->setMinimumWidth(0);
+        label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred); miuixLayout->addWidget(label);
+    }
+    layout->addWidget(miuixHeading); miuixHeading->hide(); miuixHeading->installEventFilter(this);
     auto *chrome = new QWidget; chrome->setObjectName(QStringLiteral("paneChrome"));
     auto *chromeLayout = new QVBoxLayout(chrome); chromeLayout->setContentsMargins(0, 0, 0, 0); chromeLayout->setSpacing(6);
     auto *tabLayout = new QHBoxLayout; tabLayout->setSpacing(4);
@@ -264,6 +271,37 @@ void Pane::setMtStyle(bool enabled) {
     view_->stopTransition(); view_->doItemsLayout(); view_->viewport()->update();
 }
 
+void Pane::setMiuixStyle(bool enabled) {
+    setProperty("miuixStyle", enabled);
+    findChild<QWidget *>(QStringLiteral("miuixPaneHeading"))->setVisible(enabled);
+    if (enabled) {
+        layout()->setContentsMargins(10, 8, 10, 0);
+        findChild<QWidget *>(QStringLiteral("paneColumns"))->hide();
+        blank_->hide();
+    }
+    updateMiuixHeading();
+    view_->doItemsLayout(); view_->viewport()->update();
+}
+
+void Pane::updateMiuixHeading() {
+    if (!property("miuixStyle").toBool()) return;
+    const Location current = location();
+    const QString name = current.source == Source::Drive ? QStringLiteral("此电脑")
+        : current.source == Source::Phone ? current.inner.section('/', -1)
+        : current.source == Source::Archive && !current.inner.isEmpty() ? current.inner.section('/', -1)
+        : QFileInfo(current.path).fileName();
+    auto *title = findChild<QLabel *>(QStringLiteral("miuixFolderTitle"));
+    const QString text = name.isEmpty() ? current.display() : name;
+    title->setText(title->fontMetrics().elidedText(text, Qt::ElideMiddle, qMax(30, width() - 34)));
+    title->setToolTip(current.display());
+    int directories = 0;
+    for (const Entry &entry : model_->entries()) if (entry.directory) ++directories;
+    const int selection = view_->selectionModel()->selectedRows().size();
+    const QString details = selection ? QStringLiteral("已选择 %1 项").arg(selection)
+        : QStringLiteral("%1 个文件夹 · %2 个文件").arg(directories).arg(model_->rowCount() - directories);
+    findChild<QLabel *>(QStringLiteral("miuixFolderDetails"))->setText(details);
+}
+
 bool Pane::canGoBack() const { return states_[tab_].historyIndex > 0; }
 bool Pane::canGoForward() const { return states_[tab_].historyIndex + 1 < states_[tab_].history.size(); }
 
@@ -364,11 +402,13 @@ void Pane::openIndex(const QModelIndex &index) {
 void Pane::focusPath() { path_->setFocus(); path_->selectAll(); }
 void Pane::deselect() { view_->deselect(); emit activated(this); }
 void Pane::updateFooter() {
+    updateMiuixHeading();
     const int count = view_->selectionModel()->selectedRows().size();
     footer_->setText(error_.isEmpty() ? QStringLiteral("共 %1 项%2").arg(model_->rowCount()).arg(count ? QStringLiteral(" · 已选 %1").arg(count) : QString()) : error_);
 }
 
 bool Pane::eventFilter(QObject *object, QEvent *event) {
+    if (object == this && event->type() == QEvent::Resize) updateMiuixHeading();
     if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::FocusIn) emit activated(this);
     if (object == blank_ && event->type() == QEvent::MouseButtonPress) {
         const auto *mouse = static_cast<QMouseEvent *>(event);

@@ -1,4 +1,4 @@
-# TwinFile 3.1.15 · C++ 原生版
+# TwinFile 3.1.16 · C++ 原生版
 
 **Windows 双栏文件管理器 · Android 工具箱 · 可选 AI / Agent · 原生插件扩展**
 
@@ -10,8 +10,8 @@ TwinFile 是面向 Windows 的双栏文件管理与 Android 工具箱。本版�
 
 ## 运行和安装
 
-- 面向 Windows x64。[下载 3.1.15 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.15/TwinFile-3.1.15-Windows-x64-Setup.exe)或[独立直链下载器](https://github.com/350624/TwinFile/releases/download/v3.1.15/TwinFile-Downloader-3.1.15-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
-- 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；独立下载器 `dist/TwinFileDownloader-3.1.15/TwinFileDownloader.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.15）。这些是构建后的路径，不是仓库已包含的文件。
+- 面向 Windows x64。[下载 3.1.16 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.16/TwinFile-3.1.16-Windows-x64-Setup.exe)或[独立直链下载器](https://github.com/350624/TwinFile/releases/download/v3.1.16/TwinFile-Downloader-3.1.16-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
+- 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；独立下载器 `dist/TwinFileDownloader-3.1.16/TwinFileDownloader.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.16）。这些是构建后的路径，不是仓库已包含的文件。
 - 完整发布包不需要安装 Python、Qt SDK 或编译器。手机需开启 USB 调试并授权电脑；HFX 需经用户确认安装配套手机端。源码编译与完整工具包的准备步骤不同，详见[安装说明](docs/INSTALL.md)。
 - 新配置：`%APPDATA%/TwinFileNative/settings.json`。配置与旧版独立，菜单不再提供旧版设置/工作区导入入口。
 - 第一次使用：点选左栏目录，再点选右栏目标目录，回到源栏选择文件，按 `F5` 复制到另一栏；顶部“助手”打开可选 AI，未配置 API 不影响文件管理。
@@ -56,7 +56,7 @@ TwinFile 原创部分使用 **GPL-3.0-only**，详见 [LICENSE](LICENSE) 和 [NO
 
 右侧提供可调宽、可收起的“AI / 扩展”侧栏，顶部“助手”按钮或 `Ctrl+Shift+A` 显示/隐藏，保留宽度和开关状态。AI 助手本身就是可停用的内置扩展；外部插件可以增加独立侧栏、设置页和命令，不必把每项功能写进主窗口。
 
-侧栏采用 Codex 风格的简洁布局：无边框对话区、底部圆角输入框、圆形发送/停止键。附件从输入框内的“＋”添加，聊天/Agent 模式与模型名称同排显示；右上角提供新对话、接口设置和更多菜单，复制回答与隐私说明收进菜单。Agent 步骤可展开/收起，授权路径过长时省略显示、悬停查看完整路径。空白页不显示介绍，输入区随文字增高，五套主题均适配亮暗。
+侧栏采用 Codex 风格的简洁布局：无边框对话区、底部圆角输入框、圆形发送/停止键。附件从输入框内的“＋”添加，聊天/Agent 模式与模型名称同排显示；右上角提供新对话、接口设置和更多菜单，复制回答与隐私说明收进菜单。Agent 步骤可展开/收起，授权路径过长时省略显示、悬停查看完整路径。空白页不显示介绍，输入区随文字增高，六套主题均适配亮暗。
 
 AI 服务由用户自行提供基础地址、模型 ID 和密钥，支持 OpenAI 兼容的 Chat Completions 接口及本机免密服务，不绑定服务商、不提供内置额度。支持流式文字、停止回答、复制回答、新对话；对话只在内存中保留，最多 20 轮/128K 字符。服务报错、限流、超时和不兼容响应均给出提示，不自动重试产生额外费用。修改接口、模型、密钥或系统提示词时清空旧会话，避免把旧记录发送给新服务。
 
@@ -132,7 +132,9 @@ Payload 支持本地 BIN / OTA ZIP、远程 HTTP(S) Range、分区勾选提取�
 
 ### 外观与明暗模式
 
-顶部明暗图标或“⋯ → 外观 → 外观设置…”提供 TwinFile、MT 原版、Cream、bataUI01、macOS 五套风格；不再将 dark/light 作为独立主题。主题选择下方的亮色/暗色分段开关适用于每套风格，也可在外观菜单快速切换。切换立即生效并保存，保留七种强调色与减少动画；旧 dark/light 配置自动转换为 TwinFile 对应明暗模式，旧 MT/Cream/bataUI01 默认保持原来的亮色。MT 原版采用深灰路径顶栏、黑白图标、平直双栏、可收起的位置侧栏、底部导航、最近/书签面板和文件/文件夹共用新建窗口，保留桌面的路径编辑、多标签、顶部任务进度和助手。
+顶部明暗图标或“⋯ → 外观 → 外观设置…”提供 TwinFile、MT 原版、miuix、Cream、bataUI01、macOS 六套风格；不再将 dark/light 作为独立主题。主题选择下方的亮色/暗色分段开关适用于每套风格，也可在外观菜单快速切换。切换立即生效并保存，保留七种强调色与减少动画；旧 dark/light 配置自动转换为 TwinFile 对应明暗模式，旧 MT/Cream/bataUI01 默认保持原来的亮色。MT 原版采用深灰路径顶栏、黑白图标、平直双栏、可收起的位置侧栏、底部导航、最近/书签面板和文件/文件夹共用新建窗口，保留桌面的路径编辑、多标签、顶部任务进度和助手。
+
+miuix 使用独立布局：文件管理标题与当前路径、带滑动动效的左右活动栏切换、每栏文件夹标题与数量、金色文件夹图标、60 像素双行文件列表和带勾选标记的柔和选择背景。操作与含速度的任务进度放在双栏下方，路径输入和多标签仍在各栏；助手展开和窄窗口时自动收紧导航及搜索。浅色为灰白、深色为黑灰，菜单、弹窗和助手同步适配；减少动画立即结束分段滑动。切换其他主题恢复各自布局并保留路径与选择。这是原生 Qt 的 miuix 风格实现，不依赖 Android UI 库。
 
 macOS 是在 Windows 上实现的 Finder 风格，不是原生 macOS：包含工作空间标题、灰色导航侧栏、渐变文件夹图标、紧凑文件行、分段标签、路径栏、按钮、菜单、滚动条、状态栏，以及 AI/插件面板和各工具弹窗的统一样式。保留 Windows 标题栏、拖动、最大化与系统窗口管理；没有伪称实现系统 Vibrancy 毛玻璃。原有目录/刷新动画继续生效，不增加持续后台重绘。内置文本编辑器的语法颜色也随明暗适配；第三方插件自绘或自行硬编码的样式由插件作者负责。
 

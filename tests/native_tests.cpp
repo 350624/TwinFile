@@ -691,7 +691,7 @@ private slots:
     }
     void paneAnimationsRenderWithoutUserSettings_data() {
         QTest::addColumn<QString>("theme");
-        for (const QString &theme : {QStringLiteral("dark"), QStringLiteral("light"), QStringLiteral("mt"), QStringLiteral("cream"), QStringLiteral("bataUI01")}) QTest::newRow(qPrintable(theme)) << theme;
+        for (const QString &theme : {QStringLiteral("dark"), QStringLiteral("light"), QStringLiteral("mt"), QStringLiteral("miuix"), QStringLiteral("cream"), QStringLiteral("bataUI01")}) QTest::newRow(qPrintable(theme)) << theme;
     }
     void paneAnimationsRenderWithoutUserSettings() {
         QFETCH(QString, theme);

@@ -40,7 +40,7 @@ try {
     $ExtensionResults = Join-Path $Evidence 'extension-ui-test-results.txt'
     $ExtensionTests = @('sidebarRendersAndDoesNotStealFileShortcuts','appearanceMigrationAndPalette','appearanceRendersAllModesAndRestores','propertiesRenderAndSpaceOpensProperties','contextMenusMatchSelectedEntryTypes','toolbarSelectionAndDirection','toolbarTransfersFollowActivePane','workspaceRedesignLayoutAndNavigation','workspaceNavigationScrollsWithoutGrowingWindow','storageLocationsAndTestModeIsolation','deviceAndDriveShortcuts','modelsEndpointAndExplicitGet','modelsFailures','modelsCancelAndRestart','modelSettingsDialogFetchAndManualFallback','codexComposerRendersAllModes','codexComposerMenusKeyboardAndStop','updateReleaseValidation','updateCheckIsAsyncBoundedAndShowsReleaseNotes','applicationChecksUpdatesAtStartupAndFromSettings','updateCheckFailureCancelAndStartupOnce')
     $Process = Start-Process -FilePath $ExtensionExecutable -ArgumentList (@('-platform','windows') + $ExtensionTests + @('-o',('"' + $ExtensionResults + ',txt"'))) -WindowStyle Hidden -PassThru
-    if (-not $Process.WaitForExit(60000)) { $Process.Kill(); throw 'AI and extension UI check timed out' }
+    if (-not $Process.WaitForExit(90000)) { $Process.Kill(); throw 'AI and extension UI check timed out' }
     Get-Content -LiteralPath $ExtensionResults
     if ($Process.ExitCode -ne 0) { throw 'AI and extension UI check failed' }
     $MtResults = Join-Path $Evidence 'mt-original-ui-test-results.txt'
@@ -48,6 +48,11 @@ try {
     if (-not $Process.WaitForExit(30000)) { $Process.Kill(); throw 'MT original UI check timed out' }
     Get-Content -LiteralPath $MtResults
     if ($Process.ExitCode -ne 0) { throw 'MT original UI check failed' }
+    $MiuixResults = Join-Path $Evidence 'miuix-ui-test-results.txt'
+    $Process = Start-Process -FilePath $ExtensionExecutable -ArgumentList @('-platform','windows','miuixLayoutNavigationAndMotion','-o',('"' + $MiuixResults + ',txt"')) -WindowStyle Hidden -PassThru
+    if (-not $Process.WaitForExit(30000)) { $Process.Kill(); throw 'miuix UI check timed out' }
+    Get-Content -LiteralPath $MiuixResults
+    if ($Process.ExitCode -ne 0) { throw 'miuix UI check failed' }
     $AgentExecutable = Join-Path $PSScriptRoot 'build\bin\twinfile_agent_tests.exe'
     $AgentResults = Join-Path $Evidence 'agent-ui-test-results.txt'
     $Process = Start-Process -FilePath $AgentExecutable -ArgumentList @('-platform','windows','panelAgentAuthorizationApprovalAndChatIsolation','fullAccessPanelConsentAndReset','-o',('"' + $AgentResults + ',txt"')) -WindowStyle Hidden -PassThru

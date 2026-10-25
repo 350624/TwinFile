@@ -177,6 +177,7 @@ Window::Window(QWidget *parent, const QUrl &updateTestEndpoint) : QMainWindow(pa
     contentLayout->addWidget(toolbarWidget);
     auto *splitter = new QSplitter; splitter->setObjectName(QStringLiteral("fileSplitter")); splitter->setChildrenCollapsible(false); left_ = new Pane; right_ = new Pane; splitter->addWidget(left_); splitter->addWidget(right_); contentLayout->addWidget(splitter, 1); body->addWidget(content, 1); root->addLayout(body, 1);
     buildMtChrome(root, headingLayout);
+    buildMiuixChrome(headingLayout);
     for (Pane *pane : {left_, right_}) {
         pane->setAnimationsEnabled(!settings_.value(QStringLiteral("reduced_motion")).toBool());
         connect(pane, &Pane::activated, this, &Window::setActive);
@@ -287,6 +288,7 @@ void Window::buildSidebar(QWidget *sidebar) {
 void Window::updateNavigation() {
     if (!active_) return;
     updateMtHeader();
+    updateMiuixContext();
     for (auto *button : sidebar_->findChildren<QPushButton *>()) {
         const auto location = active_->location();
         if (button->property("navigationDevice").isValid()) {
@@ -387,6 +389,7 @@ void Window::report(const QString &message) { QMessageBox::warning(this, QString
 void Window::setReducedMotion(bool enabled) {
     settings_.insert(QStringLiteral("reduced_motion"), enabled);
     if (enabled) settleMtAnimations();
+    updateMiuixContext();
     for (Pane *pane : {left_, right_}) {
         pane->setAnimationsEnabled(!enabled);
         if (enabled) pane->setGraphicsEffect(nullptr);
@@ -402,6 +405,8 @@ void Window::setTheme(const QString &theme) {
     qApp->setProperty("macosStyle", mac);
     const bool mt = current == QStringLiteral("mt");
     qApp->setProperty("mtStyle", mt);
+    const bool miuix = current == QStringLiteral("miuix");
+    qApp->setProperty("miuixStyle", miuix);
     const QPalette palette = appearancePalette(current, dark, settings_.value(QStringLiteral("accent")).toString());
     qApp->setPalette(palette);
     qApp->setStyleSheet(appearanceStyleSheet(current, dark, palette));
@@ -414,9 +419,15 @@ void Window::setTheme(const QString &theme) {
     }
     for (Pane *pane : {left_, right_}) {
         pane->setMtStyle(mt);
+        pane->setMiuixStyle(miuix);
     }
     applyMtChrome(mt);
+    applyMiuixChrome(miuix);
     updateTransferButtons();
+    if (miuix) {
+        auto *create = findChild<QPushButton *>(QStringLiteral("action_add"));
+        create->setIcon(actionSymbol(QStringLiteral("add"), Qt::white));
+    }
 }
 
 void Window::setColorMode(const QString &mode) {
@@ -1210,6 +1221,8 @@ bool Window::eventFilter(QObject *object, QEvent *event) {
     if (object == centralWidget() && event->type() == QEvent::Resize) closeMtPlaces(false);
     if (object == centralWidget() && event->type() == QEvent::Resize)
         QTimer::singleShot(0, this, &Window::positionMtDrawer);
+    if (object == centralWidget() && event->type() == QEvent::Resize)
+        QTimer::singleShot(0, this, &Window::adaptMiuixChrome);
     if (object->objectName() == QStringLiteral("workspaceToolbar") && (event->type() == QEvent::Resize || event->type() == QEvent::LayoutRequest))
         adaptToolbar();
     if ((object == sidebar_ || object == deviceNavigation_ || object == centralWidget() || object->objectName() == QStringLiteral("navigationLocations")) && event->type() == QEvent::MouseButtonPress) {

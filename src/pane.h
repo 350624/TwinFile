@@ -27,6 +27,7 @@ public:
     void setOptions(bool hidden, QString sort, bool descending);
     void setAnimationsEnabled(bool enabled);
     void setMtStyle(bool enabled);
+    void setMiuixStyle(bool enabled);
     bool canGoBack() const;
     bool canGoForward() const;
     QJsonObject workspace() const;
@@ -64,6 +65,7 @@ private:
     void navigateTo(const Location &destination, FileView::Transition transition);
     void apply(QList<Entry> entries, bool restoreView);
     void updateFooter();
+    void updateMiuixHeading();
     void openIndex(const QModelIndex &index);
     void scheduleThumbnails();
     void loadThumbnails();

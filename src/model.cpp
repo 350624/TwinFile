@@ -129,7 +129,8 @@ QIcon entryIcon(const Entry &entry) {
         : QStringList{QStringLiteral("mp4"), QStringLiteral("mkv"), QStringLiteral("avi"), QStringLiteral("webm")}.contains(suffix) ? QStringLiteral("video") : QStringLiteral("file");
     const bool mac = qApp->property("macosStyle").toBool();
     const bool mt = qApp->property("mtStyle").toBool();
-    const QString cacheKey = kind + (mt ? QStringLiteral("-mt") : mac ? QStringLiteral("-macos") : QString());
+    const bool miuix = qApp->property("miuixStyle").toBool();
+    const QString cacheKey = kind + (miuix ? QStringLiteral("-miuix") : mt ? QStringLiteral("-mt") : mac ? QStringLiteral("-macos") : QString());
     if (icons.contains(cacheKey)) return icons[cacheKey];
     QPixmap pixmap(96, 96); pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap); painter.setRenderHint(QPainter::Antialiasing);
@@ -148,6 +149,14 @@ QIcon entryIcon(const Entry &entry) {
                 painter.drawText(QRect(29, 28, 38, 40), Qt::AlignCenter, kind == QStringLiteral("file") ? QStringLiteral("=") : kind.toUpper());
             }
         }
+        painter.end(); icons.insert(cacheKey, QIcon(pixmap)); return icons[cacheKey];
+    }
+    if (miuix && kind == QStringLiteral("folder")) {
+        painter.setPen(Qt::NoPen); painter.setBrush(QColor(QStringLiteral("#eaa627")));
+        QPainterPath back; back.moveTo(10, 30); back.quadTo(10, 22, 18, 22); back.lineTo(38, 22); back.lineTo(48, 31);
+        back.lineTo(78, 31); back.quadTo(86, 31, 86, 39); back.lineTo(86, 72); back.lineTo(10, 72); back.closeSubpath(); painter.drawPath(back);
+        painter.setBrush(QColor(QStringLiteral("#ffcd55"))); painter.drawRoundedRect(QRectF(10, 37, 76, 43), 8, 8);
+        painter.setPen(QPen(QColor(QStringLiteral("#fff0bb")), 3, Qt::SolidLine, Qt::RoundCap)); painter.drawLine(QPointF(20, 45), QPointF(75, 45));
         painter.end(); icons.insert(cacheKey, QIcon(pixmap)); return icons[cacheKey];
     }
     const QColor color = kind == QStringLiteral("folder") ? QColor(QStringLiteral("#48c8f6"))
@@ -193,7 +202,7 @@ QIcon entryIcon(const Entry &entry) {
     painter.end(); icons.insert(cacheKey, QIcon(pixmap)); return icons[cacheKey];
 }
 
-QSize FileDelegate::sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const { return {180, 54}; }
+QSize FileDelegate::sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const { return {180, qApp->property("miuixStyle").toBool() ? 60 : 54}; }
 void FileDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const {
     const Entry entry = index.data(FileModel::EntryRole).value<Entry>();
     painter->save(); painter->setRenderHint(QPainter::Antialiasing);
@@ -204,24 +213,30 @@ void FileDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option, 
         else painter->translate((view->transition() == FileView::Transition::LeaveFolder ? -18 : 18) * remaining, 0);
     }
     const bool mt = qApp->property("mtStyle").toBool();
+    const bool miuix = qApp->property("miuixStyle").toBool();
     const QRect body = mt ? option.rect : option.rect.adjusted(3, 2, -5, -2);
     const bool selected = option.state.testFlag(QStyle::State_Selected);
     if (selected || option.state.testFlag(QStyle::State_MouseOver)) {
-        painter->setPen(Qt::NoPen); painter->setBrush(selected ? option.palette.highlight() : option.palette.alternateBase()); painter->drawRoundedRect(body, mt ? 0 : 8, mt ? 0 : 8);
+        painter->setPen(Qt::NoPen); painter->setBrush(selected && !miuix ? option.palette.highlight() : option.palette.alternateBase()); painter->drawRoundedRect(body, mt ? 0 : 8, mt ? 0 : 8);
     }
-    const int iconSize = mt ? 40 : 36;
+    const int iconSize = mt || miuix ? 40 : 36;
     const QRect iconBox(body.left() + 8, body.top() + (body.height() - iconSize) / 2, iconSize, iconSize);
     const QImage image = index.data(FileModel::ImageRole).value<QImage>();
     painter->drawPixmap(iconBox.topLeft(), maskedEntryIcon(entry, image, iconSize, painter->device()->devicePixelRatioF(), option.palette));
-    const QRect title(iconBox.right() + 12, body.top() + 2, body.width() - iconSize - 32, 22);
-    QFont titleFont = option.font; if (mt) titleFont.setPixelSize(15); painter->setFont(titleFont);
-    painter->setPen(selected ? option.palette.highlightedText().color() : option.palette.text().color());
+    const QRect title(iconBox.right() + 12, body.top() + (miuix ? 5 : 2), qMax(0, body.width() - iconSize - (miuix ? 54 : 32)), 22);
+    QFont titleFont = option.font; if (mt) titleFont.setPixelSize(15); else if (miuix) titleFont.setPixelSize(14); painter->setFont(titleFont);
+    painter->setPen(selected && !miuix ? option.palette.highlightedText().color() : option.palette.text().color());
     painter->drawText(title, Qt::AlignLeft | Qt::AlignVCenter, painter->fontMetrics().elidedText(entry.name, Qt::ElideMiddle, title.width()));
-    QColor secondary = selected ? option.palette.highlightedText().color() : option.palette.placeholderText().color(); painter->setPen(secondary);
+    QColor secondary = selected && !miuix ? option.palette.highlightedText().color() : option.palette.placeholderText().color(); painter->setPen(secondary);
     QFont font = option.font; font.setPixelSize(mt ? 12 : 11); painter->setFont(font);
     QString detail = entry.detail;
     if (detail.isEmpty()) detail = (entry.directory ? QString() : humanSize(entry.size) + QStringLiteral(" · ")) + entry.modified.toString(mt ? QStringLiteral("yy-MM-dd HH:mm") : QStringLiteral("yyyy-MM-dd HH:mm"));
     painter->drawText(title.translated(0, 21), Qt::AlignLeft | Qt::AlignVCenter, painter->fontMetrics().elidedText(detail, Qt::ElideMiddle, title.width()));
+    if (miuix && selected) {
+        const QPointF center(body.right() - 16, body.center().y());
+        painter->setPen(QPen(option.palette.highlight().color(), 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter->drawPolyline(QPolygonF{center + QPointF(-5, 0), center + QPointF(-1, 4), center + QPointF(6, -4)});
+    }
     painter->restore();
 }
 

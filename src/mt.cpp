@@ -401,12 +401,13 @@ void Window::settleMtAnimations() {
 
 void Window::styleNavigation() {
     const bool mt = settings_.value(QStringLiteral("theme")).toString() == QStringLiteral("mt");
+    const int iconSize = mt ? 30 : settings_.value(QStringLiteral("theme")).toString() == QStringLiteral("miuix") ? 20 : 18;
     for (auto *button : sidebar_->findChildren<QPushButton *>()) {
         if (!button->property("navigationItem").toBool()) continue;
         if (!button->property("navigationOriginalIcon").isValid()) button->setProperty("navigationOriginalIcon", button->icon());
         const QString symbol = button->property("symbol").toString();
         const QIcon icon = symbol.isEmpty() ? qvariant_cast<QIcon>(button->property("navigationOriginalIcon")) : actionSymbol(symbol, qApp->palette().color(QPalette::Text));
-        button->setIcon(mt ? navigationBadge(icon) : icon); button->setIconSize(QSize(mt ? 30 : 18, mt ? 30 : 18));
+        button->setIcon(mt ? navigationBadge(icon) : icon); button->setIconSize(QSize(iconSize, iconSize));
         if (!button->property("mtDrawerConnected").toBool()) {
             button->setProperty("mtDrawerConnected", true);
             connect(button, &QPushButton::clicked, this, [this] { if (sidebar_->property("mtStyle").toBool()) setMtDrawerVisible(false); });

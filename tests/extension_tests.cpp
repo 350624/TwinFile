@@ -378,7 +378,7 @@ private slots:
             window.setTheme(theme); window.setColorMode(mode); QTest::qWait(30);
             QCOMPARE(qApp->property("macosStyle").toBool(), theme == QStringLiteral("macos"));
             QVERIFY(window.findChild<QWidget *>(QStringLiteral("workspaceHeader"))->isVisible());
-            QCOMPARE(window.leftPane()->view()->sizeHintForRow(0), 54);
+            QCOMPARE(window.leftPane()->view()->sizeHintForRow(0), theme == QStringLiteral("miuix") ? 60 : 54);
             QCOMPARE(window.leftPane()->view()->palette().color(QPalette::Text), qApp->palette().color(QPalette::Text));
             if (!output.isEmpty()) { QVERIFY(QDir().mkpath(output)); QVERIFY(window.grab().save(QDir(output).filePath(QStringLiteral("native-appearance-%1-%2.png").arg(theme, mode)))); }
         }
@@ -387,7 +387,7 @@ private slots:
             auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); if (!dialog) return;
             QTimer::singleShot(8000, dialog, &QDialog::reject);
             auto *themes = dialog->findChild<QComboBox *>(QStringLiteral("appearanceTheme"));
-            QVERIFY(themes); QCOMPARE(themes->count(), 5); QVERIFY(themes->findData(QStringLiteral("dark")) < 0); QVERIFY(themes->findData(QStringLiteral("light")) < 0);
+            QVERIFY(themes); QCOMPARE(themes->count(), themeIds().size()); QVERIFY(themes->findData(QStringLiteral("dark")) < 0); QVERIFY(themes->findData(QStringLiteral("light")) < 0);
             QVERIFY(!dialog->findChild<QPushButton *>(QStringLiteral("appearanceMode_light"))->isDefault());
             if (!output.isEmpty()) QVERIFY(dialog->grab().save(QDir(output).filePath(QStringLiteral("native-appearance-settings-macos.png"))));
             themes->setCurrentIndex(themes->findData(QStringLiteral("cream"))); dialog->findChild<QPushButton *>(QStringLiteral("appearanceMode_dark"))->click();
@@ -403,6 +403,101 @@ private slots:
         QTest::addColumn<QString>("mode");
         QTest::newRow("light") << QStringLiteral("light");
         QTest::newRow("dark") << QStringLiteral("dark");
+    }
+    void miuixLayoutNavigationAndMotion_data() {
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("light") << QStringLiteral("light");
+        QTest::newRow("dark") << QStringLiteral("dark");
+    }
+    void miuixLayoutNavigationAndMotion() {
+        QFETCH(QString, mode);
+        QTemporaryDir root; QVERIFY(root.isValid());
+        const QString source = root.filePath(QStringLiteral("项目资料")), destination = root.filePath(QStringLiteral("整理归档"));
+        QVERIFY(QDir().mkpath(source + QStringLiteral("/图片素材"))); QVERIFY(QDir().mkpath(source + QStringLiteral("/版本备份")));
+        QVERIFY(QDir().mkpath(destination + QStringLiteral("/已完成")));
+        for (const QString &name : {QStringLiteral("项目说明.md"), QStringLiteral("工作计划.txt"), QStringLiteral("界面配置.json"), QStringLiteral("设计规范.pdf")}) {
+            QFile file(QDir(source).filePath(name)); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("miuix workspace fixture");
+        }
+        auto state = readSettings(settingsPath()); state.insert(QStringLiteral("extension_visible"), false); state.insert(QStringLiteral("geometry"), QString());
+        QVERIFY(writeSettings(settingsPath(), state));
+        Window window; window.setAttribute(Qt::WA_DontShowOnScreen); window.setTheme(QStringLiteral("miuix")); window.setColorMode(mode);
+        window.setReducedMotion(true); window.resize(1440, 900); window.show();
+        window.leftPane()->navigate({Source::Local, source, {}, {}}); window.rightPane()->navigate({Source::Local, destination, {}, {}});
+        QTRY_COMPARE(window.leftPane()->fileModel()->rowCount(), 6); QTRY_COMPARE(window.rightPane()->fileModel()->rowCount(), 1);
+        window.setActive(window.leftPane());
+        auto *selector = window.findChild<QWidget *>(QStringLiteral("miuixPaneSwitch"));
+        auto *motion = selector->findChild<QVariantAnimation *>(QStringLiteral("miuixPaneAnimation"));
+        auto *left = window.findChild<QToolButton *>(QStringLiteral("miuixLeftPane"));
+        auto *right = window.findChild<QToolButton *>(QStringLiteral("miuixRightPane"));
+        auto *toolbar = window.findChild<QWidget *>(QStringLiteral("workspaceToolbar"));
+        auto *dock = window.findChild<QDockWidget *>(QStringLiteral("extensionDock"));
+        QVERIFY(selector && motion && left && right && toolbar && dock); QVERIFY(selector->isVisible());
+        QVERIFY(qApp->property("miuixStyle").toBool()); QVERIFY(!qApp->property("mtStyle").toBool());
+        QVERIFY(!window.findChild<QWidget *>(QStringLiteral("workspaceHeading"))->isVisible());
+        QVERIFY(toolbar->mapTo(&window, QPoint()).y() > window.leftPane()->mapTo(&window, window.leftPane()->rect().bottomLeft()).y());
+        for (Pane *pane : {window.leftPane(), window.rightPane()}) {
+            QVERIFY(pane->findChild<QWidget *>(QStringLiteral("miuixPaneHeading"))->isVisible());
+            QVERIFY(!pane->findChild<QWidget *>(QStringLiteral("paneColumns"))->isVisible());
+            QCOMPARE(pane->view()->sizeHintForRow(0), 60);
+        }
+        QCOMPARE(window.leftPane()->findChild<QLabel *>(QStringLiteral("miuixFolderDetails"))->text(), QStringLiteral("2 个文件夹 · 4 个文件"));
+        window.leftPane()->view()->selectAll();
+        QCOMPARE(window.leftPane()->findChild<QLabel *>(QStringLiteral("miuixFolderDetails"))->text(), QStringLiteral("已选择 6 项"));
+        const QString evidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT");
+        auto screenshot = [&](const QString &scene) {
+            if (!evidence.isEmpty()) QVERIFY(window.grab().save(QDir(evidence).filePath(QStringLiteral("native-miuix-%1-%2.png").arg(scene, mode))));
+        };
+        QTest::qWait(60); screenshot(QStringLiteral("desktop"));
+        window.setReducedMotion(false);
+        QTest::mouseClick(right, Qt::LeftButton); QCOMPARE(window.activePane(), window.rightPane()); QVERIFY(right->isChecked()); QVERIFY(!left->isChecked());
+        QCOMPARE(window.findChild<QPushButton *>(QStringLiteral("action_copy"))->property("symbol").toString(), QStringLiteral("copy-back"));
+        QTest::qWait(45); QCOMPARE(motion->state(), QAbstractAnimation::Running);
+        const qreal middle = selector->property("position").toReal(); QVERIFY(middle > 0 && middle < 1);
+        screenshot(QStringLiteral("switch-moving"));
+        QTest::mouseClick(left, Qt::LeftButton);
+        QVERIFY(qAbs(selector->property("position").toReal() - middle) < 0.12);
+        QTRY_COMPARE(motion->state(), QAbstractAnimation::Stopped); QCOMPARE(selector->property("position").toReal(), 0.0);
+        QTest::mouseClick(right, Qt::LeftButton); QTest::qWait(25); window.setReducedMotion(true);
+        QCOMPARE(motion->state(), QAbstractAnimation::Stopped); QCOMPARE(selector->property("position").toReal(), 1.0);
+        QTest::mouseClick(left, Qt::LeftButton); QCOMPARE(selector->property("position").toReal(), 0.0);
+        QCOMPARE(window.leftPane()->selected().size(), 6); QVERIFY(window.rightPane()->selected().isEmpty());
+        QCOMPARE(QDir::fromNativeSeparators(window.findChild<QLabel *>(QStringLiteral("miuixLocation"))->toolTip()), source);
+        auto *path = window.rightPane()->findChild<QLineEdit *>(QStringLiteral("panePath"));
+        path->setText(source); QTest::keyClick(path, Qt::Key_Return);
+        QTRY_COMPARE(window.rightPane()->location().path, source); QTRY_COMPARE(window.rightPane()->fileModel()->rowCount(), 6);
+        auto *task = static_cast<TaskProgress *>(window.findChild<QWidget *>(QStringLiteral("taskProgress")));
+        QVERIFY(task); task->begin(QStringLiteral("复制文件"), [] {}); task->updateProgress(512 * 1024, 2 * 1024 * 1024, QStringLiteral("项目资料"));
+        dock->show(); window.resize(1100, 650); QTest::qWait(100); QCOMPARE(window.width(), 1100);
+        for (Pane *pane : {window.leftPane(), window.rightPane()}) {
+            QVERIFY(pane->width() >= 260); QVERIFY(!pane->view()->horizontalScrollBar()->isVisible());
+            auto *address = pane->findChild<QLineEdit *>(QStringLiteral("panePath"));
+            QVERIFY(pane->rect().contains(QRect(address->mapTo(pane, QPoint()), address->size())));
+        }
+        QVERIFY(toolbar->rect().contains(task->geometry()));
+        auto *header = window.findChild<QWidget *>(QStringLiteral("workspaceHeader"));
+        QVERIFY(header->rect().contains(QRect(selector->mapTo(header, QPoint()), selector->size())));
+        screenshot(QStringLiteral("compact-assistant-progress"));
+        task->finish(QStringLiteral("完成"), true);
+        bool settingsChecked = false;
+        QTimer::singleShot(0, &window, [&] {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); if (!dialog) return;
+            const auto close = qScopeGuard([dialog] { dialog->reject(); });
+            auto *themes = dialog->findChild<QComboBox *>(QStringLiteral("appearanceTheme")); QVERIFY(themes);
+            QCOMPARE(themes->currentData().toString(), QStringLiteral("miuix"));
+            if (!evidence.isEmpty()) QVERIFY(dialog->grab().save(QDir(evidence).filePath(QStringLiteral("native-miuix-settings-%1.png").arg(mode))));
+            settingsChecked = true;
+        });
+        window.showAppearanceSettings(); QVERIFY(settingsChecked);
+        for (const QString &theme : {QStringLiteral("mt"), QStringLiteral("twinfile"), QStringLiteral("macos")}) {
+            window.setTheme(theme); QTest::qWait(20);
+            QVERIFY(!selector->isVisible()); QVERIFY(!qApp->property("miuixStyle").toBool());
+            QCOMPARE(window.leftPane()->view()->sizeHintForRow(0), 54); QCOMPARE(window.leftPane()->selected().size(), 6);
+            QVERIFY(toolbar->mapTo(&window, QPoint()).y() < window.leftPane()->mapTo(&window, QPoint()).y());
+            window.setTheme(QStringLiteral("miuix")); QTest::qWait(20); QVERIFY(selector->isVisible());
+            QCOMPARE(window.leftPane()->location().path, source); QCOMPARE(window.leftPane()->selected().size(), 6);
+        }
+        window.close(); QCOMPARE(readSettings(settingsPath()).value(QStringLiteral("theme")).toString(), QStringLiteral("miuix"));
+        Window restored; QCOMPARE(qApp->property("miuixStyle").toBool(), true); QCOMPARE(restored.leftPane()->location().path, source); restored.close();
     }
     void paneAddressNavigation() {
         QTemporaryDir root; QVERIFY(root.isValid());

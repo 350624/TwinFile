@@ -54,6 +54,10 @@ private:
     void moreMenu();
     void populateMoreMenu(QMenu &popup);
     void buildMtChrome(QVBoxLayout *root, QHBoxLayout *heading);
+    void buildMiuixChrome(QHBoxLayout *heading);
+    void applyMiuixChrome(bool enabled);
+    void updateMiuixContext();
+    void adaptMiuixChrome();
     void applyMtChrome(bool enabled);
     void updateMtHeader();
     void styleNavigation();
