@@ -8,6 +8,20 @@
 namespace twinfile {
 
 QIcon actionSymbol(const QString &name, const QColor &color) {
+    if (name == QStringLiteral("copy-forward") || name == QStringLiteral("copy-back") ||
+        name == QStringLiteral("move-forward") || name == QStringLiteral("move-back")) {
+        const bool forward = name.endsWith(QStringLiteral("forward"));
+        const QString command = name.section(QChar('-'), 0, 0);
+        const bool copy = command == QStringLiteral("copy");
+        QPixmap pixmap(copy ? 64 : 40, 40); pixmap.setDevicePixelRatio(2); pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        painter.save();
+        if (!forward && !copy) { painter.translate(20, 0); painter.scale(-1, 1); }
+        actionSymbol(command, color).paint(&painter, !forward && copy ? 12 : 0, 0, 20, 20);
+        painter.restore();
+        if (copy) actionSymbol(forward ? QStringLiteral("forward") : QStringLiteral("back"), color).paint(&painter, forward ? 20 : 0, 4, 12, 12);
+        return QIcon(pixmap);
+    }
     QPixmap pixmap(40, 40); pixmap.setDevicePixelRatio(2); pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap); painter.setRenderHint(QPainter::Antialiasing);
     painter.setPen(QPen(color, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
@@ -26,6 +40,11 @@ QIcon actionSymbol(const QString &name, const QColor &color) {
         painter.drawRoundedRect(QRectF(2, 4, 8, 12), 2, 2); painter.drawLine(QPointF(7, 10), QPointF(18, 10)); painter.drawLine(QPointF(14, 6), QPointF(18, 10)); painter.drawLine(QPointF(18, 10), QPointF(14, 14));
     } else if (name == QStringLiteral("delete")) {
         painter.drawLine(QPointF(3, 5), QPointF(17, 5)); painter.drawLine(QPointF(7, 2), QPointF(13, 2)); QPainterPath bin; bin.moveTo(5, 5); bin.lineTo(6, 17); bin.lineTo(14, 17); bin.lineTo(15, 5); painter.drawPath(bin); painter.drawLine(QPointF(9, 8), QPointF(9, 14)); painter.drawLine(QPointF(12, 8), QPointF(12, 14));
+    } else if (name == QStringLiteral("select-all") || name == QStringLiteral("select-none")) {
+        painter.drawRoundedRect(QRectF(3, 3, 14, 14), 2, 2);
+        if (name == QStringLiteral("select-all")) {
+            painter.drawLine(QPointF(6, 10), QPointF(9, 13)); painter.drawLine(QPointF(9, 13), QPointF(14, 7));
+        }
     } else if (name == QStringLiteral("sort")) {
         painter.drawLine(QPointF(3, 5), QPointF(12, 5)); painter.drawLine(QPointF(3, 10), QPointF(10, 10)); painter.drawLine(QPointF(3, 15), QPointF(7, 15)); painter.drawLine(QPointF(15, 4), QPointF(15, 16)); painter.drawLine(QPointF(12, 13), QPointF(15, 16)); painter.drawLine(QPointF(15, 16), QPointF(18, 13));
     } else if (name == QStringLiteral("assistant")) {
@@ -266,6 +285,7 @@ QWidget#workspaceToolbar QPushButton:hover { background: palette(alternate-base)
 QWidget#workspaceToolbar QPushButton:pressed { background: palette(mid); }
 QWidget#workspaceToolbar QPushButton[primaryAction="true"] { background: palette(alternate-base); color: palette(text); padding: 8px 13px; font-weight: 600; }
 QWidget#workspaceToolbar QPushButton#assistantToggle:checked { background: palette(alternate-base); color: palette(text); }
+QWidget#workspaceToolbar QPushButton[compactToolbar="true"] { padding: 6px; }
 QWidget#workspaceToolbar { min-height: 44px; max-height: 44px; }
 QWidget#taskProgress QLabel { font-size: 12px; background: transparent; }
 QWidget#taskProgress QLabel#taskSpeed { color: %1; font-size: 11px; }

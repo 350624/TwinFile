@@ -162,6 +162,12 @@ Window::Window(QWidget *parent, const QUrl &updateTestEndpoint) : QMainWindow(pa
     addButton(QStringLiteral("复制"), QStringLiteral("copy"), QStringLiteral("复制到另一栏 F5"), [this] { transfer(false); });
     addButton(QStringLiteral("移动"), QStringLiteral("move"), QStringLiteral("移动到另一栏 F6"), [this] { transfer(true); });
     addButton(QStringLiteral("删除"), QStringLiteral("delete"), QStringLiteral("删除所选项目 Delete"), &Window::remove);
+    addButton(QStringLiteral("全选"), QStringLiteral("select-all"), QStringLiteral("全选当前栏"), [this] {
+        active_->view()->stopTransition(); active_->view()->selectAll(); active_->view()->setFocus(Qt::OtherFocusReason);
+    });
+    addButton(QStringLiteral("取消全选"), QStringLiteral("select-none"), QStringLiteral("取消当前栏的全部选择"), [this] {
+        active_->deselect(); active_->view()->setFocus(Qt::OtherFocusReason);
+    });
     taskProgress_ = new TaskProgress(toolbarWidget); toolbar->addWidget(taskProgress_, 1);
     toolbar->addStretch();
     auto *sort = addButton(QStringLiteral("排序"), QStringLiteral("sort"), QStringLiteral("排序与隐藏文件"), [] {}); connect(sort, &QPushButton::clicked, this, [this, sort] { sortMenu(sort); });
@@ -334,6 +340,7 @@ void Window::setActive(Pane *pane) {
     if (!pane) return;
     const bool changed = active_ != pane;
     active_ = pane;
+    if (changed) updateTransferButtons();
     updateNavigation();
     for (Pane *item : {left_, right_}) {
         item->setProperty("active", item == pane); item->style()->unpolish(item); item->style()->polish(item);
@@ -347,6 +354,20 @@ void Window::setActive(Pane *pane) {
     }
 }
 Pane *Window::otherPane() const { return active_ == left_ ? right_ : left_; }
+void Window::updateTransferButtons() {
+    if (!active_) return;
+    const bool forward = active_ == left_;
+    for (const QString &command : {QStringLiteral("copy"), QStringLiteral("move")}) {
+        auto *button = findChild<QPushButton *>(QStringLiteral("action_") + command);
+        const QString symbol = command + (forward ? QStringLiteral("-forward") : QStringLiteral("-back"));
+        const QString tip = QStringLiteral("%1当前%2栏所选项目到%3栏 %4")
+            .arg(command == QStringLiteral("copy") ? QStringLiteral("复制") : QStringLiteral("移动"),
+                 forward ? QStringLiteral("左") : QStringLiteral("右"), forward ? QStringLiteral("右") : QStringLiteral("左"),
+                 command == QStringLiteral("copy") ? QStringLiteral("F5") : QStringLiteral("F6"));
+        button->setProperty("symbol", symbol); button->setIcon(actionSymbol(symbol, qApp->palette().color(QPalette::Text))); button->setIconSize(QSize(command == QStringLiteral("copy") ? 28 : 18, 18));
+        button->setToolTip(tip); button->setAccessibleName(tip);
+    }
+}
 void Window::refreshActive() { active_->refresh(); }
 void Window::report(const QString &message) { QMessageBox::warning(this, QStringLiteral("TwinFile"), message); }
 
@@ -380,6 +401,7 @@ void Window::setTheme(const QString &theme) {
         pane->layout()->setSpacing(6);
         pane->view()->stopTransition(); pane->view()->doItemsLayout(); pane->view()->viewport()->update();
     }
+    updateTransferButtons();
 }
 
 void Window::setColorMode(const QString &mode) {
@@ -1165,12 +1187,15 @@ bool Window::eventFilter(QObject *object, QEvent *event) {
 void Window::adaptToolbar() {
     auto *toolbar = findChild<QWidget *>(QStringLiteral("workspaceToolbar"));
     if (!toolbar) return;
-    const bool compact = toolbar->width() < (taskProgress_ && !taskProgress_->isHidden() ? 900 : 570);
+    const bool compact = toolbar->width() < (taskProgress_ && !taskProgress_->isHidden() ? 1050 : 780);
     for (auto *button : toolbar->findChildren<QPushButton *>(QString(), Qt::FindDirectChildrenOnly)) {
         const QString text = button->property("toolbarText").toString();
         if (text.isEmpty()) continue;
+        if (button->property("compactToolbar").toBool() != compact) {
+            button->setProperty("compactToolbar", compact); button->style()->unpolish(button); button->style()->polish(button);
+        }
         button->setText(compact ? QString() : text);
-        button->setFixedWidth(compact ? 32 : button->sizeHint().width());
+        button->setFixedWidth(compact ? (button->iconSize().width() > 18 ? 40 : 32) : button->sizeHint().width());
     }
 }
 

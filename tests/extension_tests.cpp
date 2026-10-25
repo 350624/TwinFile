@@ -4,6 +4,7 @@
 #include "window.h"
 #include "appearance.h"
 #include "updates.h"
+#include "task_progress.h"
 
 #include <QApplication>
 #include <QAction>
@@ -403,6 +404,96 @@ private slots:
         QVERIFY(file.open(QIODevice::ReadOnly)); QVERIFY(!file.readAll().contains("protected_key")); file.close();
         QVERIFY(writeSettings(file.fileName(), {{QStringLiteral("remember_key"), true}, {QStringLiteral("protected_key"), QStringLiteral("ZmFrZQ==")}}));
         QVERIFY(AiSettings::load(root.path(), &error).apiKey.isEmpty()); QVERIFY(!error.isEmpty());
+    }
+    void toolbarSelectionAndDirection_data() {
+        QTest::addColumn<QString>("theme"); QTest::addColumn<QString>("mode");
+        for (const QString &theme : themeIds()) for (const QString &mode : {QStringLiteral("dark"), QStringLiteral("light")})
+            QTest::newRow(qPrintable(theme + QChar('-') + mode)) << theme << mode;
+    }
+    void toolbarSelectionAndDirection() {
+        QFETCH(QString, theme); QFETCH(QString, mode); QTemporaryDir root;
+        const QString left = root.filePath(QStringLiteral("left")), right = root.filePath(QStringLiteral("right"));
+        QVERIFY(QDir().mkpath(left + QStringLiteral("/folder"))); QVERIFY(QDir().mkpath(right + QStringLiteral("/folder")));
+        for (const QString &name : {QStringLiteral("a.txt"), QStringLiteral("b.txt")}) { QFile file(QDir(left).filePath(name)); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("left"); }
+        for (const QString &name : {QStringLiteral("c.txt"), QStringLiteral("d.txt"), QStringLiteral("e.txt")}) { QFile file(QDir(right).filePath(name)); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("right"); }
+        auto settings = readSettings(settingsPath()); settings.insert(QStringLiteral("extension_visible"), false); settings.insert(QStringLiteral("geometry"), QString()); QVERIFY(writeSettings(settingsPath(), settings));
+        Window window; window.setAttribute(Qt::WA_DontShowOnScreen); window.setReducedMotion(true); window.setTheme(theme); window.setColorMode(mode); window.resize(1520, 900); window.show();
+        window.leftPane()->navigate({Source::Local, left, {}, {}}); window.rightPane()->navigate({Source::Local, right, {}, {}});
+        QTRY_COMPARE(window.leftPane()->fileModel()->rowCount(), 3); QTRY_COMPARE(window.rightPane()->fileModel()->rowCount(), 4);
+        QApplication::setActiveWindow(&window);
+        auto *copy = window.findChild<QPushButton *>(QStringLiteral("action_copy")), *move = window.findChild<QPushButton *>(QStringLiteral("action_move"));
+        auto *all = window.findChild<QPushButton *>(QStringLiteral("action_select-all")), *none = window.findChild<QPushButton *>(QStringLiteral("action_select-none"));
+        QVERIFY(copy && move && all && none);
+        for (Pane *pane : {window.leftPane(), window.rightPane()}) pane->view()->selectionModel()->select(pane->fileModel()->index(0), QItemSelectionModel::ClearAndSelect);
+        auto *leftPath = window.leftPane()->findChild<QLineEdit *>(QStringLiteral("panePath"));
+        auto *rightPath = window.rightPane()->findChild<QLineEdit *>(QStringLiteral("panePath"));
+        QTest::mouseClick(leftPath, Qt::LeftButton); QCOMPARE(window.activePane(), window.leftPane());
+        QCOMPARE(copy->property("symbol").toString(), QStringLiteral("copy-forward")); QCOMPARE(move->property("symbol").toString(), QStringLiteral("move-forward"));
+        const QImage forward = copy->icon().pixmap(56, 36).toImage();
+        QTest::mouseClick(all, Qt::LeftButton); QCOMPARE(window.activePane(), window.leftPane()); QCOMPARE(window.leftPane()->selected().size(), 3); QCOMPARE(window.rightPane()->selected().size(), 1);
+        QVERIFY(window.leftPane()->view()->hasFocus());
+        const QString evidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT");
+        QTest::qWait(30);
+        if (!evidence.isEmpty()) QVERIFY(window.grab().save(QDir(evidence).filePath(QStringLiteral("native-toolbar-right-") + theme + QChar('-') + mode + QStringLiteral(".png"))));
+        QTest::mouseClick(rightPath, Qt::LeftButton); QCOMPARE(window.activePane(), window.rightPane());
+        QCOMPARE(copy->property("symbol").toString(), QStringLiteral("copy-back")); QCOMPARE(move->property("symbol").toString(), QStringLiteral("move-back"));
+        QVERIFY(copy->icon().pixmap(56, 36).toImage() != forward);
+        QVERIFY(copy->toolTip().contains(QStringLiteral("右栏所选项目到左栏"))); QVERIFY(move->toolTip().contains(QStringLiteral("右栏所选项目到左栏")));
+        QTest::mouseClick(all, Qt::LeftButton); QCOMPARE(window.rightPane()->selected().size(), 4); QCOMPARE(window.leftPane()->selected().size(), 3);
+        QTest::mouseClick(none, Qt::LeftButton); QVERIFY(window.rightPane()->selected().isEmpty()); QVERIFY(!window.rightPane()->view()->currentIndex().isValid()); QCOMPARE(window.leftPane()->selected().size(), 3);
+        window.rightPane()->search(QStringLiteral("c.txt")); QTRY_COMPARE(window.rightPane()->fileModel()->rowCount(), 1);
+        QTest::mouseClick(all, Qt::LeftButton); QCOMPARE(window.rightPane()->selected().size(), 1); QCOMPARE(window.rightPane()->selected().first().name, QStringLiteral("c.txt")); QCOMPARE(window.leftPane()->selected().size(), 3);
+        window.rightPane()->search(QStringLiteral("no-matching-files")); QTRY_COMPARE(window.rightPane()->fileModel()->rowCount(), 0);
+        QTest::mouseClick(all, Qt::LeftButton); QTest::mouseClick(none, Qt::LeftButton); QVERIFY(window.rightPane()->selected().isEmpty()); QCOMPARE(window.leftPane()->selected().size(), 3);
+        window.rightPane()->refresh(); QTRY_COMPARE(window.rightPane()->fileModel()->rowCount(), 4);
+        window.setColorMode(mode == QStringLiteral("dark") ? QStringLiteral("light") : QStringLiteral("dark")); window.setColorMode(mode);
+        QCOMPARE(copy->property("symbol").toString(), QStringLiteral("copy-back")); QCOMPARE(copy->iconSize(), QSize(28, 18)); QCOMPARE(move->iconSize(), QSize(18, 18));
+        QTest::qWait(30);
+        if (!evidence.isEmpty()) QVERIFY(window.grab().save(QDir(evidence).filePath(QStringLiteral("native-toolbar-left-") + theme + QChar('-') + mode + QStringLiteral(".png"))));
+        auto *toolbar = window.findChild<QWidget *>(QStringLiteral("workspaceToolbar")); QVERIFY(toolbar);
+        auto *taskWidget = window.findChild<QWidget *>(QStringLiteral("taskProgress")); QVERIFY(taskWidget); auto *task = static_cast<TaskProgress *>(taskWidget);
+        auto *dock = window.findChild<QDockWidget *>(QStringLiteral("extensionDock")); QVERIFY(dock); dock->show();
+        task->begin(QStringLiteral("复制文件"), [] {}); task->updateProgress(1024, 4096, QStringLiteral("复制文件"));
+        window.resize(1100, 650); QTest::qWait(60); QCOMPARE(window.width(), 1100);
+        const auto buttons = toolbar->findChildren<QPushButton *>(QString(), Qt::FindDirectChildrenOnly);
+        for (auto *button : buttons) {
+            QVERIFY(button->isVisible()); QVERIFY(toolbar->rect().contains(button->geometry())); QVERIFY(!button->icon().isNull());
+            for (auto *other : buttons) if (other != button) QVERIFY(!button->geometry().intersects(other->geometry()));
+            QVERIFY(!button->geometry().intersects(task->geometry()));
+        }
+        QVERIFY(toolbar->rect().contains(task->geometry())); QCOMPARE(task->height(), 44); QVERIFY(copy->text().isEmpty()); QCOMPARE(copy->iconSize(), QSize(28, 18));
+        QCOMPARE(copy->property("symbol").toString(), QStringLiteral("copy-back"));
+        if (!evidence.isEmpty()) QVERIFY(window.grab().save(QDir(evidence).filePath(QStringLiteral("native-toolbar-compact-") + theme + QChar('-') + mode + QStringLiteral(".png"))));
+        QVERIFY(!QApplication::activeModalWidget()); task->finish(QStringLiteral("完成"), true); window.close();
+    }
+    void toolbarTransfersFollowActivePane() {
+        QTemporaryDir root; const QString left = root.filePath(QStringLiteral("left")), right = root.filePath(QStringLiteral("right"));
+        QVERIFY(QDir().mkpath(left)); QVERIFY(QDir().mkpath(right));
+        for (const auto &directory : {left, right}) for (const QString &command : {QStringLiteral("copy"), QStringLiteral("move")}) {
+            const QString name = QFileInfo(directory).fileName() + QChar('-') + command + QStringLiteral(".txt");
+            QFile file(QDir(directory).filePath(name)); QVERIFY(file.open(QIODevice::WriteOnly)); file.write(name.toUtf8());
+        }
+        auto settings = readSettings(settingsPath()); settings.insert(QStringLiteral("extension_visible"), false); QVERIFY(writeSettings(settingsPath(), settings));
+        Window window; window.setAttribute(Qt::WA_DontShowOnScreen); window.setReducedMotion(true); window.show();
+        window.leftPane()->navigate({Source::Local, left, {}, {}}); window.rightPane()->navigate({Source::Local, right, {}, {}});
+        QTRY_COMPARE(window.leftPane()->fileModel()->rowCount(), 2); QTRY_COMPARE(window.rightPane()->fileModel()->rowCount(), 2);
+        auto *taskWidget = window.findChild<QWidget *>(QStringLiteral("taskProgress")); QVERIFY(taskWidget); auto *task = static_cast<TaskProgress *>(taskWidget);
+        for (const QString &command : {QStringLiteral("copy"), QStringLiteral("move")}) for (Pane *pane : {window.leftPane(), window.rightPane()}) {
+            const bool toRight = pane == window.leftPane(); const QString directory = toRight ? left : right, target = toRight ? right : left;
+            const QString name = (toRight ? QStringLiteral("left-") : QStringLiteral("right-")) + command + QStringLiteral(".txt");
+            int row = -1; const auto entries = pane->fileModel()->entries();
+            for (qsizetype index = 0; index < entries.size(); ++index) if (entries[index].name == name) row = int(index);
+            QVERIFY(row >= 0);
+            QTest::mouseClick(pane->view()->viewport(), Qt::LeftButton, Qt::NoModifier, pane->view()->visualRect(pane->fileModel()->index(row)).center());
+            QCOMPARE(window.activePane(), pane); QCOMPARE(pane->selected().size(), 1); QCOMPARE(pane->selected().first().name, name);
+            auto *button = window.findChild<QPushButton *>(QStringLiteral("action_") + command); QVERIFY(button);
+            QTest::mouseClick(button, Qt::LeftButton);
+            QTRY_VERIFY_WITH_TIMEOUT(!task->active(), 5000); QVERIFY2(QFileInfo::exists(QDir(target).filePath(name)), qPrintable(task->toolTip()));
+            QCOMPARE(QFileInfo::exists(QDir(directory).filePath(name)), command == QStringLiteral("copy"));
+            QFile result(QDir(target).filePath(name)); QVERIFY(result.open(QIODevice::ReadOnly)); QCOMPARE(result.readAll(), name.toUtf8());
+            QVERIFY(!QApplication::activeModalWidget());
+        }
+        window.close();
     }
     void workspaceRedesignLayoutAndNavigation() {
         QTemporaryDir workspace; QVERIFY(workspace.isValid());

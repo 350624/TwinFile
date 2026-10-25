@@ -50,6 +50,7 @@ private:
     void menu(const QPoint &position);
     void moreMenu();
     void adaptToolbar();
+    void updateTransferButtons();
     void runJob(const QString &title, std::function<Result(const Cancellation &)> function,
                 std::function<void(const Result &)> completed = {}, std::function<void()> settled = {}, bool writeBack = false);
     void runJob(const QString &title, std::function<Result(const Cancellation &, const Progress &)> function,

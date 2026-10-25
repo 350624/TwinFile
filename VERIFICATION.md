@@ -1,5 +1,13 @@
 # 验证范围与复现
 
+## 3.1.11 传输方向与当前栏选择（2026-10-25）
+
+Windows 11 x64、Qt 6.10.3、MinGW GCC 13.1、C++20 Release。新增工具栏场景及工作台布局专项在 offscreen 和 Windows 平台分别 **14 passed / 0 failed / 0 skipped**；Windows 日志为 `build/toolbar-3.1.11-windows-results.txt`。发布流程 `publish.ps1` 另执行六组全量回归、Windows UI、便携启动与安装器打包，发布成功前不视为完成。
+
+五主题各亮暗验证左右栏激活后的复制/移动箭头、悬浮目标说明、切换主题后方向保留，以及全选/取消全选只影响当前栏、搜索结果与空列表、点击后文件列表焦点恢复。另通过真实列表选择及工具栏点击完成左右双向复制和移动，逐字节核对目标内容，并检查复制保留来源、移动移除来源和完成不弹窗。
+
+实际 Windows 截图为 `verification/native-toolbar-right-主题-模式.png`、`native-toolbar-left-主题-模式.png` 和 `native-toolbar-compact-主题-模式.png`。1100×650、助手展开且顶部任务进行中检查按钮/进度区域互不重叠、工具栏高度稳定，并保留收起文字后的方向图标。没有修改文件传输后端；未进行真实手机、安装或升级验收，安装器只生成不执行。
+
 ## 3.1.10 Payload 下载线程与直链窗口目录（2026-10-25）
 
 Windows 11 x64、Qt 6.10.3、MinGW GCC 13.1、C++20 Release。本轮 Payload 专项 **34 passed / 0 failed / 0 skipped**，包括初始化/清理和五主题亮暗数据行，日志为 `build/payload-3.1.10-results-final.txt`。发布流程 `publish.ps1` 另执行六组全量回归、Windows UI、便携启动和打包，发布成功前不视为完成。
