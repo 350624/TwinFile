@@ -39,6 +39,7 @@ public:
         download.watchdog_.setInterval(25);
     }
     static void sample(DirectDownload &download) { download.notify(); }
+    static void enableWatchdog(DirectDownload &download, bool enabled) { if (enabled) download.watchdog_.start(); else download.watchdog_.stop(); }
 };
 }
 
@@ -174,7 +175,7 @@ private slots:
         QFETCH(bool, trickle);
         QTemporaryDir root; HttpFixture server; const qint64 size = 32 * 1048576;
         const qint64 tail = 31 * 1048576, prefix = 131072;
-        bool held = false, recovering = false; int recovered = 0;
+        bool held = false, recovering = false, armed = false; int recovered = 0;
         server.respond = [&](QTcpSocket *socket, const HttpFixture::Request &request) {
             if (request.range == "bytes=0-0") { HttpFixture::rangeReply(socket, request, size); return; }
             QCOMPARE(request.ifRange, QByteArray("\"fixture-v1\""));
@@ -194,11 +195,18 @@ private slots:
         };
         DirectDownload download; DownloadTestAccess::fastWatchdog(download, trickle ? 500 : 450, 650);
         QSignalSpy done(&download, &DirectDownload::completed), failed(&download, &DirectDownload::failed), progress(&download, &DirectDownload::progress), status(&download, &DirectDownload::status);
+        connect(&download, &DirectDownload::progress, &download, [&](qint64 received, qint64, double, int connections) {
+            if (!armed && held && received >= tail + prefix && received < size && connections == 1) {
+                armed = true; DownloadTestAccess::enableWatchdog(download, true);
+            }
+        });
         QString error; const auto path = root.filePath("tail.bin");
         QVERIFY(download.start(server.url(), path, 32, &error));
+        // Exercise tail redistribution only after the other initial ranges have arrived.
+        DownloadTestAccess::enableWatchdog(download, false);
         QTRY_VERIFY_WITH_TIMEOUT(done.size() + failed.size() > 0, 12000);
         QVERIFY2(failed.isEmpty(), failed.isEmpty() ? "" : qPrintable(failed.first()[0].toString()));
-        QCOMPARE(done.size(), 1); QVERIFY(recovering); QCOMPARE(recovered, 3);
+        QCOMPARE(done.size(), 1); QVERIFY(armed); QVERIFY(recovering); QCOMPARE(recovered, 3);
         QCOMPARE(QCryptographicHash::hash(contents(path), QCryptographicHash::Sha256), QCryptographicHash::hash(payload(0, size), QCryptographicHash::Sha256));
         QVERIFY(partials(root).isEmpty());
         bool sawTail = false, sawRecovery = false;
