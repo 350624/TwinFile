@@ -978,39 +978,52 @@ void Window::payload() {
     if (!accepted) return;
     QString source;
     PayloadOptions options;
-    int threads = qBound(1, settings_.value(QStringLiteral("payload_threads")).toInt(4), 8);
+    const bool remote = method.startsWith(QStringLiteral("远程"));
+    int threads = qBound(1, settings_.value(QStringLiteral("payload_threads")).toInt(16), 512);
+    QString outputDirectory = settings_.value(QStringLiteral("payload_output_directory")).toString(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
     if (method.startsWith(QStringLiteral("本地"))) source = QFileDialog::getOpenFileName(this, QStringLiteral("选择 Payload 或 OTA ZIP"), {}, QStringLiteral("Payload / OTA (*.bin *.zip);;所有文件 (*)"));
     else {
-        QDialog dialog(this); dialog.setObjectName(QStringLiteral("remotePayloadDialog")); dialog.setWindowTitle(QStringLiteral("远程 Payload · HTTP(S) Range")); dialog.resize(720, 230); auto *layout = new QVBoxLayout(&dialog);
+        QDialog dialog(this); dialog.setObjectName(QStringLiteral("remotePayloadDialog")); dialog.setWindowTitle(QStringLiteral("远程 Payload · HTTP(S) Range")); dialog.resize(720, 300); auto *layout = new QVBoxLayout(&dialog);
         QLineEdit url(settings_.value(QStringLiteral("payload_last_url")).toString()); url.setObjectName(QStringLiteral("payloadUrl")); url.setPlaceholderText(QStringLiteral("https://…/payload.bin 或 OTA.zip")); layout->addWidget(&url);
-        layout->addWidget(new QLabel(QStringLiteral("线程数量"))); QSpinBox workers; workers.setObjectName(QStringLiteral("payloadThreads")); workers.setRange(1, 8); workers.setValue(threads); layout->addWidget(&workers);
+        layout->addWidget(new QLabel(QStringLiteral("下载线程数量"))); QSpinBox workers; workers.setObjectName(QStringLiteral("payloadThreads")); workers.setRange(1, 512); workers.setValue(threads); layout->addWidget(&workers);
+        layout->addWidget(new QLabel(QStringLiteral("保存位置")));
+        QLineEdit output(outputDirectory); output.setObjectName(QStringLiteral("payloadOutputDirectory"));
+        auto *outputRow = new QHBoxLayout; outputRow->addWidget(&output);
+        QPushButton browse(QStringLiteral("选择位置…")); browse.setObjectName(QStringLiteral("payloadBrowse")); outputRow->addWidget(&browse); layout->addLayout(outputRow);
+        connect(&browse, &QPushButton::clicked, &dialog, [&] { const QString chosen = QFileDialog::getExistingDirectory(&dialog, QStringLiteral("选择分区输出文件夹"), output.text()); if (!chosen.isEmpty()) output.setText(chosen); });
         QCheckBox remember(QStringLiteral("记住直链（可能含令牌，将以明文保存到本机设置）")); remember.setChecked(settings_.value(QStringLiteral("payload_remember_url")).toBool()); layout->addWidget(&remember);
         QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); layout->addWidget(&buttons); connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
         if (dialog.exec() != QDialog::Accepted) return;
         source = url.text().trimmed(); threads = workers.value();
         const QUrl parsed(source); if (!parsed.isValid() || (parsed.scheme() != QStringLiteral("http") && parsed.scheme() != QStringLiteral("https"))) { report(QStringLiteral("请输入有效的 HTTP(S) 直链")); return; }
+        if (output.text().trimmed().isEmpty() || !QFileInfo(output.text().trimmed()).isDir()) { report(QStringLiteral("请选择有效的输出文件夹")); return; }
+        outputDirectory = QDir::cleanPath(output.text().trimmed()); options.downloadConnections = threads;
         settings_.remove(QStringLiteral("payload_user_agent")); settings_.insert(QStringLiteral("payload_threads"), threads); settings_.insert(QStringLiteral("payload_remember_url"), remember.isChecked());
+        settings_.insert(QStringLiteral("payload_output_directory"), outputDirectory);
         if (remember.isChecked()) settings_.insert(QStringLiteral("payload_last_url"), source); else settings_.remove(QStringLiteral("payload_last_url"));
+        saveSettings();
     }
     if (source.isEmpty() || (method.startsWith(QStringLiteral("远程")) && !accepted)) return;
-    runJob(QStringLiteral("解析 Payload 分区"), [source, options](const Cancellation &cancel, const Progress &progress) { return inspectPayload(source, cancel, options, progress); }, [this, source, options, threads](const Result &result) {
+    runJob(QStringLiteral("解析 Payload 分区"), [source, options](const Cancellation &cancel, const Progress &progress) { return inspectPayload(source, cancel, options, progress); }, [this, source, options, threads, remote, outputDirectory](const Result &result) mutable {
         QDialog dialog(this); dialog.setObjectName(QStringLiteral("payloadPartitionsDialog")); dialog.setWindowTitle(QStringLiteral("选择要提取的分区")); dialog.resize(650, 550); auto *layout = new QVBoxLayout(&dialog);
         layout->addWidget(new QLabel(QStringLiteral("完整 OTA · 支持 REPLACE / BZ2 / XZ / ZSTD / ZERO\n输出为 .img，已有文件不会覆盖；含增量操作的 OTA 将拒绝提取。")));
         QListWidget choices; const QStringList descriptions = result.output.split(QChar('\n'), Qt::SkipEmptyParts);
         for (qsizetype index = 0; index < result.paths.size(); ++index) { auto *item = new QListWidgetItem(descriptions.value(index, result.paths[index]), &choices); item->setData(Qt::UserRole, result.paths[index]); item->setCheckState(Qt::Checked); }
-        layout->addWidget(&choices); QSpinBox workers; workers.setObjectName(QStringLiteral("payloadThreads")); workers.setRange(1, 8); workers.setValue(threads); layout->addWidget(new QLabel(QStringLiteral("线程数量"))); layout->addWidget(&workers);
+        layout->addWidget(&choices); QSpinBox workers; workers.setObjectName(QStringLiteral("payloadThreads")); workers.setRange(1, remote ? 512 : 8); workers.setValue(remote ? threads : settings_.value(QStringLiteral("payload_partition_workers")).toInt(4)); layout->addWidget(new QLabel(remote ? QStringLiteral("下载线程数量") : QStringLiteral("分区并行数量"))); layout->addWidget(&workers);
         layout->addWidget(new QLabel(QStringLiteral("保存位置")));
-        QLineEdit output(settings_.value(QStringLiteral("payload_output_directory")).toString(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)));
+        QLineEdit output(outputDirectory);
         output.setObjectName(QStringLiteral("payloadOutputDirectory"));
         auto *outputRow = new QHBoxLayout; outputRow->addWidget(&output);
         QPushButton browse(QStringLiteral("选择位置…")); browse.setObjectName(QStringLiteral("payloadBrowse")); outputRow->addWidget(&browse); layout->addLayout(outputRow);
         connect(&browse, &QPushButton::clicked, &dialog, [&] { const QString chosen = QFileDialog::getExistingDirectory(&dialog, QStringLiteral("选择分区输出文件夹"), output.text()); if (!chosen.isEmpty()) output.setText(chosen); });
         QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); layout->addWidget(&buttons); connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
         if (dialog.exec() != QDialog::Accepted) return; QStringList names; for (int index = 0; index < choices.count(); ++index) if (choices.item(index)->checkState() == Qt::Checked) names.append(choices.item(index)->data(Qt::UserRole).toString()); if (names.isEmpty()) return;
-        settings_.insert(QStringLiteral("payload_threads"), workers.value());
-        const QString destination = QDir::cleanPath(output.text().trimmed()); if (!QFileInfo(destination).isDir()) { report(QStringLiteral("请选择有效的输出文件夹")); return; }
+        const int partitionWorkers = remote ? 4 : workers.value();
+        if (remote) { options.downloadConnections = workers.value(); settings_.insert(QStringLiteral("payload_threads"), workers.value()); }
+        else settings_.insert(QStringLiteral("payload_partition_workers"), workers.value());
+        const QString destination = QDir::cleanPath(output.text().trimmed()); if (output.text().trimmed().isEmpty() || !QFileInfo(destination).isDir()) { report(QStringLiteral("请选择有效的输出文件夹")); return; }
         settings_.insert(QStringLiteral("payload_output_directory"), destination); saveSettings();
-        runJob(QStringLiteral("提取并校验 Payload 分区"), [source, names, destination, options, concurrency = workers.value()](const Cancellation &cancel, const Progress &progress) { return extractPayload(source, names, destination, concurrency, cancel, progress, options); }, [this, destination](const Result &extracted) { taskProgress_->finish(extracted.output + QStringLiteral(" · ") + destination, true); });
+        runJob(QStringLiteral("提取并校验 Payload 分区"), [source, names, destination, options, partitionWorkers](const Cancellation &cancel, const Progress &progress) { return extractPayload(source, names, destination, partitionWorkers, cancel, progress, options); }, [this, destination](const Result &extracted) { taskProgress_->finish(extracted.output + QStringLiteral(" · ") + destination, true); });
     });
 }
 

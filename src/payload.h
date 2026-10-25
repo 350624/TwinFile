@@ -26,6 +26,7 @@ struct PayloadOptions {
     QString userAgent = QStringLiteral("TwinFileNative/" TWINFILE_VERSION);
     int idleTimeoutMs = 15000;
     int requestTimeoutMs = 60000;
+    int downloadConnections = 16;
 };
 
 Result parsePayloadManifest(const QByteArray &bytes, PayloadManifest *manifest, const Cancellation &cancel = {});
