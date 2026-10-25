@@ -706,7 +706,9 @@ private slots:
             const int count = started.count();
             if (transition == FileView::Transition::Refresh) {
                 pane->refresh();
-                auto *rotation = pane->findChild<QVariantAnimation *>(QStringLiteral("refreshRotation")); QVERIFY(rotation); QCOMPARE(rotation->state(), QAbstractAnimation::Running); rotation->setCurrentTime(160);
+                auto *rotation = pane->findChild<QVariantAnimation *>(QStringLiteral("refreshRotation")); QVERIFY(rotation);
+                const bool visible = theme != QStringLiteral("mt"); QCOMPARE(pane->findChild<QToolButton *>(QStringLiteral("refreshCurrentPane"))->isVisible(), visible);
+                QCOMPARE(rotation->state(), visible ? QAbstractAnimation::Running : QAbstractAnimation::Stopped); if (visible) rotation->setCurrentTime(160);
                 if (!evidence.isEmpty()) QVERIFY(window.grab().save(QDir(evidence).filePath(QStringLiteral("native-animation-loading-%1.png").arg(theme))));
             }
             else if (transition == FileView::Transition::EnterFolder) pane->navigate({Source::Local, directory.filePath(QStringLiteral("示例文件夹")), {}, {}});
