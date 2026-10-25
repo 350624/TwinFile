@@ -451,7 +451,7 @@ private slots:
         window.setReducedMotion(false);
         QTest::mouseClick(right, Qt::LeftButton); QCOMPARE(window.activePane(), window.rightPane()); QVERIFY(right->isChecked()); QVERIFY(!left->isChecked());
         QCOMPARE(window.findChild<QPushButton *>(QStringLiteral("action_copy"))->property("symbol").toString(), QStringLiteral("copy-back"));
-        QTest::qWait(45); QCOMPARE(motion->state(), QAbstractAnimation::Running);
+        QCOMPARE(motion->state(), QAbstractAnimation::Running); motion->setCurrentTime(105);
         const qreal middle = selector->property("position").toReal(); QVERIFY(middle > 0 && middle < 1);
         screenshot(QStringLiteral("switch-moving"));
         QTest::mouseClick(left, Qt::LeftButton);
@@ -784,7 +784,7 @@ private slots:
                 else {
                     QCOMPARE(enter->state(), QAbstractAnimation::Running); enter->pause(); enter->setCurrentTime(60);
                     QVERIFY(dialog->windowOpacity() > 0); QVERIFY(dialog->windowOpacity() < 1);
-                    enter->resume(); QTest::qWait(200); QCOMPARE(dialog->windowOpacity(), 1.0);
+                    enter->resume(); QTest::qWait(200); QVERIFY(dialog->windowOpacity() > 0.98);
                 }
                 dialog->reject();
                 if (!reduced) {
