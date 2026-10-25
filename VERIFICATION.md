@@ -6,7 +6,7 @@ Windows 11 x64、Qt 6.10.3、MinGW GCC 13.1、C++20 Release。六组回归合计
 
 新增及更新覆盖：本地递归复制精确字节总量、分块取消和目标清理；ZIP 压缩/解压字节进度；ADB v1/v2 模拟服务收发的单调字节报告与已知/未知总量；主程序下载开始后收起设置、顶部取消、完成不弹窗、文件内容与临时清理、仅保存下载目录并再次恢复；Payload 选择输出目录、实际提取并逐字节核对、目录持久化和完成不弹结果窗口；速度停传后归零、取消状态不被迟到报告覆盖、失败不弹窗。
 
-五个实际主题（TwinFile、MT、Cream、bataUI01、macOS）的亮暗模式均验证嵌入进度和取消，覆盖默认窗口及 1100×650、助手侧栏展开场景，检查任务与排序按钮不重叠。截图为 `native-payload-progress-主题-模式.png`、`native-payload-progress-narrow-主题-模式.png`，分区输出目录截图为 `native-payload-partitions-主题-模式.png`。
+五个实际主题（TwinFile、MT、Cream、bataUI01、macOS）的亮暗模式均验证嵌入进度和取消，覆盖默认窗口及 1100×650、助手侧栏展开场景，检查任务与排序按钮不重叠；主窗口下载验证开始前后工具栏等高，避免列表移动。截图为 `native-payload-progress-主题-模式.png`、`native-payload-progress-narrow-主题-模式.png`，分区输出目录截图为 `native-payload-partitions-主题-模式.png`。
 
 主程序共用一个任务槽；未知总量使用不确定进度，速度是当前处理阶段的字节速率，未报告字节的准备/校验阶段为 0 B/s，同盘移动是改名操作。未进行真实手机、跨手机、所有公网固件、断电和安装/升级/卸载验收；安装器不执行。GitHub 账户已通过 Git Credential Manager 登录；3.1.8 下的未认证说明为当时状态，公开发布结果以发布脚本完成及远端核对为准。
 

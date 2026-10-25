@@ -346,6 +346,8 @@ private slots:
         qputenv("TWINFILE_SETTINGS", root.filePath("settings.json").toUtf8());
         const auto restore = qScopeGuard([&] { if (oldSettings.isEmpty()) qunsetenv("TWINFILE_SETTINGS"); else qputenv("TWINFILE_SETTINGS", oldSettings); });
         HttpFixture server; Window window; window.show(); window.showDownload();
+        auto *toolbar = window.findChild<QWidget *>("workspaceToolbar"); QVERIFY(toolbar);
+        const int idleToolbarHeight = toolbar->height();
         auto *dialog = window.findChild<DownloadDialog *>("directDownloadDialog"); QVERIFY(dialog);
         auto *path = dialog->findChild<QLineEdit *>("downloadPath"); QVERIFY(path);
         QVERIFY(dialog->findChild<QPushButton *>("downloadBrowse"));
@@ -354,6 +356,7 @@ private slots:
         const QString destination = root.filePath("saved.bin"); path->setText(destination);
         dialog->findChild<QPushButton *>("downloadStart")->click();
         QTRY_COMPARE(server.requests.size(), 1); QVERIFY(!dialog->isVisible());
+        QCOMPARE(toolbar->height(), idleToolbarHeight);
         auto *task = window.findChild<QWidget *>("taskProgress"); QVERIFY(task); QVERIFY(task->isVisible());
         QVERIFY(!QApplication::activeModalWidget());
         auto *engine = dialog->findChild<DirectDownload *>(); QVERIFY(engine);
