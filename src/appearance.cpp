@@ -57,6 +57,20 @@ QIcon actionSymbol(const QString &name, const QColor &color) {
         painter.drawRoundedRect(QRectF(5, 7, 10, 11), 2, 2); painter.drawRect(QRectF(7, 2, 6, 5)); painter.drawLine(QPointF(9, 3.5), QPointF(9, 5)); painter.drawLine(QPointF(11, 3.5), QPointF(11, 5));
     } else if (name == QStringLiteral("theme")) {
         painter.drawEllipse(QRectF(3, 3, 14, 14)); painter.setBrush(color); painter.drawPie(QRectF(3, 3, 14, 14), 90 * 16, 180 * 16);
+    } else if (name == QStringLiteral("menu")) {
+        for (int y : {5, 10, 15}) painter.drawLine(QPointF(3, y), QPointF(17, y));
+    } else if (name == QStringLiteral("swap")) {
+        painter.drawLine(QPointF(3, 6), QPointF(17, 6)); painter.drawLine(QPointF(13, 2), QPointF(17, 6)); painter.drawLine(QPointF(17, 6), QPointF(13, 10));
+        painter.drawLine(QPointF(17, 14), QPointF(3, 14)); painter.drawLine(QPointF(7, 10), QPointF(3, 14)); painter.drawLine(QPointF(3, 14), QPointF(7, 18));
+    } else if (name == QStringLiteral("refresh")) {
+        painter.drawArc(QRectF(3, 3, 14, 14), 30 * 16, 300 * 16);
+        painter.drawPolyline(QPolygonF{QPointF(12, 2), QPointF(17, 3), QPointF(16, 8)});
+    } else if (name == QStringLiteral("bookmark")) {
+        painter.drawPolygon(QPolygonF{QPointF(5, 2), QPointF(15, 2), QPointF(15, 18), QPointF(10, 14), QPointF(5, 18)});
+    } else if (name == QStringLiteral("down")) {
+        painter.drawPolyline(QPolygonF{QPointF(4, 7), QPointF(10, 13), QPointF(16, 7)});
+    } else if (name == QStringLiteral("more-vertical")) {
+        painter.setPen(Qt::NoPen); painter.setBrush(color); for (int position : {4, 10, 16}) painter.drawEllipse(QPointF(10, position), 1.5, 1.5);
     } else if (name == QStringLiteral("more")) {
         painter.setPen(Qt::NoPen); painter.setBrush(color); for (int position : {4, 10, 16}) painter.drawEllipse(QPointF(position, 10), 1.3, 1.3);
     } else {
@@ -71,7 +85,7 @@ QStringList themeIds() {
 
 QString themeName(const QString &theme) {
     static const QMap<QString, QString> names{{QStringLiteral("twinfile"), QStringLiteral("TwinFile")},
-        {QStringLiteral("mt"), QStringLiteral("MT · 简洁")}, {QStringLiteral("cream"), QStringLiteral("Cream · 奶油")},
+        {QStringLiteral("mt"), QStringLiteral("MT 原版")}, {QStringLiteral("cream"), QStringLiteral("Cream · 奶油")},
         {QStringLiteral("bataUI01"), QStringLiteral("bataUI01 · 清透蓝")}, {QStringLiteral("macos"), QStringLiteral("macOS · Finder 风格")}};
     return names.value(theme, QStringLiteral("TwinFile"));
 }
@@ -137,7 +151,7 @@ QPalette appearancePalette(const QString &theme, bool dark, const QString &accen
     palette.setColor(QPalette::Mid, QColor(colors[4]));
     palette.setColor(QPalette::PlaceholderText, QColor(colors[5]));
     palette.setColor(QPalette::ToolTipBase, QColor(colors[1]));
-    palette.setColor(QPalette::Highlight, QColor(accents.value(accent, theme == QStringLiteral("macos") ? QStringLiteral("#0069d9") : QStringLiteral("#4f46e5"))));
+    palette.setColor(QPalette::Highlight, QColor(accents.value(accent, theme == QStringLiteral("mt") ? QStringLiteral("#1683c8") : theme == QStringLiteral("macos") ? QStringLiteral("#0069d9") : QStringLiteral("#4f46e5"))));
     palette.setColor(QPalette::HighlightedText, Qt::white);
     palette.setColor(QPalette::Link, dark ? QColor(QStringLiteral("#8cbfff")) : QColor(QStringLiteral("#005db5")));
     palette.setColor(QPalette::Light, QColor(colors[2]));
@@ -332,6 +346,64 @@ QMenu { padding: 7px; }
 QMenu::item { padding: 8px 28px; border-radius: 5px; }
 QHeaderView::section { padding: 10px; color: %1; }
 )").arg(muted, border, accent);
+    if (theme == QStringLiteral("mt")) sheet += QStringLiteral(R"(
+QWidget#workspace, QWidget#workspaceContent { background: palette(base); }
+QWidget#workspaceHeader { background: %4; }
+QWidget#workspaceHeader QLabel { background: transparent; color: white; }
+QLabel#mtPath { font-size: 22px; font-weight: 400; }
+QLabel#mtStatistics { color: #cccccc; font-size: 12px; }
+QWidget#workspaceHeader QPushButton { background: transparent; border: none; border-radius: 0; color: white; padding: 0; }
+QWidget#workspaceHeader QPushButton:hover { background: #454545; }
+QPushButton#workspaceSearch { min-width: 0; }
+QWidget#navigationSidebar, QScrollArea#navigationScroll, QWidget#navigationLocations { background: palette(base); }
+QWidget#navigationSidebar { border-right: 1px solid %1; }
+QLabel#brandTitle { font-size: 20px; font-weight: 400; letter-spacing: 0; }
+QLabel#navigationSection { font-size: 14px; padding: 8px 10px; }
+QWidget#navigationSidebar QPushButton[navigationItem="true"] { border-radius: 0; padding: 10px; font-size: 14px; }
+QWidget#navigationSidebar QPushButton[navigationItem="true"]:checked { font-weight: 400; color: %2; }
+QWidget#workspaceToolbar { background: palette(base); border-bottom: 1px solid %1; }
+QWidget#workspaceToolbar QPushButton, QWidget#workspaceToolbar QPushButton[primaryAction="true"] { background: transparent; border-radius: 0; font-weight: 400; }
+QWidget#workspaceToolbar QPushButton:hover { background: palette(alternate-base); }
+QSplitter#fileSplitter { qproperty-handleWidth: 3; }
+QSplitter#fileSplitter::handle { background: %1; width: 3px; border-radius: 0; }
+QFrame#filePane, QFrame#filePane[active="true"] { border: none; border-radius: 0; }
+QTabBar#paneTabs::tab { border-radius: 0; background: transparent; padding: 5px 10px; margin: 0; border-bottom: 2px solid transparent; }
+QTabBar#paneTabs::tab:selected { border-bottom: 2px solid %2; background: transparent; font-weight: 400; }
+QLabel#paneIndicator { padding-left: 7px; }
+QFrame#filePane QToolButton { border-radius: 0; }
+QLineEdit#panePath, QLineEdit#panePath:focus { background: palette(base); border: none; border-bottom: 1px solid %1; border-radius: 0; padding: 5px 8px; }
+QFrame#filePane[active="true"] QLineEdit#panePath { border-bottom: 2px solid %2; }
+QToolButton#mtParent { text-align: left; padding: 4px 8px; font-size: 17px; }
+QLabel#paneFooter { padding: 4px 10px; }
+QWidget#mtBottomBar { background: palette(base); border-top: 1px solid %1; }
+QWidget#mtBottomBar QToolButton { border: none; background: transparent; border-radius: 0; padding: 10px; }
+QWidget#mtBottomBar QToolButton:hover { background: palette(alternate-base); }
+QMenu { padding: 4px 0; border-radius: 2px; }
+QMenu { font-size: 15px; }
+QMenu::item { padding: 10px 32px; border-radius: 0; }
+QMenu::icon { left: 10px; }
+QMenu::item:selected { background: palette(alternate-base); color: palette(text); }
+QDialog { background: palette(base); }
+QDialog QPushButton { background: transparent; color: %3; border: none; border-radius: 0; padding: 9px 14px; }
+QDialog QPushButton:hover { background: palette(alternate-base); }
+QDialog QPushButton:checked, QDialog QPushButton:checked:hover, QDialog QPushButton:default { background: %2; color: white; }
+QDialog QPushButton:disabled { color: palette(placeholder-text); }
+QDialog QLineEdit { border: none; border-bottom: 1px solid %1; border-radius: 0; padding: 8px 0; background: transparent; }
+QDialog QLineEdit:focus { border: none; border-bottom: 2px solid %2; }
+QDialog#mtCreate QLineEdit#mtCreateName { border-bottom: 2px solid %2; }
+QDialog#mtCreate QPushButton { font-size: 15px; }
+QLabel#mtCreateTitle { font-size: 22px; padding-bottom: 16px; }
+QTabWidget#mtPlacesTabs::pane { border: none; border-top: 1px solid %1; border-radius: 0; }
+QFrame#mtPlaces { background: palette(base); border: 1px solid %1; border-radius: 2px; }
+QPushButton#mtDrawerShade, QPushButton#mtDrawerShade:hover, QPushButton#mtDrawerShade:pressed,
+QPushButton#mtPlacesShade, QPushButton#mtPlacesShade:hover, QPushButton#mtPlacesShade:pressed { background: rgba(0, 0, 0, 95); border: none; border-radius: 0; padding: 0; }
+QTabWidget#mtPlacesTabs QTabBar::tab { border: none; border-bottom: 3px solid transparent; border-radius: 0; background: transparent; padding: 12px 24px; margin: 0; font-size: 15px; }
+QTabWidget#mtPlacesTabs QTabBar::tab:selected { border-bottom-color: %2; color: palette(text); }
+QListWidget#mtPlacesList { border: none; border-radius: 0; }
+QListWidget#mtPlacesList::item { padding: 7px 12px; min-height: 48px; }
+QStatusBar { background: palette(base); }
+)").arg(border, accent, dark ? QStringLiteral("#65b8ed") : QStringLiteral("#0879b9"),
+        dark ? QStringLiteral("#202020") : QStringLiteral("#303030"));
     return sheet;
 }
 

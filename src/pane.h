@@ -26,6 +26,9 @@ public:
     void setDevices(const QList<Entry> &devices);
     void setOptions(bool hidden, QString sort, bool descending);
     void setAnimationsEnabled(bool enabled);
+    void setMtStyle(bool enabled);
+    bool canGoBack() const;
+    bool canGoForward() const;
     QJsonObject workspace() const;
     void restore(const QJsonObject &workspace);
     void navigate(const Location &location);

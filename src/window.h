@@ -10,6 +10,9 @@
 #include <functional>
 
 class QDockWidget;
+class QMenu;
+class QVBoxLayout;
+class QHBoxLayout;
 
 namespace twinfile {
 
@@ -49,6 +52,16 @@ private:
     void buildExtensions();
     void menu(const QPoint &position);
     void moreMenu();
+    void populateMoreMenu(QMenu &popup);
+    void buildMtChrome(QVBoxLayout *root, QHBoxLayout *heading);
+    void applyMtChrome(bool enabled);
+    void updateMtHeader();
+    void styleNavigation();
+    void positionMtDrawer();
+    void showMtMenu();
+    void showMtPlaces();
+    void createMtEntry();
+    void swapPanes();
     void adaptToolbar();
     void updateTransferButtons();
     void runJob(const QString &title, std::function<Result(const Cancellation &)> function,
@@ -91,6 +104,8 @@ private:
     QWidget *deviceNavigation_ = nullptr;
     QList<Entry> navigationPhones_, navigationDrives_;
     QStringList navigationSignature_;
+    QList<Location> recentLocations_;
+    QPointer<QWidget> mtPlaces_;
     QJsonObject settings_;
     QList<Entry> clipboard_;
     bool cut_ = false;

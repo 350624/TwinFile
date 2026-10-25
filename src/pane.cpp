@@ -57,6 +57,19 @@ private:
     bool animationsEnabled_ = true;
 };
 
+class ParentButton : public QToolButton {
+public:
+    using QToolButton::QToolButton;
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter painter(this);
+        if (underMouse() || hasFocus()) painter.fillRect(rect(), palette().alternateBase());
+        icon().paint(&painter, QRect(8, (height() - 40) / 2, 40, 40));
+        painter.setPen(palette().text().color()); painter.setFont(font());
+        painter.drawText(QRect(60, 0, width() - 68, height()), Qt::AlignLeft | Qt::AlignVCenter, text());
+    }
+};
+
 static FileView::Transition navigationTransition(const Location &from, const Location &to, FileView::Transition fallback) {
     if (from == to) return FileView::Transition::Refresh;
     if (to.source == Source::Drive) return FileView::Transition::LeaveFolder;
@@ -102,6 +115,10 @@ Pane::Pane(QWidget *parent) : QFrame(parent) {
     auto *columns = new QWidget; columns->setObjectName(QStringLiteral("paneColumns")); auto *columnLayout = new QHBoxLayout(columns); columnLayout->setContentsMargins(12, 4, 12, 4);
     auto *nameColumn = new QLabel(QStringLiteral("名称")); nameColumn->setObjectName(QStringLiteral("paneColumnLabel")); columnLayout->addWidget(nameColumn); columnLayout->addStretch();
     auto *sourceColumn = new QLabel(QStringLiteral("位置")); sourceColumn->setObjectName(QStringLiteral("paneSourceLabel")); columnLayout->addWidget(sourceColumn); layout->addWidget(columns);
+    auto *parentEntry = new ParentButton; parentEntry->setObjectName(QStringLiteral("mtParent")); parentEntry->setText(QStringLiteral(".."));
+    parentEntry->setToolButtonStyle(Qt::ToolButtonTextBesideIcon); parentEntry->setIconSize(QSize(40, 40)); parentEntry->setFixedHeight(50);
+    parentEntry->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed); parentEntry->setToolTip(QStringLiteral("上一级")); parentEntry->setAccessibleName(parentEntry->toolTip());
+    connect(parentEntry, &QToolButton::clicked, this, &Pane::goUp); layout->addWidget(parentEntry); parentEntry->hide();
     model_ = new FileModel(this); view_ = new FileView; view_->setModel(model_); layout->addWidget(view_, 1);
     blank_ = new QWidget; blank_->setFixedHeight(16); blank_->setObjectName(QStringLiteral("deselectStrip")); blank_->installEventFilter(this); layout->addWidget(blank_);
     footer_ = new QLabel; footer_->setObjectName(QStringLiteral("paneFooter")); footer_->setMinimumHeight(24); layout->addWidget(footer_);
@@ -193,6 +210,7 @@ void Pane::reload(bool preserve, FileView::Transition transition) {
     const quint64 generation = generation_;
     const Location current = location();
     path_->setText(current.display());
+    findChild<QToolButton *>(QStringLiteral("mtParent"))->setVisible(property("mtStyle").toBool() && current.source != Source::Drive);
     path_->setToolTip(current.display());
     findChild<QLabel *>(QStringLiteral("paneSourceLabel"))->setText(current.source == Source::Local ? QStringLiteral("本地文件") : current.source == Source::Phone ? QStringLiteral("Android 设备") : current.source == Source::Archive ? QStringLiteral("压缩包") : QStringLiteral("驱动器与设备"));
     emit locationChanged();
@@ -234,6 +252,21 @@ void Pane::setOptions(bool hidden, QString sort, bool descending) {
 }
 
 void Pane::setAnimationsEnabled(bool enabled) { view_->setAnimationsEnabled(enabled); refresh_->setAnimationsEnabled(enabled); }
+
+void Pane::setMtStyle(bool enabled) {
+    setProperty("mtStyle", enabled);
+    layout()->setContentsMargins(enabled ? 0 : 10, enabled ? 0 : 10, enabled ? 0 : 10, 0);
+    layout()->setSpacing(enabled ? 0 : 6);
+    findChild<QWidget *>(QStringLiteral("paneColumns"))->setVisible(!enabled);
+    auto *parentEntry = findChild<QToolButton *>(QStringLiteral("mtParent"));
+    Entry folder; folder.directory = true; parentEntry->setIcon(entryIcon(folder));
+    parentEntry->setVisible(enabled && location().source != Source::Drive);
+    blank_->setVisible(!enabled);
+    view_->stopTransition(); view_->doItemsLayout(); view_->viewport()->update();
+}
+
+bool Pane::canGoBack() const { return states_[tab_].historyIndex > 0; }
+bool Pane::canGoForward() const { return states_[tab_].historyIndex + 1 < states_[tab_].history.size(); }
 
 void Pane::navigate(const Location &destination) {
     navigateTo(destination, navigationTransition(location(), destination, FileView::Transition::EnterFolder));

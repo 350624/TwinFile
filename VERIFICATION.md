@@ -1,5 +1,15 @@
 # 验证范围与复现
 
+## 3.1.13 MT 原版主题（2026-10-25）
+
+Windows 11 x64、Qt 6.10.3、MinGW GCC 13.1、C++20 Release。新增 MT 亮暗专项验证主题名称、黑底白色文件夹图标、活动路径和文件/目录数量、平直双栏与父目录行、位置侧栏展开收起、底部历史导航、交换左右完整栏及复制方向、新建文件/目录实际落盘与无效名称禁止创建、菜单入口、最近与书签底部面板、收藏跳转只影响活动栏，以及切回其他主题和设置恢复。Windows 截图位于 `verification/native-mt-original-场景-模式.png`。
+
+Windows MT 亮暗与外观恢复专项 **5 passed / 0 failed / 0 skipped**，日志为 `build/mt-3.1.13-final-results.txt`。此前 MT、五主题各亮暗工具栏与工作台布局专项 **16 passed / 0 failed / 0 skipped**，日志为 `build/mt-3.1.13-overlay-results.txt`。
+
+`verify-ui.ps1` 将 MT 专项单独执行，避免挤占原有五主题 UI 分组时限；发布仍执行全部六组回归、既有五主题各亮暗与 1100×650 助手/任务进度布局、Windows UI 和便携启动。最终通过的数量与日志以实际发布检查结果为准。
+
+MT 保留桌面路径编辑、多标签、任务进度、复制移动与助手，不模拟 Android 状态栏，不提供 MT 登录/会员。磁盘容量沿用后台轮询读取，手机/包内不伪造容量。最近记录仅当前进程最多 40 项，本地收藏继续持久化。未做真实手机、安装或升级验收，安装器只生成不执行。
+
 ## 3.1.12 属性与按类型显示菜单（2026-10-25）
 
 Windows 11 x64、Qt 6.10.3、MinGW GCC 13.1、C++20 Release。Windows 属性统计专项 **5 passed / 0 failed / 0 skipped**，属性与菜单 UI 专项 **13 passed / 0 failed / 0 skipped**（含五主题各亮暗与初始化/清理）；日志为 `build/properties-core-3.1.12-results.txt` 和 `build/properties-ui-3.1.12-results.txt`。发布流程 `publish.ps1` 另执行六组全量回归、Windows UI、便携启动与安装器打包，成功前不视为完成。

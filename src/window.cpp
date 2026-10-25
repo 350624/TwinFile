@@ -176,6 +176,7 @@ Window::Window(QWidget *parent, const QUrl &updateTestEndpoint) : QMainWindow(pa
     addButton(QString(), QStringLiteral("more"), QStringLiteral("更多工具"), &Window::moreMenu)->setFixedWidth(36);
     contentLayout->addWidget(toolbarWidget);
     auto *splitter = new QSplitter; splitter->setObjectName(QStringLiteral("fileSplitter")); splitter->setChildrenCollapsible(false); left_ = new Pane; right_ = new Pane; splitter->addWidget(left_); splitter->addWidget(right_); contentLayout->addWidget(splitter, 1); body->addWidget(content, 1); root->addLayout(body, 1);
+    buildMtChrome(root, headingLayout);
     for (Pane *pane : {left_, right_}) {
         pane->setAnimationsEnabled(!settings_.value(QStringLiteral("reduced_motion")).toBool());
         connect(pane, &Pane::activated, this, &Window::setActive);
@@ -183,6 +184,13 @@ Window::Window(QWidget *parent, const QUrl &updateTestEndpoint) : QMainWindow(pa
         connect(pane, &Pane::previewRequested, this, &Window::properties);
         connect(pane, &Pane::menuRequested, this, &Window::menu);
         connect(pane, &Pane::locationChanged, this, &Window::updateNavigation);
+        connect(pane, &Pane::locationChanged, this, [this, pane] {
+            const auto location = pane->location();
+            if (location.source == Source::Drive) return;
+            recentLocations_.removeAll(location); recentLocations_.prepend(location);
+            if (recentLocations_.size() > 40) recentLocations_.removeLast();
+        });
+        connect(pane->fileModel(), &QAbstractItemModel::modelReset, this, &Window::updateMtHeader);
     }
     buildActions(); setActive(left_);
     const QJsonObject workspace = settings_.value(QStringLiteral("workspace")).toObject();
@@ -278,6 +286,7 @@ void Window::buildSidebar(QWidget *sidebar) {
 
 void Window::updateNavigation() {
     if (!active_) return;
+    updateMtHeader();
     for (auto *button : sidebar_->findChildren<QPushButton *>()) {
         const auto location = active_->location();
         if (button->property("navigationDevice").isValid()) {
@@ -333,6 +342,7 @@ void Window::updateDeviceNavigation() {
         connect(button, &QPushButton::clicked, this, [this, entry] { active_->navigate({Source::Local, entry.path, {}, {}}); });
     }
     updateNavigation();
+    styleNavigation();
     if (auto *navigationLayout = deviceNavigation_->parentWidget()->layout()) navigationLayout->activate();
     scroll->verticalScrollBar()->setValue(offset);
 }
@@ -340,6 +350,7 @@ void Window::updateDeviceNavigation() {
 void Window::setActive(Pane *pane) {
     if (!pane) return;
     const bool changed = active_ != pane;
+    if (changed && mtPlaces_) mtPlaces_->close();
     active_ = pane;
     if (changed) updateTransferButtons();
     updateNavigation();
@@ -387,10 +398,12 @@ void Window::setTheme(const QString &theme) {
     const bool dark = settings_.value(QStringLiteral("color_mode")).toString() == QStringLiteral("dark");
     const bool mac = current == QStringLiteral("macos");
     qApp->setProperty("macosStyle", mac);
+    const bool mt = current == QStringLiteral("mt");
+    qApp->setProperty("mtStyle", mt);
     const QPalette palette = appearancePalette(current, dark, settings_.value(QStringLiteral("accent")).toString());
     qApp->setPalette(palette);
     qApp->setStyleSheet(appearanceStyleSheet(current, dark, palette));
-    findChild<QSplitter *>(QStringLiteral("fileSplitter"))->setHandleWidth(12);
+    findChild<QSplitter *>(QStringLiteral("fileSplitter"))->setHandleWidth(mt ? 3 : 12);
     findChild<QWidget *>(QStringLiteral("workspaceHeader"))->show();
     sidebar_->setFixedWidth(184);
     for (auto *button : findChildren<QAbstractButton *>()) {
@@ -398,10 +411,9 @@ void Window::setTheme(const QString &theme) {
         if (!symbol.isEmpty()) { button->setIcon(actionSymbol(symbol, palette.color(QPalette::Text))); button->setIconSize(QSize(18, 18)); }
     }
     for (Pane *pane : {left_, right_}) {
-        pane->layout()->setContentsMargins(10, 10, 10, 0);
-        pane->layout()->setSpacing(6);
-        pane->view()->stopTransition(); pane->view()->doItemsLayout(); pane->view()->viewport()->update();
+        pane->setMtStyle(mt);
     }
+    applyMtChrome(mt);
     updateTransferButtons();
 }
 
@@ -419,7 +431,6 @@ void Window::showAppearanceSettings() {
     auto *themes = new QComboBox; themes->setObjectName(QStringLiteral("appearanceTheme"));
     for (const QString &theme : themeIds()) themes->addItem(themeName(theme), theme);
     themes->setCurrentIndex(themeIds().indexOf(settings_.value(QStringLiteral("theme")).toString())); layout->addWidget(themes);
-    auto *detail = new QLabel(QStringLiteral("macOS 风格：Finder 式侧栏、工作空间标题、紧凑文件行、分段标签和统一控件。保留 Windows 原生标题栏与窗口操作，不伪装系统毛玻璃。")); detail->setWordWrap(true); detail->setObjectName(QStringLiteral("subtle")); layout->addWidget(detail);
     layout->addWidget(new QLabel(QStringLiteral("显示模式")));
     auto *modes = new QHBoxLayout; auto *modeGroup = new QButtonGroup(&dialog); modeGroup->setExclusive(true);
     for (const auto &mode : {QStringLiteral("light"), QStringLiteral("dark")}) {
@@ -640,6 +651,7 @@ void Window::rename(bool batch) {
 }
 
 void Window::create(bool directory) {
+    if (settings_.value(QStringLiteral("theme")).toString() == QStringLiteral("mt")) { createMtEntry(); return; }
     const Location target = active_->location();
     bool accepted; const QString name = QInputDialog::getText(this, directory ? QStringLiteral("新建文件夹") : QStringLiteral("新建文件"), QStringLiteral("名称"), QLineEdit::Normal, {}, &accepted);
     if (!accepted) return;
@@ -1117,6 +1129,11 @@ void Window::menu(const QPoint &position) {
 
 void Window::moreMenu() {
     QMenu popup(this);
+    populateMoreMenu(popup);
+    popup.exec(QCursor::pos());
+}
+
+void Window::populateMoreMenu(QMenu &popup) {
     popup.addAction(QStringLiteral("直链下载…"), this, &Window::showDownload);
     popup.addSeparator();
     auto *settings = popup.addMenu(QStringLiteral("设置"));
@@ -1167,10 +1184,12 @@ void Window::moreMenu() {
     popup.addAction(QStringLiteral("本地 / 远程 Payload 分区提取"), this, &Window::payload);
     popup.addAction(QStringLiteral("HFX USB + WiFi 多轨传输"), this, &Window::hfx);
     popup.addAction(QStringLiteral("关于 / 原生迁移说明"), this, [this] { showText(QStringLiteral("TwinFile C++ 原生版"), QStringLiteral("业务代码为 C++20 / Qt 6，不包含或调用 Python 后端。\n\n包含双栏、多标签、文件操作、原生 ADB 同步、HFX 多轨、本地和远程 Payload、ZIP64 编辑与嵌套回写、编码保留文本编辑、图片编辑、媒体与歌词、文本/目录比较、校验清单、APK 清单/工程编辑与签名。\n\n这是重新实现，不是逐像素复刻。复杂 Android drawable、增量 OTA 等仍有明确边界；手机、QQ 收件、在线歌词服务和安装升级需要实机验收。自动测试不等于全部旧版行为已人工确认。\n\n安装包与旧版并行安装，配置独立；不会自动删除旧工程或覆盖旧 3.1 安装包。详细说明见 MIGRATION.md 和 THIRD_PARTY.md。")); });
-    popup.exec(QCursor::pos());
 }
 
 bool Window::eventFilter(QObject *object, QEvent *event) {
+    if (object == centralWidget() && event->type() == QEvent::Resize && mtPlaces_) mtPlaces_->close();
+    if (object == centralWidget() && event->type() == QEvent::Resize)
+        QTimer::singleShot(0, this, &Window::positionMtDrawer);
     if (object->objectName() == QStringLiteral("workspaceToolbar") && (event->type() == QEvent::Resize || event->type() == QEvent::LayoutRequest))
         adaptToolbar();
     if ((object == sidebar_ || object == deviceNavigation_ || object == centralWidget() || object->objectName() == QStringLiteral("navigationLocations")) && event->type() == QEvent::MouseButtonPress) {

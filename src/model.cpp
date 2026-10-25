@@ -128,10 +128,28 @@ QIcon entryIcon(const Entry &entry) {
         : QStringList{QStringLiteral("wav"), QStringLiteral("mp3"), QStringLiteral("flac"), QStringLiteral("ogg"), QStringLiteral("m4a")}.contains(suffix) ? QStringLiteral("audio")
         : QStringList{QStringLiteral("mp4"), QStringLiteral("mkv"), QStringLiteral("avi"), QStringLiteral("webm")}.contains(suffix) ? QStringLiteral("video") : QStringLiteral("file");
     const bool mac = qApp->property("macosStyle").toBool();
-    const QString cacheKey = kind + (mac ? QStringLiteral("-macos") : QString());
+    const bool mt = qApp->property("mtStyle").toBool();
+    const QString cacheKey = kind + (mt ? QStringLiteral("-mt") : mac ? QStringLiteral("-macos") : QString());
     if (icons.contains(cacheKey)) return icons[cacheKey];
     QPixmap pixmap(96, 96); pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap); painter.setRenderHint(QPainter::Antialiasing);
+    if (mt) {
+        painter.setPen(Qt::NoPen); painter.setBrush(QColor(QStringLiteral("#303030"))); painter.drawRoundedRect(QRectF(1, 1, 94, 94), 15, 15);
+        painter.setBrush(Qt::white);
+        if (kind == QStringLiteral("folder")) {
+            QPainterPath folder; folder.moveTo(25, 31); folder.lineTo(42, 31); folder.lineTo(49, 38); folder.lineTo(72, 38);
+            folder.quadTo(76, 38, 76, 42); folder.lineTo(76, 66); folder.quadTo(76, 71, 71, 71); folder.lineTo(25, 71);
+            folder.quadTo(20, 71, 20, 66); folder.lineTo(20, 36); folder.quadTo(20, 31, 25, 31); painter.drawPath(folder);
+        } else {
+            painter.drawRoundedRect(QRectF(29, 22, 38, 52), 3, 3); painter.setPen(QPen(QColor(QStringLiteral("#303030")), 3));
+            if (kind == QStringLiteral("phone") || kind == QStringLiteral("drive")) painter.drawRect(QRectF(35, 29, 26, 32));
+            else {
+                QFont font = painter.font(); font.setPixelSize(13); font.setBold(true); painter.setFont(font);
+                painter.drawText(QRect(29, 28, 38, 40), Qt::AlignCenter, kind == QStringLiteral("file") ? QStringLiteral("=") : kind.toUpper());
+            }
+        }
+        painter.end(); icons.insert(cacheKey, QIcon(pixmap)); return icons[cacheKey];
+    }
     const QColor color = kind == QStringLiteral("folder") ? QColor(QStringLiteral("#48c8f6"))
         : kind == QStringLiteral("apk") ? QColor(QStringLiteral("#8cc549"))
         : kind == QStringLiteral("zip") ? QColor(QStringLiteral("#ffbd42")) : kind == QStringLiteral("pdf") ? QColor(QStringLiteral("#f08085"))
@@ -185,22 +203,24 @@ void FileDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option, 
         if (view->transition() == FileView::Transition::Refresh) painter->translate(0, 8 * remaining);
         else painter->translate((view->transition() == FileView::Transition::LeaveFolder ? -18 : 18) * remaining, 0);
     }
-    const QRect body = option.rect.adjusted(3, 2, -5, -2);
+    const bool mt = qApp->property("mtStyle").toBool();
+    const QRect body = mt ? option.rect : option.rect.adjusted(3, 2, -5, -2);
     const bool selected = option.state.testFlag(QStyle::State_Selected);
     if (selected || option.state.testFlag(QStyle::State_MouseOver)) {
-        painter->setPen(Qt::NoPen); painter->setBrush(selected ? option.palette.highlight() : option.palette.alternateBase()); painter->drawRoundedRect(body, 8, 8);
+        painter->setPen(Qt::NoPen); painter->setBrush(selected ? option.palette.highlight() : option.palette.alternateBase()); painter->drawRoundedRect(body, mt ? 0 : 8, mt ? 0 : 8);
     }
-    const int iconSize = 36;
+    const int iconSize = mt ? 40 : 36;
     const QRect iconBox(body.left() + 8, body.top() + (body.height() - iconSize) / 2, iconSize, iconSize);
     const QImage image = index.data(FileModel::ImageRole).value<QImage>();
     painter->drawPixmap(iconBox.topLeft(), maskedEntryIcon(entry, image, iconSize, painter->device()->devicePixelRatioF(), option.palette));
     const QRect title(iconBox.right() + 12, body.top() + 2, body.width() - iconSize - 32, 22);
+    QFont titleFont = option.font; if (mt) titleFont.setPixelSize(15); painter->setFont(titleFont);
     painter->setPen(selected ? option.palette.highlightedText().color() : option.palette.text().color());
-    painter->drawText(title, Qt::AlignLeft | Qt::AlignVCenter, option.fontMetrics.elidedText(entry.name, Qt::ElideMiddle, title.width()));
+    painter->drawText(title, Qt::AlignLeft | Qt::AlignVCenter, painter->fontMetrics().elidedText(entry.name, Qt::ElideMiddle, title.width()));
     QColor secondary = selected ? option.palette.highlightedText().color() : option.palette.placeholderText().color(); painter->setPen(secondary);
-    QFont font = option.font; font.setPixelSize(11); painter->setFont(font);
+    QFont font = option.font; font.setPixelSize(mt ? 12 : 11); painter->setFont(font);
     QString detail = entry.detail;
-    if (detail.isEmpty()) detail = (entry.directory ? QString() : humanSize(entry.size) + QStringLiteral(" · ")) + entry.modified.toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+    if (detail.isEmpty()) detail = (entry.directory ? QString() : humanSize(entry.size) + QStringLiteral(" · ")) + entry.modified.toString(mt ? QStringLiteral("yy-MM-dd HH:mm") : QStringLiteral("yyyy-MM-dd HH:mm"));
     painter->drawText(title.translated(0, 21), Qt::AlignLeft | Qt::AlignVCenter, painter->fontMetrics().elidedText(detail, Qt::ElideMiddle, title.width()));
     painter->restore();
 }

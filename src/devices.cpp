@@ -28,6 +28,9 @@ QList<Entry> storageLocations() {
         const QString volume = QString::fromWCharArray(label).trimmed();
         entry.name = (type == DRIVE_REMOVABLE ? QStringLiteral("U盘") : volume.isEmpty() ? QStringLiteral("本地磁盘") : volume) + QStringLiteral(" (%1)").arg(root.left(2));
         entry.detail = type == DRIVE_REMOVABLE && !volume.isEmpty() ? volume : QString();
+        ULARGE_INTEGER available{}, total{};
+        if (GetDiskFreeSpaceExW(reinterpret_cast<LPCWSTR>(root.utf16()), &available, &total, nullptr))
+            entry.detail = QStringLiteral("可用 %1 / 共 %2").arg(humanSize(qint64(available.QuadPart)), humanSize(qint64(total.QuadPart)));
         entries.append(entry);
     }
     if (modeChanged) SetThreadErrorMode(previousMode, nullptr);

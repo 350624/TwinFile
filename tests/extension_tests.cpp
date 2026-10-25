@@ -33,6 +33,8 @@
 #include <QScrollBar>
 #include <QSet>
 #include <QTabWidget>
+#include <QToolButton>
+#include <QSplitter>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
@@ -392,6 +394,110 @@ private slots:
         window.showAppearanceSettings(); QVERIFY(checked); window.close();
         const auto stored = readSettings(settingsPath()); QCOMPARE(stored.value(QStringLiteral("theme")).toString(), QStringLiteral("cream")); QCOMPARE(stored.value(QStringLiteral("color_mode")).toString(), QStringLiteral("dark"));
         Window restored; QCOMPARE(qApp->palette().color(QPalette::Base), appearancePalette(QStringLiteral("cream"), true, {}).color(QPalette::Base)); restored.close();
+    }
+    void mtOriginalLayoutAndActions_data() {
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("light") << QStringLiteral("light");
+        QTest::newRow("dark") << QStringLiteral("dark");
+    }
+    void mtOriginalLayoutAndActions() {
+        QFETCH(QString, mode); QTemporaryDir root;
+        const QString left = root.filePath(QStringLiteral("Download")), right = root.filePath(QStringLiteral("appshare"));
+        QVERIFY(QDir().mkpath(left + QStringLiteral("/Android"))); QVERIFY(QDir().mkpath(right + QStringLiteral("/QQ")));
+        { QFile file(left + QStringLiteral("/notes.txt")); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("MT fixture"); }
+        auto state = readSettings(settingsPath()); state.insert(QStringLiteral("extension_visible"), false); state.insert(QStringLiteral("geometry"), QString()); state.insert(QStringLiteral("favorites"), QJsonArray{right});
+        QVERIFY(writeSettings(settingsPath(), state));
+        Window window; window.setAttribute(Qt::WA_DontShowOnScreen); window.setReducedMotion(true); window.setTheme(QStringLiteral("mt")); window.setColorMode(mode); window.resize(1280, 820); window.show();
+        auto *first = window.leftPane(), *second = window.rightPane();
+        first->navigate({Source::Local, left, {}, {}}); second->navigate({Source::Local, right, {}, {}});
+        QTRY_COMPARE(first->fileModel()->rowCount(), 2); QTRY_COMPARE(second->fileModel()->rowCount(), 1); window.setActive(first);
+        QCOMPARE(themeName(QStringLiteral("mt")), QStringLiteral("MT 原版")); QVERIFY(qApp->property("mtStyle").toBool());
+        auto *headerPath = window.findChild<QLabel *>(QStringLiteral("mtPath")); auto *statistics = window.findChild<QLabel *>(QStringLiteral("mtStatistics"));
+        QCOMPARE(headerPath->text(), first->location().display()); QVERIFY(statistics->text().contains(QStringLiteral("文件夹: 1   文件: 1")));
+        auto *bottom = window.findChild<QWidget *>(QStringLiteral("mtBottomBar")); QVERIFY(bottom->isVisible());
+        auto *sidebar = window.findChild<QWidget *>(QStringLiteral("navigationSidebar")); QVERIFY(!sidebar->isVisible());
+        QVERIFY(!first->findChild<QWidget *>(QStringLiteral("paneColumns"))->isVisible()); QCOMPARE(window.findChild<QSplitter *>(QStringLiteral("fileSplitter"))->handleWidth(), 3);
+        const QString output = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT");
+        auto capture = [&](const QString &name, QWidget *widget) {
+            if (!output.isEmpty()) QVERIFY(widget->grab().save(QDir(output).filePath(QStringLiteral("native-mt-original-") + name + QChar('-') + mode + QStringLiteral(".png"))));
+        };
+        QTest::qWait(50); capture(QStringLiteral("workspace"), &window);
+        const QImage folderIcon = entryIcon(first->fileModel()->entry(0)).pixmap(96, 96).toImage();
+        QCOMPARE(folderIcon.pixelColor(48, 48), QColor(Qt::white)); QCOMPARE(folderIcon.pixelColor(12, 48), QColor(QStringLiteral("#303030")));
+        window.findChild<QPushButton *>(QStringLiteral("mtDrawer"))->click(); QTest::qWait(20); QVERIFY(sidebar->isVisible()); capture(QStringLiteral("drawer"), &window);
+        auto *drawerShade = window.findChild<QPushButton *>(QStringLiteral("mtDrawerShade")); QVERIFY(drawerShade->isVisible());
+        QTest::mouseClick(drawerShade, Qt::LeftButton, Qt::NoModifier, QPoint(drawerShade->width() - 10, 10)); QVERIFY(!sidebar->isVisible()); QVERIFY(!drawerShade->isVisible());
+        first->view()->selectionModel()->select(first->fileModel()->index(1), QItemSelectionModel::ClearAndSelect);
+        const QJsonObject firstTabs = first->workspace(); const bool historyBeforeSwap = first->canGoBack();
+        window.setActive(second); QCOMPARE(headerPath->text(), second->location().display());
+        window.findChild<QToolButton *>(QStringLiteral("mt_swap"))->click();
+        QCOMPARE(window.leftPane(), second); QCOMPARE(window.rightPane(), first); QCOMPARE(window.activePane(), second);
+        QCOMPARE(first->selected().size(), 1); QCOMPARE(first->selected().first().name, QStringLiteral("notes.txt")); QCOMPARE(first->workspace(), firstTabs); QCOMPARE(first->canGoBack(), historyBeforeSwap);
+        QCOMPARE(window.findChild<QPushButton *>(QStringLiteral("action_copy"))->property("symbol").toString(), QStringLiteral("copy-forward"));
+        window.findChild<QToolButton *>(QStringLiteral("mt_swap"))->click(); window.setActive(first);
+        window.findChild<QToolButton *>(QStringLiteral("mt_up"))->click(); QCOMPARE(first->location().path, root.path());
+        window.findChild<QToolButton *>(QStringLiteral("mt_back"))->click(); QCOMPARE(first->location().path, left);
+        QVERIFY(window.findChild<QToolButton *>(QStringLiteral("mt_forward"))->isEnabled());
+        first->findChild<QToolButton *>(QStringLiteral("mtParent"))->click(); QCOMPARE(first->location().path, root.path());
+        window.findChild<QToolButton *>(QStringLiteral("mt_back"))->click(); QTRY_COMPARE(first->fileModel()->rowCount(), 2);
+        for (bool folder : {false, true}) {
+            const QString name = folder ? QStringLiteral("created-folder") : QStringLiteral("created.txt"); bool checked = false;
+            QTimer::singleShot(0, &window, [&] {
+                auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); if (!dialog) return;
+                const auto closeOnFailure = qScopeGuard([dialog] { if (dialog->isVisible()) dialog->reject(); });
+                QCOMPARE(dialog->objectName(), QStringLiteral("mtCreate"));
+                auto *input = dialog->findChild<QLineEdit *>(QStringLiteral("mtCreateName")); QVERIFY(input);
+                auto *fileButton = dialog->findChild<QPushButton *>(QStringLiteral("mtCreateFile"));
+                auto *folderButton = dialog->findChild<QPushButton *>(QStringLiteral("mtCreateFolder"));
+                QVERIFY(!fileButton->isEnabled()); QVERIFY(!folderButton->isEnabled());
+                input->setText(QStringLiteral("../bad")); QVERIFY(!fileButton->isEnabled()); QVERIFY(!folderButton->isEnabled());
+                input->setText(name); QVERIFY(fileButton->isEnabled()); QVERIFY(folderButton->isEnabled());
+                capture(QStringLiteral("create"), dialog); checked = true; (folder ? folderButton : fileButton)->click();
+            });
+            window.findChild<QToolButton *>(QStringLiteral("mt_add"))->click(); QVERIFY(checked);
+            QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(QDir(left).filePath(name)), 5000);
+            auto *task = static_cast<TaskProgress *>(window.findChild<QWidget *>(QStringLiteral("taskProgress"))); QTRY_VERIFY(!task->active());
+            QCOMPARE(QFileInfo(QDir(left).filePath(name)).isDir(), folder);
+        }
+        bool menuChecked = false;
+        QTimer::singleShot(0, &window, [&] {
+            auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget()); if (!menu) return;
+            const auto close = qScopeGuard([menu] { menu->close(); }); QCOMPARE(menu->objectName(), QStringLiteral("mtMenu"));
+            QStringList labels; for (auto *action : menu->actions()) { labels.append(action->text()); if (!action->isSeparator()) QVERIFY(!action->icon().isNull()); }
+            QVERIFY(labels.contains(QStringLiteral("刷新"))); QVERIFY(labels.contains(QStringLiteral("交换窗口"))); QVERIFY(labels.contains(QStringLiteral("更多工具")));
+            capture(QStringLiteral("menu"), menu); menuChecked = true;
+        });
+        window.findChild<QPushButton *>(QStringLiteral("mtOverflow"))->click(); QVERIFY(menuChecked);
+        window.findChild<QPushButton *>(QStringLiteral("mtLocation"))->click(); QTest::qWait(20);
+        QPointer<QWidget> sheet = window.findChild<QWidget *>(QStringLiteral("mtPlaces")); QVERIFY(sheet); QVERIFY(sheet->isVisible());
+        QVERIFY(window.centralWidget()->rect().contains(sheet->geometry())); auto *tabs = sheet->findChild<QTabWidget *>(QStringLiteral("mtPlacesTabs")); QCOMPARE(tabs->count(), 2);
+        capture(QStringLiteral("recent"), &window);
+        tabs->setCurrentIndex(1); auto *bookmarks = qobject_cast<QListWidget *>(tabs->currentWidget()); QVERIFY(bookmarks); QCOMPARE(bookmarks->count(), 1);
+        auto *item = bookmarks->item(0); QTest::mouseClick(bookmarks->viewport(), Qt::LeftButton, Qt::NoModifier, bookmarks->visualItemRect(item).center());
+        QTRY_VERIFY(sheet.isNull()); QCOMPARE(first->location().path, right); QCOMPARE(second->location().path, right);
+        window.findChild<QPushButton *>(QStringLiteral("mtLocation"))->click();
+        auto *placesShade = window.findChild<QPushButton *>(QStringLiteral("mtPlacesShade")); QVERIFY(placesShade);
+        QPointer<QWidget> dismissSheet = window.findChild<QWidget *>(QStringLiteral("mtPlaces"));
+        QTest::mouseClick(placesShade, Qt::LeftButton, Qt::NoModifier, QPoint(10, 10)); QTRY_VERIFY(dismissSheet.isNull());
+        window.findChild<QPushButton *>(QStringLiteral("assistantToggle"))->click(); window.findChild<QPushButton *>(QStringLiteral("mtDrawer"))->click();
+        window.resize(1100, 650); QTest::qWait(50); QCOMPARE(window.size(), QSize(1100, 650)); QVERIFY(sidebar->isVisible());
+        QVERIFY(window.centralWidget()->rect().contains(sidebar->geometry()));
+        for (Pane *pane : {first, second}) { QVERIFY(pane->width() >= 260); QVERIFY(pane->rect().contains(QRect(pane->view()->mapTo(pane, QPoint()), pane->view()->size()))); }
+        capture(QStringLiteral("compact-drawer-assistant"), &window);
+        bool appearanceChecked = false;
+        QTimer::singleShot(0, &window, [&] {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); if (!dialog) return;
+            const auto close = qScopeGuard([dialog] { dialog->reject(); });
+            auto *themes = dialog->findChild<QComboBox *>(QStringLiteral("appearanceTheme")); QVERIFY(themes);
+            QCOMPARE(themes->currentText(), QStringLiteral("MT 原版")); capture(QStringLiteral("settings"), dialog); appearanceChecked = true;
+        });
+        window.showAppearanceSettings(); QVERIFY(appearanceChecked);
+        window.setTheme(QStringLiteral("twinfile")); QVERIFY(!qApp->property("mtStyle").toBool()); QVERIFY(!bottom->isVisible()); QVERIFY(sidebar->isVisible());
+        QVERIFY(first->findChild<QWidget *>(QStringLiteral("paneColumns"))->isVisible()); QVERIFY(!first->findChild<QToolButton *>(QStringLiteral("mtParent"))->isVisible());
+        const QImage normalIcon = entryIcon(first->fileModel()->entry(0)).pixmap(96, 96).toImage(); QVERIFY(normalIcon != folderIcon);
+        window.setTheme(QStringLiteral("mt")); window.close();
+        Window restored; restored.setAttribute(Qt::WA_DontShowOnScreen); restored.show(); QVERIFY(qApp->property("mtStyle").toBool()); QVERIFY(restored.findChild<QWidget *>(QStringLiteral("mtBottomBar"))->isVisible());
+        restored.setTheme(QStringLiteral("twinfile")); restored.close();
     }
     void keysUseDpapiAndCanBeForgotten() {
         QTemporaryDir root; AiSettings settings; settings.endpoint = QStringLiteral("https://example.com/v1"); settings.model = QStringLiteral("example"); settings.apiKey = QStringLiteral("private-key-中文-12345");

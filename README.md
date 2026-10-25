@@ -1,4 +1,4 @@
-# TwinFile 3.1.12 · C++ 原生版
+# TwinFile 3.1.13 · C++ 原生版
 
 **Windows 双栏文件管理器 · Android 工具箱 · 可选 AI / Agent · 原生插件扩展**
 
@@ -10,8 +10,8 @@ TwinFile 是面向 Windows 的双栏文件管理与 Android 工具箱。本版�
 
 ## 运行和安装
 
-- 面向 Windows x64。[下载 3.1.12 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.12/TwinFile-3.1.12-Windows-x64-Setup.exe)或[独立直链下载器](https://github.com/350624/TwinFile/releases/download/v3.1.12/TwinFile-Downloader-3.1.12-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
-- 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；独立下载器 `dist/TwinFileDownloader-3.1.12/TwinFileDownloader.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.12）。这些是构建后的路径，不是仓库已包含的文件。
+- 面向 Windows x64。[下载 3.1.13 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.13/TwinFile-3.1.13-Windows-x64-Setup.exe)或[独立直链下载器](https://github.com/350624/TwinFile/releases/download/v3.1.13/TwinFile-Downloader-3.1.13-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
+- 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；独立下载器 `dist/TwinFileDownloader-3.1.13/TwinFileDownloader.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.13）。这些是构建后的路径，不是仓库已包含的文件。
 - 完整发布包不需要安装 Python、Qt SDK 或编译器。手机需开启 USB 调试并授权电脑；HFX 需经用户确认安装配套手机端。源码编译与完整工具包的准备步骤不同，详见[安装说明](docs/INSTALL.md)。
 - 新配置：`%APPDATA%/TwinFileNative/settings.json`。配置与旧版独立，菜单不再提供旧版设置/工作区导入入口。
 - 第一次使用：点选左栏目录，再点选右栏目标目录，回到源栏选择文件，按 `F5` 复制到另一栏；顶部“助手”打开可选 AI，未配置 API 不影响文件管理。
@@ -132,7 +132,7 @@ Payload 支持本地 BIN / OTA ZIP、远程 HTTP(S) Range、分区勾选提取�
 
 ### 外观与明暗模式
 
-顶部明暗图标或“⋯ → 外观 → 外观设置…”提供 TwinFile、MT、Cream、bataUI01、macOS 五套风格；不再将 dark/light 作为独立主题。主题选择下方的亮色/暗色分段开关适用于每套风格，也可在外观菜单快速切换。切换立即生效并保存，保留七种强调色与减少动画；旧 dark/light 配置自动转换为 TwinFile 对应明暗模式，旧 MT/Cream/bataUI01 默认保持原来的亮色。所有风格均使用新工作台结构，并统一适配按钮、菜单、滚动条、AI/插件及工具弹窗。
+顶部明暗图标或“⋯ → 外观 → 外观设置…”提供 TwinFile、MT 原版、Cream、bataUI01、macOS 五套风格；不再将 dark/light 作为独立主题。主题选择下方的亮色/暗色分段开关适用于每套风格，也可在外观菜单快速切换。切换立即生效并保存，保留七种强调色与减少动画；旧 dark/light 配置自动转换为 TwinFile 对应明暗模式，旧 MT/Cream/bataUI01 默认保持原来的亮色。MT 原版采用深灰路径顶栏、黑白图标、平直双栏、可收起的位置侧栏、底部导航、最近/书签面板和文件/文件夹共用新建窗口，保留桌面的路径编辑、多标签、顶部任务进度和助手。
 
 macOS 是在 Windows 上实现的 Finder 风格，不是原生 macOS：包含工作空间标题、灰色导航侧栏、渐变文件夹图标、紧凑文件行、分段标签、路径栏、按钮、菜单、滚动条、状态栏，以及 AI/插件面板和各工具弹窗的统一样式。保留 Windows 标题栏、拖动、最大化与系统窗口管理；没有伪称实现系统 Vibrancy 毛玻璃。原有目录/刷新动画继续生效，不增加持续后台重绘。内置文本编辑器的语法颜色也随明暗适配；第三方插件自绘或自行硬编码的样式由插件作者负责。
 
