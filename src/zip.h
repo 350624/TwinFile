@@ -29,7 +29,7 @@ public:
     Status status() const { return error_.isEmpty() ? NoError : FileError; }
     QString errorString() const { return error_; }
     QByteArray fileData(const QString &name, qint64 limit = 128 * 1024 * 1024);
-    bool streamFile(const QString &name, QIODevice *output, const Cancellation &cancel = {});
+    bool streamFile(const QString &name, QIODevice *output, const Cancellation &cancel = {}, const Progress &progress = {});
 private:
     QFile file_;
     void *handle_ = nullptr;
@@ -47,12 +47,12 @@ public:
     void addDirectory(const QString &name, const ZipInfo *original = nullptr);
     void addSymLink(const QString &name, const QString &target);
     void addFile(const QString &name, const QByteArray &bytes);
-    void addFile(const QString &name, QIODevice *input, const Cancellation &cancel = {}, const ZipInfo *original = nullptr);
+    void addFile(const QString &name, QIODevice *input, const Cancellation &cancel = {}, const ZipInfo *original = nullptr, const Progress &progress = {});
     void close();
     Status status() const { return failed_ ? FileError : NoError; }
 private:
     void open(QIODevice *output);
-    void add(const QString &name, QIODevice *input, unsigned attributes, const Cancellation &cancel, const ZipInfo *original = nullptr);
+    void add(const QString &name, QIODevice *input, unsigned attributes, const Cancellation &cancel, const ZipInfo *original = nullptr, const Progress &progress = {});
     std::unique_ptr<QFile> file_;
     void *handle_ = nullptr;
     QIODevice *output_ = nullptr;

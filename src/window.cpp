@@ -13,6 +13,7 @@
 #include "updates.h"
 #include "mcp.h"
 #include "download.h"
+#include "task_progress.h"
 
 #include <QApplication>
 #include <QActionGroup>
@@ -53,7 +54,7 @@
 #include <QMovie>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
-#include <QProgressDialog>
+#include <QProgressBar>
 #include <QPropertyAnimation>
 #include <QGraphicsOpacityEffect>
 #include <QSignalBlocker>
@@ -153,14 +154,15 @@ Window::Window(QWidget *parent, const QUrl &updateTestEndpoint) : QMainWindow(pa
     root->addWidget(heading);
     auto *body = new QHBoxLayout; body->setContentsMargins(0, 0, 0, 0); body->setSpacing(12); sidebar_ = new QWidget; sidebar_->setObjectName(QStringLiteral("navigationSidebar")); sidebar_->setFixedWidth(184); sidebar_->installEventFilter(this); buildSidebar(sidebar_); body->addWidget(sidebar_);
     auto *content = new QWidget; content->setObjectName(QStringLiteral("workspaceContent")); auto *contentLayout = new QVBoxLayout(content); contentLayout->setContentsMargins(0, 0, 0, 0); contentLayout->setSpacing(12);
-    auto *toolbarWidget = new QWidget; toolbarWidget->setObjectName(QStringLiteral("workspaceToolbar")); auto *toolbar = new QHBoxLayout(toolbarWidget); toolbar->setContentsMargins(4, 0, 4, 0); toolbar->setSpacing(4);
+    auto *toolbarWidget = new QWidget; toolbarWidget->setObjectName(QStringLiteral("workspaceToolbar")); toolbarWidget->installEventFilter(this); auto *toolbar = new QHBoxLayout(toolbarWidget); toolbar->setContentsMargins(4, 0, 4, 0); toolbar->setSpacing(4);
     auto addButton = [&](const QString &text, const QString &symbol, const QString &tip, auto handler) {
-        auto *button = new QPushButton(text); button->setProperty("symbol", symbol); button->setObjectName(QStringLiteral("action_") + symbol); button->setToolTip(tip); button->setAccessibleName(tip); button->setCursor(Qt::PointingHandCursor); connect(button, &QPushButton::clicked, this, handler); toolbar->addWidget(button); return button;
+        auto *button = new QPushButton(text); button->setProperty("symbol", symbol); button->setProperty("toolbarText", text); button->setObjectName(QStringLiteral("action_") + symbol); button->setToolTip(tip); button->setAccessibleName(tip); button->setCursor(Qt::PointingHandCursor); connect(button, &QPushButton::clicked, this, handler); toolbar->addWidget(button); return button;
     };
     auto *createButton = addButton(QStringLiteral("新建"), QStringLiteral("add"), QStringLiteral("新建文件夹 F7"), [this] { create(true); }); createButton->setProperty("primaryAction", true);
     addButton(QStringLiteral("复制"), QStringLiteral("copy"), QStringLiteral("复制到另一栏 F5"), [this] { transfer(false); });
     addButton(QStringLiteral("移动"), QStringLiteral("move"), QStringLiteral("移动到另一栏 F6"), [this] { transfer(true); });
     addButton(QStringLiteral("删除"), QStringLiteral("delete"), QStringLiteral("删除所选项目 Delete"), &Window::remove);
+    taskProgress_ = new TaskProgress(toolbarWidget); toolbar->addWidget(taskProgress_, 1);
     toolbar->addStretch();
     auto *sort = addButton(QStringLiteral("排序"), QStringLiteral("sort"), QStringLiteral("排序与隐藏文件"), [] {}); connect(sort, &QPushButton::clicked, this, [this, sort] { sortMenu(sort); });
     auto *assistant = addButton(QStringLiteral("助手"), QStringLiteral("assistant"), QStringLiteral("AI / 扩展 Ctrl+Shift+A"), [this] { extensionDock_->setVisible(!extensionDock_->isVisible()); }); assistant->setObjectName(QStringLiteral("assistantToggle")); assistant->setCheckable(true);
@@ -430,11 +432,17 @@ void Window::showMcpSettings() {
 }
 
 void Window::showDownload() {
+    if (taskProgress_->active()) { statusBar()->showMessage(QStringLiteral("当前任务正在顶部进度栏运行"), 5000); return; }
     auto *dialog = findChild<DownloadDialog *>(QStringLiteral("directDownloadDialog"), Qt::FindDirectChildrenOnly);
     if (!dialog) {
         const auto location = active_->location();
-        const QString directory = location.source == Source::Local ? location.path : QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+        const QString fallback = location.source == Source::Local ? location.path : QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+        const QString directory = settings_.value(QStringLiteral("download_directory")).toString(fallback);
         dialog = new DownloadDialog(directory, this); dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setTaskProgress(taskProgress_);
+        connect(dialog, &DownloadDialog::destinationSelected, this, [this](const QString &path) {
+            settings_.insert(QStringLiteral("download_directory"), QFileInfo(path).absolutePath()); saveSettings();
+        });
         connect(dialog, &QObject::destroyed, this, [this] { if (!closing_) refreshActive(); });
     }
     dialog->show(); dialog->raise(); dialog->activateWindow();
@@ -488,33 +496,29 @@ void Window::runJob(const QString &title, std::function<Result(const Cancellatio
 }
 
 void Window::runJob(const QString &title, std::function<Result(const Cancellation &, const Progress &)> function, std::function<void(const Result &)> completed, std::function<void()> settled, bool writeBack) {
-    if (busy_) { report(QStringLiteral("请等待当前操作完成")); return; }
+    if (busy_ || taskProgress_->active()) { statusBar()->showMessage(QStringLiteral("请等待当前操作完成"), 5000); return; }
     busy_ = true; cancellation_ = std::make_shared<std::atomic_bool>(false);
     struct JobProgress { std::mutex mutex; qint64 done = 0, total = 0; QString stage; bool changed = false; };
     const auto state = std::make_shared<JobProgress>();
-    auto *progress = new QProgressDialog(title, QStringLiteral("取消"), 0, 0, this);
-    progress->setObjectName(QStringLiteral("jobProgress"));
-    progress->setWindowModality(Qt::WindowModal); progress->setMinimumDuration(0); progress->setMinimumWidth(400); progress->setAutoClose(false); progress->setAutoReset(false);
-    connect(progress, &QProgressDialog::canceled, this, [cancel = cancellation_] { cancel->store(true); });
-    auto *timer = new QTimer(progress); timer->setInterval(100);
-    connect(timer, &QTimer::timeout, progress, [progress, state] {
+    taskProgress_->begin(title, [cancel = cancellation_] { cancel->store(true); }); adaptToolbar();
+    auto *timer = new QTimer(this); timer->setInterval(100);
+    connect(timer, &QTimer::timeout, this, [this, state] {
         qint64 done, total; QString stage;
         {
             std::lock_guard<std::mutex> lock(state->mutex);
-            if (!state->changed || progress->wasCanceled()) return;
+            if (!state->changed) return;
             state->changed = false; done = state->done; total = state->total; stage = state->stage;
         }
-        progress->setLabelText(stage);
-        progress->setRange(0, total > 0 ? 1000 : 0);
-        if (total > 0) progress->setValue(int(qBound(0.0, double(done) / double(total), 1.0) * 1000));
+        taskProgress_->updateProgress(done, total, stage);
     });
     timer->start();
     auto *watcher = new QFutureWatcher<Result>(this);
-    connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, progress, timer, completed, settled] {
-        const Result result = watcher->result(); watcher->deleteLater(); timer->stop(); progress->close(); progress->deleteLater(); busy_ = false;
+    connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, timer, completed, settled] {
+        const Result result = watcher->result(); watcher->deleteLater(); timer->stop(); timer->deleteLater(); busy_ = false;
+        taskProgress_->finish(result.ok ? QStringLiteral("操作完成") : result.error, result.ok);
         left_->refresh(); right_->refresh();
         if (settled) settled();
-        if (!result.ok) report(result.error);
+        if (!result.ok) statusBar()->showMessage(result.error, 15000);
         else { statusBar()->showMessage(QStringLiteral("操作完成"), 5000); if (completed) completed(result); }
     });
     const auto cancel = cancellation_;
@@ -531,14 +535,14 @@ void Window::transfer(bool move, bool clipboard) {
     const QList<Entry> entries = active_->selected(); if (entries.isEmpty()) return;
     if (clipboard) { clipboard_ = entries; cut_ = move; statusBar()->showMessage(QStringLiteral("已记录 %1 个项目").arg(entries.size()), 4000); return; }
     const Location target = otherPane()->location();
-    runJob(move ? QStringLiteral("移动文件") : QStringLiteral("复制文件"), [entries, target, move](const Cancellation &cancel) { return transferEntries(entries, target, move, cancel); }, {}, {}, true);
+    runJob(move ? QStringLiteral("移动文件") : QStringLiteral("复制文件"), [entries, target, move](const Cancellation &cancel, const Progress &progress) { return transferEntries(entries, target, move, cancel, progress); }, {}, {}, true);
 }
 
 void Window::paste() {
     if (clipboard_.isEmpty()) return;
     const QList<Entry> entries = clipboard_; const Location target = active_->location(); const bool move = cut_;
     auto completed = [this, move](const Result &) { if (move) clipboard_.clear(); };
-    runJob(QStringLiteral("粘贴文件"), [entries, target, move](const Cancellation &cancel) { return transferEntries(entries, target, move, cancel); }, completed, {}, true);
+    runJob(QStringLiteral("粘贴文件"), [entries, target, move](const Cancellation &cancel, const Progress &progress) { return transferEntries(entries, target, move, cancel, progress); }, completed, {}, true);
 }
 
 void Window::remove() {
@@ -624,7 +628,7 @@ void Window::compress() {
     const QStringList paths = localPaths(active_->selected()); if (paths.isEmpty()) return;
     const QString destination = QFileDialog::getSaveFileName(this, QStringLiteral("压缩为 ZIP"), QFileInfo(paths.first()).absolutePath() + QStringLiteral("/archive.zip"), QStringLiteral("ZIP (*.zip)"));
     if (destination.isEmpty()) return;
-    runJob(QStringLiteral("创建 ZIP"), [paths, destination](const Cancellation &cancel) { return createArchive(paths, destination, cancel); });
+    runJob(QStringLiteral("创建 ZIP"), [paths, destination](const Cancellation &cancel, const Progress &progress) { return createArchive(paths, destination, cancel, progress); });
 }
 
 void Window::extract() {
@@ -634,7 +638,7 @@ void Window::extract() {
     else if (selected.size() == 1 && selected.first().source == Source::Local && isArchive(selected.first().name)) archive = selected.first().path;
     if (archive.isEmpty()) return;
     const QString destination = QFileDialog::getExistingDirectory(this, QStringLiteral("解压到文件夹")); if (destination.isEmpty()) return;
-    runJob(QStringLiteral("解压 ZIP/APK"), [archive, destination, prefix](const Cancellation &cancel) { return extractArchive(archive, destination, prefix, cancel); });
+    runJob(QStringLiteral("解压 ZIP/APK"), [archive, destination, prefix](const Cancellation &cancel, const Progress &progress) { return extractArchive(archive, destination, prefix, cancel, progress); });
 }
 
 void Window::showText(const QString &title, const QString &text) {
@@ -667,7 +671,7 @@ void Window::open(const Entry &entry) {
         if (isMedia(entry.name)) { media(entry.name, active_->fileModel()->entries(), entry); return; }
         auto temporary = std::make_shared<QTemporaryDir>(); if (!temporary->isValid()) { report(QStringLiteral("无法创建打开文件的暂存目录")); return; }
         const Location parent = active_->location(); QPointer<Pane> targetPane(active_); const auto neighbors = active_->fileModel()->entries();
-        runJob(QStringLiteral("读取手机/包内文件"), [entry, temporary](const Cancellation &cancel) { return materializeEntry(entry, temporary->path(), cancel); }, [this, entry, temporary, parent, targetPane, neighbors](const Result &result) {
+        runJob(QStringLiteral("读取手机/包内文件"), [entry, temporary](const Cancellation &cancel, const Progress &progress) { return materializeEntry(entry, temporary->path(), cancel, progress); }, [this, entry, temporary, parent, targetPane, neighbors](const Result &result) {
             const QString path = result.paths.first();
             if (isArchive(entry.name)) {
                 auto mount = std::make_shared<MountedArchive>(); mount->original = entry; mount->local = path; mount->temporary = temporary; mount->hash = fileDigest(path); mounts_.insert(path, mount);
@@ -995,11 +999,18 @@ void Window::payload() {
         QListWidget choices; const QStringList descriptions = result.output.split(QChar('\n'), Qt::SkipEmptyParts);
         for (qsizetype index = 0; index < result.paths.size(); ++index) { auto *item = new QListWidgetItem(descriptions.value(index, result.paths[index]), &choices); item->setData(Qt::UserRole, result.paths[index]); item->setCheckState(Qt::Checked); }
         layout->addWidget(&choices); QSpinBox workers; workers.setObjectName(QStringLiteral("payloadThreads")); workers.setRange(1, 8); workers.setValue(threads); layout->addWidget(new QLabel(QStringLiteral("线程数量"))); layout->addWidget(&workers);
+        layout->addWidget(new QLabel(QStringLiteral("保存位置")));
+        QLineEdit output(settings_.value(QStringLiteral("payload_output_directory")).toString(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)));
+        output.setObjectName(QStringLiteral("payloadOutputDirectory"));
+        auto *outputRow = new QHBoxLayout; outputRow->addWidget(&output);
+        QPushButton browse(QStringLiteral("选择位置…")); browse.setObjectName(QStringLiteral("payloadBrowse")); outputRow->addWidget(&browse); layout->addLayout(outputRow);
+        connect(&browse, &QPushButton::clicked, &dialog, [&] { const QString chosen = QFileDialog::getExistingDirectory(&dialog, QStringLiteral("选择分区输出文件夹"), output.text()); if (!chosen.isEmpty()) output.setText(chosen); });
         QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); layout->addWidget(&buttons); connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
         if (dialog.exec() != QDialog::Accepted) return; QStringList names; for (int index = 0; index < choices.count(); ++index) if (choices.item(index)->checkState() == Qt::Checked) names.append(choices.item(index)->data(Qt::UserRole).toString()); if (names.isEmpty()) return;
         settings_.insert(QStringLiteral("payload_threads"), workers.value());
-        const QString destination = QFileDialog::getExistingDirectory(this, QStringLiteral("选择分区输出文件夹")); if (destination.isEmpty()) return;
-        runJob(QStringLiteral("提取并校验 Payload 分区"), [source, names, destination, options, concurrency = workers.value()](const Cancellation &cancel, const Progress &progress) { return extractPayload(source, names, destination, concurrency, cancel, progress, options); }, [this](const Result &extracted) { showText(QStringLiteral("Payload 提取完成"), extracted.output + QChar('\n') + extracted.paths.join(QChar('\n'))); });
+        const QString destination = QDir::cleanPath(output.text().trimmed()); if (!QFileInfo(destination).isDir()) { report(QStringLiteral("请选择有效的输出文件夹")); return; }
+        settings_.insert(QStringLiteral("payload_output_directory"), destination); saveSettings();
+        runJob(QStringLiteral("提取并校验 Payload 分区"), [source, names, destination, options, concurrency = workers.value()](const Cancellation &cancel, const Progress &progress) { return extractPayload(source, names, destination, concurrency, cancel, progress, options); }, [this, destination](const Result &extracted) { taskProgress_->finish(extracted.output + QStringLiteral(" · ") + destination, true); });
     });
 }
 
@@ -1045,8 +1056,8 @@ void Window::hfx() {
         runJob(QStringLiteral("等待 HFX 手机端连接（最长 90 秒，可取消）"), [session, options](const Cancellation &cancel) { return session->connect(options, cancel); }, [session, guarded, status, path](const Result &result) { if (guarded) { status->setText(result.output); path->setText(session->home()); } });
     });
     connect(disconnect, &QPushButton::clicked, dialog, [this, session, guarded, status] { runJob(QStringLiteral("断开 HFX"), [session](const Cancellation &) { session->close(); return Result{}; }, [guarded, status](const Result &) { if (guarded) status->setText(QStringLiteral("已断开")); }); });
-    connect(push, &QPushButton::clicked, dialog, [this, session, path] { QStringList files = localPaths(active_->selected()); if (files.isEmpty()) files = localPaths(otherPane()->selected()); if (files.isEmpty()) { report(QStringLiteral("请先在文件栏选择本地文件")); return; } const QString target = path->text(); runJob(QStringLiteral("HFX 推送到手机"), [session, files, target](const Cancellation &cancel) { return session->push(files, target, cancel); }); });
-    connect(pull, &QPushButton::clicked, dialog, [this, session, path, listing] { QStringList files; for (const auto *item : listing->selectedItems()) files.append(item->data(Qt::UserRole).toJsonObject().value(QStringLiteral("path")).toString()); if (files.isEmpty()) return; const QString target = QFileDialog::getExistingDirectory(this, QStringLiteral("接收到电脑文件夹")); if (target.isEmpty()) return; const QString source = path->text(); runJob(QStringLiteral("HFX 接收手机文件"), [session, files, source, target](const Cancellation &cancel) { return session->pull(files, source, target, cancel); }); });
+    connect(push, &QPushButton::clicked, dialog, [this, session, path, dialog] { QStringList files = localPaths(active_->selected()); if (files.isEmpty()) files = localPaths(otherPane()->selected()); if (files.isEmpty()) { report(QStringLiteral("请先在文件栏选择本地文件")); return; } const QString target = path->text(); if (busy_ || taskProgress_->active()) return; dialog->hide(); runJob(QStringLiteral("HFX 推送到手机"), [session, files, target](const Cancellation &cancel, const Progress &progress) { return session->push(files, target, cancel, progress); }); });
+    connect(pull, &QPushButton::clicked, dialog, [this, session, path, listing, dialog] { QStringList files; for (const auto *item : listing->selectedItems()) files.append(item->data(Qt::UserRole).toJsonObject().value(QStringLiteral("path")).toString()); if (files.isEmpty()) return; const QString target = QFileDialog::getExistingDirectory(this, QStringLiteral("接收到电脑文件夹")); if (target.isEmpty()) return; const QString source = path->text(); if (busy_ || taskProgress_->active()) return; dialog->hide(); runJob(QStringLiteral("HFX 接收手机文件"), [session, files, source, target](const Cancellation &cancel, const Progress &progress) { return session->pull(files, source, target, cancel, progress); }); });
     connect(mkdir, &QPushButton::clicked, dialog, [this, session, path] { bool accepted; const QString name = QInputDialog::getText(this, QStringLiteral("手机新建文件夹"), QStringLiteral("名称"), QLineEdit::Normal, {}, &accepted); if (!accepted) return; const QString parent = path->text(); runJob(QStringLiteral("HFX 新建文件夹"), [session, parent, name](const Cancellation &cancel) { return session->mkdir(parent, name, cancel); }); });
     connect(remove, &QPushButton::clicked, dialog, [this, session, listing] { QStringList files; for (const auto *item : listing->selectedItems()) files.append(item->data(Qt::UserRole).toJsonObject().value(QStringLiteral("path")).toString()); if (files.isEmpty() || QMessageBox::question(this, QStringLiteral("永久删除"), QStringLiteral("永久删除手机所选项目？不能撤销。")) != QMessageBox::Yes) return; runJob(QStringLiteral("HFX 删除"), [session, files](const Cancellation &cancel) { for (const QString &path : files) { const Result result = session->remove(path, cancel); if (!result.ok) return result; } return Result{}; }); });
     dialog->show();
@@ -1129,11 +1140,25 @@ void Window::moreMenu() {
 }
 
 bool Window::eventFilter(QObject *object, QEvent *event) {
+    if (object->objectName() == QStringLiteral("workspaceToolbar") && (event->type() == QEvent::Resize || event->type() == QEvent::LayoutRequest))
+        adaptToolbar();
     if ((object == sidebar_ || object == deviceNavigation_ || object == centralWidget() || object->objectName() == QStringLiteral("navigationLocations")) && event->type() == QEvent::MouseButtonPress) {
         const auto *mouse = static_cast<QMouseEvent *>(event);
         if (mouse->button() == Qt::LeftButton && mouse->modifiers() == Qt::NoModifier && !static_cast<QWidget *>(object)->childAt(mouse->position().toPoint())) active_->deselect();
     }
     return QMainWindow::eventFilter(object, event);
+}
+
+void Window::adaptToolbar() {
+    auto *toolbar = findChild<QWidget *>(QStringLiteral("workspaceToolbar"));
+    if (!toolbar) return;
+    const bool compact = toolbar->width() < (taskProgress_ && !taskProgress_->isHidden() ? 900 : 570);
+    for (auto *button : toolbar->findChildren<QPushButton *>(QString(), Qt::FindDirectChildrenOnly)) {
+        const QString text = button->property("toolbarText").toString();
+        if (text.isEmpty()) continue;
+        button->setText(compact ? QString() : text);
+        button->setFixedWidth(compact ? 32 : button->sizeHint().width());
+    }
 }
 
 void Window::saveSettings() {
@@ -1148,6 +1173,7 @@ void Window::saveSettings() {
 void Window::closeEvent(QCloseEvent *event) {
     if (mcp_) { mcp_->stop(); if (mcp_->busy()) { statusBar()->showMessage(QStringLiteral("正在停止 MCP 操作，请稍后再次关闭")); event->ignore(); return; } }
     if (busy_) { if (cancellation_) cancellation_->store(true); statusBar()->showMessage(QStringLiteral("正在取消操作，请完成后再次关闭")); event->ignore(); return; }
+    if (taskProgress_->active()) { taskProgress_->cancel(); statusBar()->showMessage(QStringLiteral("正在取消下载，请完成后再次关闭")); event->ignore(); return; }
     for (auto *dialog : findChildren<QDialog *>(QString(), Qt::FindDirectChildrenOnly)) { if (!dialog->isVisible()) continue; dialog->close(); if (dialog->isVisible()) { event->ignore(); return; } }
     closing_ = true; updates_->cancel(); saveSettings(); QMainWindow::closeEvent(event);
 }

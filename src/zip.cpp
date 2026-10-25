@@ -81,7 +81,7 @@ ZipReader::ZipReader(const QString &path) : file_(path) {
 
 ZipReader::~ZipReader() { if (handle_) unzClose(handle_); }
 
-bool ZipReader::streamFile(const QString &name, QIODevice *output, const Cancellation &cancel) {
+bool ZipReader::streamFile(const QString &name, QIODevice *output, const Cancellation &cancel, const Progress &progress) {
     if (!error_.isEmpty() || !positions_.contains(name) || !output || !output->isWritable()) return false;
     if (unzSetOffset64(handle_, positions_.value(name)) != UNZ_OK || unzOpenCurrentFile(handle_) != UNZ_OK) {
         error_ = QStringLiteral("ZIP 条目无法打开：") + name; return false;
@@ -99,6 +99,7 @@ bool ZipReader::streamFile(const QString &name, QIODevice *output, const Cancell
         }
         if (!count) break;
         total += count;
+        if (progress) progress(total, expected, name);
     }
     if (unzCloseCurrentFile(handle_) != UNZ_OK || total != expected) { valid = false; if (error_.isEmpty()) error_ = QStringLiteral("ZIP CRC 或长度校验失败：") + name; }
     return valid;
@@ -130,7 +131,7 @@ void ZipWriter::open(QIODevice *output) {
 }
 ZipWriter::~ZipWriter() { close(); }
 void ZipWriter::close() { if (handle_) { if (zipClose(handle_, nullptr) != ZIP_OK) failed_ = true; handle_ = nullptr; } }
-void ZipWriter::add(const QString &name, QIODevice *input, unsigned attributes, const Cancellation &cancel, const ZipInfo *original) {
+void ZipWriter::add(const QString &name, QIODevice *input, unsigned attributes, const Cancellation &cancel, const ZipInfo *original, const Progress &progress) {
     if (!handle_ || failed_) { failed_ = true; return; }
     zip_fileinfo info{};
     info.external_fa = original ? original->attributes : attributes;
@@ -147,16 +148,18 @@ void ZipWriter::add(const QString &name, QIODevice *input, unsigned attributes, 
     }
     if (zipOpenNewFileInZip4_64(handle_, encoded.constData(), &info, extra.constData(), uInt(extra.size()), nullptr, 0, nullptr,
         method, Z_DEFAULT_COMPRESSION, 0, -MAX_WBITS, DEF_MEM_LEVEL, Z_DEFAULT_STRATEGY, nullptr, 0, (3 << 8) | 45, 0x800, large) != ZIP_OK) { failed_ = true; return; }
+    qint64 done = 0;
     while (input && !input->atEnd()) {
         if (cancel && cancel->load()) { failed_ = true; break; }
         const QByteArray bytes = input->read(1024 * 1024);
         if (bytes.isEmpty() || zipWriteInFileInZip(handle_, bytes.constData(), bytes.size()) != ZIP_OK) { failed_ = true; break; }
+        done += bytes.size(); if (progress) progress(done, input->size(), name);
     }
     if (zipCloseFileInZip(handle_) != ZIP_OK) failed_ = true;
 }
 void ZipWriter::addDirectory(const QString &name, const ZipInfo *original) { add(name.endsWith(QChar('/')) ? name : name + QChar('/'), nullptr, (0040755U << 16) | 0x10, {}, original); }
 void ZipWriter::addSymLink(const QString &name, const QString &target) { QBuffer input; input.setData(target.toUtf8()); input.open(QIODevice::ReadOnly); add(name, &input, 0120777U << 16, {}); }
 void ZipWriter::addFile(const QString &name, const QByteArray &bytes) { QBuffer input; input.setData(bytes); input.open(QIODevice::ReadOnly); addFile(name, &input); }
-void ZipWriter::addFile(const QString &name, QIODevice *input, const Cancellation &cancel, const ZipInfo *original) { add(name, input, 0100644U << 16, cancel, original); }
+void ZipWriter::addFile(const QString &name, QIODevice *input, const Cancellation &cancel, const ZipInfo *original, const Progress &progress) { add(name, input, 0100644U << 16, cancel, original, progress); }
 
 }

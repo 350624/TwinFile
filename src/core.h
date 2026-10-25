@@ -75,11 +75,11 @@ Result transferFiles(const QStringList &sources, const QString &destination, boo
 Result batchRename(const QStringList &paths, const QStringList &names);
 Result recycleFiles(const QStringList &paths);
 Result extractArchive(const QString &path, const QString &destination, const QString &prefix = {},
-                      const Cancellation &cancel = {});
-Result createArchive(const QStringList &paths, const QString &destination, const Cancellation &cancel = {});
+                      const Cancellation &cancel = {}, const Progress &progress = {});
+Result createArchive(const QStringList &paths, const QString &destination, const Cancellation &cancel = {}, const Progress &progress = {});
 Result checksum(const QStringList &paths, const Cancellation &cancel = {});
 Result phoneTransfer(const QList<Entry> &entries, const Location &destination, bool move,
-                     const Cancellation &cancel = {});
+                     const Cancellation &cancel = {}, const Progress &progress = {});
 QByteArray readArchiveFile(const QString &path, const QString &inner, qint64 limit, QString *error);
 QJsonObject readSettings(const QString &path);
 QJsonObject migrateLegacySettings(const QJsonObject &legacy);

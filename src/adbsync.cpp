@@ -117,14 +117,14 @@ public:
         }
         return items;
     }
-    void pull(const Item &item, const QString &local, qint64 &total) {
+    void pull(const Item &item, const QString &local, qint64 &total, const Progress &progress = {}) {
         QFile output(local);
         require(output.open(QIODevice::WriteOnly | QIODevice::NewOnly), output.errorString());
-        receive(item, &output, QFileInfo(local).absolutePath(), total);
+        receive(item, &output, QFileInfo(local).absolutePath(), total, progress);
         require(output.flush(), output.errorString());
         output.setFileTime(QDateTime::fromSecsSinceEpoch(item.modified), QFileDevice::FileModificationTime);
     }
-    void receive(const Item &item, QIODevice *output, const QString &storagePath, qint64 &total) {
+    void receive(const Item &item, QIODevice *output, const QString &storagePath, qint64 &total, const Progress &progress = {}) {
         require((item.mode & 0170000U) == 0100000U && item.size <= fileLimit && output && output->isWritable(), QStringLiteral("拒绝读取手机链接、特殊文件、超限文件或无效输出"));
         request("RECV", item.path);
         qint64 size = 0;
@@ -139,10 +139,11 @@ public:
             const QByteArray bytes = read(count);
             require(output->write(bytes) == count, output->errorString());
             size += count; total += count;
+            if (progress) progress(total, 0, item.path);
         }
         require(item.exact ? quint64(size) == item.size : quint32(quint64(size) & 0xffffffffU) == item.size, QStringLiteral("手机文件在传输时变化或写入失败"));
     }
-    void push(const QString &local, const QString &remote) {
+    void push(const QString &local, const QString &remote, const Progress &progress = {}) {
         QFile input(local); const QFileInfo before(local);
         require(before.isFile() && !before.isSymLink() && !before.isJunction() && before.size() <= fileLimit && input.open(QIODevice::ReadOnly), QStringLiteral("本地文件无效、为链接或超限"));
         request("SEND", remote + QStringLiteral(",33206"));
@@ -153,6 +154,7 @@ public:
             require(!bytes.isEmpty() && input.error() == QFile::NoError, QStringLiteral("本地文件读取失败"));
             send(QByteArray("DATA") + word(quint32(bytes.size())) + bytes);
             done += bytes.size();
+            if (progress) progress(done, before.size(), before.fileName());
         }
         require(done == before.size() && QFileInfo(local).lastModified() == before.lastModified(), QStringLiteral("来源文件在传输时变化"));
         send(QByteArray("DONE") + word(quint32(qBound<qint64>(0, before.lastModified().toSecsSinceEpoch(), 0xffffffffLL))));
@@ -188,7 +190,7 @@ Listing adbSyncList(const QString &serial, const QString &path, bool hidden, con
         return result;
     } catch (const std::exception &error) { return {{}, QString::fromUtf8(error.what())}; }
 }
-Result adbSyncPush(const QString &serial, const QString &local, const QString &remote, const Cancellation &cancel) {
+Result adbSyncPush(const QString &serial, const QString &local, const QString &remote, const Cancellation &cancel, const Progress &progress) {
     try {
         Sync sync(serial, cancel);
         const QFileInfo root(local);
@@ -210,11 +212,16 @@ Result adbSyncPush(const QString &serial, const QString &local, const QString &r
             const Result created = phoneCommand(serial, QStringLiteral("mkdir -p -- ") + quoted.join(QChar(' ')), cancel);
             require(created.ok, created.error);
         }
-        for (const auto &path : files) sync.push(path, target(path));
+        qint64 completed = 0;
+        if (progress) progress(0, total, QStringLiteral("发送手机文件"));
+        for (const auto &path : files) {
+            sync.push(path, target(path), [&](qint64 done, qint64, const QString &name) { if (progress) progress(completed + done, total, name); });
+            completed += QFileInfo(path).size();
+        }
         return {true, {}, {}, {remote}};
     } catch (const std::exception &error) { return {false, QString::fromUtf8(error.what()), {}, {}}; }
 }
-Result adbSyncPull(const QString &serial, const QString &remote, const QString &local, const Cancellation &cancel) {
+Result adbSyncPull(const QString &serial, const QString &remote, const QString &local, const Cancellation &cancel, const Progress &progress) {
     try {
         require(!QFileInfo::exists(local), QStringLiteral("本地暂存目标已经存在"));
         Sync sync(serial, cancel);
@@ -237,7 +244,11 @@ Result adbSyncPull(const QString &serial, const QString &remote, const QString &
         collect(root, {}, 0);
         for (const auto &directory : directories) require(QDir().mkpath(directory.isEmpty() ? local : QDir(local).filePath(directory)), QStringLiteral("不能创建本地暂存目录"));
         qint64 total = 0;
-        for (const auto &file : files) sync.pull(file, file.name.isEmpty() ? local : QDir(local).filePath(file.name), total);
+        qint64 expected = 0; bool exact = true;
+        for (const auto &file : files) { expected += qint64(file.size); exact &= file.exact; }
+        if (progress) progress(0, exact ? expected : 0, QStringLiteral("接收手机文件"));
+        for (const auto &file : files) sync.pull(file, file.name.isEmpty() ? local : QDir(local).filePath(file.name), total,
+            [&](qint64 done, qint64, const QString &name) { if (progress) progress(done, exact ? expected : 0, name); });
         return {true, {}, {}, {local}};
     } catch (const std::exception &error) { return {false, QString::fromUtf8(error.what()), {}, {}}; }
 }

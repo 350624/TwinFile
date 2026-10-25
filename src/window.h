@@ -17,6 +17,7 @@ class ExtensionSidebar;
 class UpdateChecker;
 class UpdateDialog;
 class McpServer;
+class TaskProgress;
 
 class Window : public QMainWindow {
     Q_OBJECT
@@ -48,6 +49,7 @@ private:
     void buildExtensions();
     void menu(const QPoint &position);
     void moreMenu();
+    void adaptToolbar();
     void runJob(const QString &title, std::function<Result(const Cancellation &)> function,
                 std::function<void(const Result &)> completed = {}, std::function<void()> settled = {}, bool writeBack = false);
     void runJob(const QString &title, std::function<Result(const Cancellation &, const Progress &)> function,
@@ -94,6 +96,7 @@ private:
     bool cut_ = false;
     bool busy_ = false;
     Cancellation cancellation_;
+    TaskProgress *taskProgress_ = nullptr;
     std::shared_ptr<HfxSession> hfxSession_;
     ArchiveMounts mounts_;
     ExtensionSidebar *extensions_ = nullptr;

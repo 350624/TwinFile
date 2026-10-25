@@ -1,4 +1,5 @@
 #include "download.h"
+#include "task_progress.h"
 #include <QCloseEvent>
 #include <QDesktopServices>
 #include <QDir>
@@ -344,7 +345,7 @@ DownloadDialog::DownloadDialog(const QString &directory, QWidget *parent, const 
     auto *form = new QFormLayout;
     auto *url = new QLineEdit; url->setObjectName(QStringLiteral("downloadUrl")); url->setPlaceholderText(QStringLiteral("https://…")); url->setClearButtonEnabled(true);
     auto *path = new QLineEdit; path->setObjectName(QStringLiteral("downloadPath")); path->setPlaceholderText(QStringLiteral("选择保存文件"));
-    auto *browse = new QPushButton(QStringLiteral("选择…")); auto *pathRow = new QHBoxLayout; pathRow->addWidget(path); pathRow->addWidget(browse);
+    auto *browse = new QPushButton(QStringLiteral("选择位置…")); browse->setObjectName(QStringLiteral("downloadBrowse")); auto *pathRow = new QHBoxLayout; pathRow->addWidget(path); pathRow->addWidget(browse);
     auto *connections = new QSpinBox; connections->setObjectName(QStringLiteral("downloadConnections")); connections->setRange(1, 512); connections->setValue(16); connections->setSuffix(QStringLiteral(" 并发"));
     form->addRow(QStringLiteral("下载链接"), url); form->addRow(QStringLiteral("保存到"), pathRow); form->addRow(QStringLiteral("连接数"), connections); layout->addLayout(form);
     auto *status = new QLabel(QStringLiteral("就绪")); status->setObjectName(QStringLiteral("downloadStatus")); status->setWordWrap(true); layout->addWidget(status);
@@ -362,19 +363,33 @@ DownloadDialog::DownloadDialog(const QString &directory, QWidget *parent, const 
     connect(folder, &QPushButton::clicked, this, [path, directory] { QDesktopServices::openUrl(QUrl::fromLocalFile(path->text().isEmpty() ? directory : QFileInfo(path->text()).absolutePath())); });
     auto state = [url, path, browse, connections, start, stop](bool busy) { url->setEnabled(!busy); path->setEnabled(!busy); browse->setEnabled(!busy); connections->setEnabled(!busy); start->setEnabled(!busy); stop->setEnabled(busy); };
     connect(start, &QPushButton::clicked, this, [this, url, path, connections, bar, detail, state] {
+        if (taskProgress_ && taskProgress_->active()) { detail->setText(QStringLiteral("请等待当前任务完成")); return; }
         QString error;
         if (!download_.start(QUrl(url->text().trimmed(), QUrl::StrictMode), path->text().trimmed(), connections->value(), &error)) { detail->setText(error); return; }
         bar->setRange(0, 0); state(true);
+        emit destinationSelected(path->text().trimmed());
+        if (taskProgress_) { taskProgress_->begin(QStringLiteral("下载 · ") + QFileInfo(path->text()).fileName(), [this] { download_.cancel(); }); hide(); }
     });
     connect(stop, &QPushButton::clicked, &download_, &DirectDownload::cancel);
     connect(close, &QPushButton::clicked, this, &DownloadDialog::close);
     connect(&download_, &DirectDownload::status, status, &QLabel::setText);
-    connect(&download_, &DirectDownload::progress, this, [bar, detail](qint64 received, qint64 total, double speed, int count) {
+    connect(&download_, &DirectDownload::progress, this, [this, bar, detail, status](qint64 received, qint64 total, double speed, int count) {
         if (total < 0) bar->setRange(0, 0); else { bar->setRange(0, 1000); bar->setValue(total ? int(received * 1000 / total) : 1000); }
         detail->setText(QStringLiteral("%1 / %2 · %3/s · %4 并发").arg(sizeText(received), sizeText(total), sizeText(qint64(speed))).arg(count));
+        if (taskProgress_) taskProgress_->updateProgress(received, total, status->text(), speed);
     });
-    connect(&download_, &DirectDownload::completed, this, [bar, detail, status, state](const QString &saved) { state(false); bar->setRange(0, 1000); bar->setValue(1000); status->setText(QStringLiteral("下载完成")); detail->setText(QStringLiteral("已完成：") + saved); });
-    connect(&download_, &DirectDownload::failed, this, [bar, detail, status, state](const QString &error) { state(false); bar->setRange(0, 1000); status->setText(QStringLiteral("已停止")); detail->setText(error); });
+    connect(&download_, &DirectDownload::completed, this, [this, bar, detail, status, state](const QString &saved) { state(false); bar->setRange(0, 1000); bar->setValue(1000); status->setText(QStringLiteral("下载完成")); detail->setText(QStringLiteral("已完成：") + saved); if (taskProgress_) taskProgress_->finish(QStringLiteral("已保存：") + saved, true); });
+    connect(&download_, &DirectDownload::failed, this, [this, bar, detail, status, state](const QString &error) { state(false); bar->setRange(0, 1000); status->setText(QStringLiteral("已停止")); detail->setText(error); if (taskProgress_) taskProgress_->finish(error, false); });
+    connect(url, &QLineEdit::textChanged, this, [path, directory](const QString &value) {
+        if (!path->text().isEmpty() && path->text() != path->property("automaticPath").toString()) return;
+        const QUrl parsed(value);
+        if (!parsed.isValid() || parsed.host().isEmpty()) return;
+        const QString name = QFileInfo(parsed.path()).fileName();
+        if (!name.isEmpty()) {
+            const QString automatic = QDir(directory).filePath(name);
+            path->setProperty("automaticPath", automatic); path->setText(automatic);
+        }
+    });
     if (!initialUrl.isEmpty() && initialUrl.isValid()) {
         url->setText(initialUrl.toString(QUrl::FullyEncoded));
         const QString fileName = QFileInfo(initialFileName).fileName();
@@ -382,6 +397,14 @@ DownloadDialog::DownloadDialog(const QString &directory, QWidget *parent, const 
         if (startImmediately) QTimer::singleShot(0, start, &QPushButton::click);
     } else if (parent == nullptr) {
         path->setText(QDir(directory).filePath(QStringLiteral("download.bin")));
+    }
+}
+
+void DownloadDialog::setTaskProgress(TaskProgress *progress) {
+    taskProgress_ = progress;
+    if (progress) {
+        findChild<QProgressBar *>(QStringLiteral("downloadProgress"))->hide();
+        findChild<QPushButton *>(QStringLiteral("downloadCancel"))->hide();
     }
 }
 

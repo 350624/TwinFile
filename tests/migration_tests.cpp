@@ -9,6 +9,7 @@
 #include "inspection.h"
 #include "media.h"
 #include "shell.h"
+#include "appearance.h"
 #include <QApplication>
 #include <QBuffer>
 #include <QCryptographicHash>
@@ -20,6 +21,11 @@
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QProgressDialog>
+#include <QProgressBar>
+#include <QToolButton>
+#include <QDockWidget>
+#include <QLabel>
+#include "task_progress.h"
 #include <QPushButton>
 #include <QRandomGenerator>
 #include <QSpinBox>
@@ -336,8 +342,13 @@ private slots:
     void adbNativeSyncListsAndCopiesUnicodeFile() {
         QFETCH(bool, version2); FakeAdb fake; fake.version2 = version2; fake.files.insert(QStringLiteral("/sdcard/中文.txt"), QByteArray(200000, 'q')); fake.directories.append(QStringLiteral("/sdcard")); QTemporaryDir root;
         auto listing = std::async(std::launch::async, [&] { return adbSyncList(QStringLiteral("fixture"), QStringLiteral("/sdcard"), true); }); QTRY_VERIFY_WITH_TIMEOUT(listing.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000); const Listing listed = listing.get(); QVERIFY2(listed.error.isEmpty(), qPrintable(listed.error)); QCOMPARE(listed.entries.size(), 1); QCOMPARE(listed.entries[0].name, QStringLiteral("中文.txt"));
-        const QString local = root.filePath(QStringLiteral("local.txt")); auto pull = std::async(std::launch::async, [&] { return adbSyncPull(QStringLiteral("fixture"), QStringLiteral("/sdcard/中文.txt"), local); }); QTRY_VERIFY_WITH_TIMEOUT(pull.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000); const Result pulled = pull.get(); QVERIFY2(pulled.ok, qPrintable(pulled.error)); QCOMPARE(readFile(local), QByteArray(200000, 'q'));
-        auto push = std::async(std::launch::async, [&] { return adbSyncPush(QStringLiteral("fixture"), local, QStringLiteral("/sdcard/new.txt")); }); QTRY_VERIFY_WITH_TIMEOUT(push.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000); const Result pushed = push.get(); QVERIFY2(pushed.ok, qPrintable(pushed.error)); QCOMPARE(fake.files.value(QStringLiteral("/sdcard/new.txt")), QByteArray(200000, 'q'));
+        qint64 previous = 0, reportedTotal = 0; int reports = 0; bool ordered = true;
+        const Progress progress = [&](qint64 done, qint64 total, const QString &) { ordered &= done >= previous; previous = done; reportedTotal = total; ++reports; };
+        const QString local = root.filePath(QStringLiteral("local.txt")); auto pull = std::async(std::launch::async, [&] { return adbSyncPull(QStringLiteral("fixture"), QStringLiteral("/sdcard/中文.txt"), local, {}, progress); }); QTRY_VERIFY_WITH_TIMEOUT(pull.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000); const Result pulled = pull.get(); QVERIFY2(pulled.ok, qPrintable(pulled.error)); QCOMPARE(readFile(local), QByteArray(200000, 'q'));
+        QVERIFY(ordered); QCOMPARE(previous, 200000); QCOMPARE(reportedTotal, version2 ? 200000 : 0); QVERIFY(reports >= 4);
+        previous = 0; reports = 0;
+        auto push = std::async(std::launch::async, [&] { return adbSyncPush(QStringLiteral("fixture"), local, QStringLiteral("/sdcard/new.txt"), {}, progress); }); QTRY_VERIFY_WITH_TIMEOUT(push.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000); const Result pushed = push.get(); QVERIFY2(pushed.ok, qPrintable(pushed.error)); QCOMPARE(fake.files.value(QStringLiteral("/sdcard/new.txt")), QByteArray(200000, 'q'));
+        QVERIFY(ordered); QCOMPARE(previous, 200000); QCOMPARE(reportedTotal, 200000); QVERIFY(reports >= 4);
         Entry entry; entry.source = Source::Phone; entry.path = QStringLiteral("/sdcard/中文.txt"); entry.serial = QStringLiteral("fixture"); auto hashing = std::async(std::launch::async, [&] { return checksumEntries({entry}); }); QTRY_VERIFY_WITH_TIMEOUT(hashing.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000); const Result hashed = hashing.get(); QVERIFY2(hashed.ok, qPrintable(hashed.error)); QVERIFY(hashed.output.contains(QString::fromLatin1(QCryptographicHash::hash(QByteArray(200000, 'q'), QCryptographicHash::Sha256).toHex())));
     }
     void realApktoolProjectRebuildAndSign() {
@@ -499,7 +510,7 @@ private slots:
     void payloadRejectsHeaderInjection() { QTemporaryDir root; const QString source = root.filePath(QStringLiteral("payload.bin")); QVERIFY(writeFile(source, encodePayload(QByteArray(4096, 'a')))); PayloadOptions options; options.userAgent = QStringLiteral("TwinFile\r\nInjected: x"); QVERIFY(!inspectPayload(source, {}, options).ok); }
     void payloadDialogsAndProgress_data() {
         QTest::addColumn<QString>("theme"); QTest::addColumn<QString>("mode");
-        for (const QString &theme : {QStringLiteral("dark"), QStringLiteral("light"), QStringLiteral("mt"), QStringLiteral("cream"), QStringLiteral("bataUI01")})
+        for (const QString &theme : themeIds())
             for (const QString &mode : {QStringLiteral("dark"), QStringLiteral("light")}) QTest::newRow(qPrintable(theme + QChar('-') + mode)) << theme << mode;
     }
     void payloadDialogsAndProgress() {
@@ -530,7 +541,9 @@ private slots:
                 ++step; dialog->accept();
             } else if (step == 2 && dialog->objectName() == QStringLiteral("payloadPartitionsDialog")) {
                 auto *threads = dialog->findChild<QSpinBox *>(QStringLiteral("payloadThreads")); valid &= threads && threads->value() == 2;
-                auto *oldProgress = window.findChild<QProgressDialog *>(QStringLiteral("jobProgress")); valid &= !oldProgress || !oldProgress->isVisible();
+                valid &= window.findChildren<QProgressDialog *>().isEmpty();
+                valid &= dialog->findChild<QLineEdit *>(QStringLiteral("payloadOutputDirectory")) != nullptr;
+                valid &= dialog->findChild<QPushButton *>(QStringLiteral("payloadBrowse")) != nullptr;
                 screenshot(dialog, QStringLiteral("partitions")); ++step; dialog->reject();
             }
         });
@@ -541,15 +554,93 @@ private slots:
         QVERIFY(!PayloadTestAccess::settings(window).contains(QStringLiteral("payload_user_agent")));
         auto sawCancel = std::make_shared<std::atomic_bool>(false);
         PayloadTestAccess::job(window, [sawCancel](const Cancellation &cancel, const Progress &progress) {
-            progress(25, 100, QStringLiteral("提取分区 · system")); const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            progress(25 * 1024 * 1024, 100 * 1024 * 1024, QStringLiteral("提取分区 · system")); const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
             while (!cancel->load() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(10));
             sawCancel->store(cancel->load()); return Result{};
         });
-        QPointer<QProgressDialog> progress = window.findChild<QProgressDialog *>(QStringLiteral("jobProgress")); QVERIFY(progress);
-        QTRY_COMPARE_WITH_TIMEOUT(progress->value(), 250, 1000); QCOMPARE(progress->maximum(), 1000); QCOMPARE(progress->labelText(), QStringLiteral("提取分区 · system"));
-        screenshot(progress, QStringLiteral("progress")); auto *cancel = progress->findChild<QPushButton *>(); QVERIFY(cancel); QTest::mouseClick(cancel, Qt::LeftButton);
+        auto *progress = window.findChild<QProgressBar *>(QStringLiteral("jobProgress")); QVERIFY(progress);
+        QTRY_COMPARE_WITH_TIMEOUT(progress->value(), 250, 1000); QCOMPARE(progress->maximum(), 1000);
+        auto *task = window.findChild<QWidget *>(QStringLiteral("taskProgress")); QVERIFY(task); QVERIFY(task->isVisible());
+        QVERIFY(window.findChildren<QProgressDialog *>().isEmpty()); QVERIFY(!QApplication::activeModalWidget());
+        QVERIFY(task->toolTip().contains(QStringLiteral("提取分区 · system")));
+        QTest::qWait(550); QVERIFY(task->findChild<QLabel *>(QStringLiteral("taskSpeed"))->text().contains(QStringLiteral("/s")));
+        screenshot(&window, QStringLiteral("progress"));
+        window.resize(1100, 650); QTest::qWait(40);
+        const auto taskArea = QRect(task->mapTo(&window, QPoint()), task->size());
+        const auto sort = window.findChild<QPushButton *>(QStringLiteral("action_sort"));
+        QVERIFY(sort); QVERIFY(taskArea.right() < sort->mapTo(&window, QPoint()).x());
+        QVERIFY(window.rect().contains(taskArea));
+        screenshot(&window, QStringLiteral("progress-narrow"));
+        auto *cancel = task->findChild<QToolButton *>(QStringLiteral("taskCancel")); QVERIFY(cancel); QTest::mouseClick(cancel, Qt::LeftButton);
         QTRY_VERIFY_WITH_TIMEOUT(!PayloadTestAccess::busy(window), 1000); QVERIFY(sawCancel->load()); QVERIFY(valid);
+        PayloadTestAccess::job(window, [](const Cancellation &, const Progress &) { return Result{false, QStringLiteral("测试网络错误"), {}, {}}; });
+        QTRY_VERIFY_WITH_TIMEOUT(!PayloadTestAccess::busy(window), 1000);
+        QVERIFY(task->toolTip().contains(QStringLiteral("测试网络错误"))); QVERIFY(!QApplication::activeModalWidget());
         window.close(); QCOMPARE(readSettings(settingsFile).value(QStringLiteral("payload_threads")).toInt(), 2);
+    }
+    void payloadOutputDirectoryAndInlineCompletion() {
+        QTemporaryDir root; const auto previous = qgetenv("TWINFILE_SETTINGS");
+        const auto restore = qScopeGuard([&] { if (previous.isEmpty()) qunsetenv("TWINFILE_SETTINGS"); else qputenv("TWINFILE_SETTINGS", previous); });
+        const QString settings = root.filePath(QStringLiteral("settings.json")); qputenv("TWINFILE_SETTINGS", settings.toUtf8());
+        PayloadHttpFixture fixture(encodePayload(QByteArray(4096, 'd'))); Window window; window.show();
+        int step = 0; bool valid = true; QTimer driver; driver.setInterval(20);
+        connect(&driver, &QTimer::timeout, &window, [&] {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); if (!dialog) return;
+            if (step == 0) {
+                auto *source = qobject_cast<QInputDialog *>(dialog); if (!source) return;
+                source->findChild<QComboBox *>()->setCurrentIndex(1); ++step; source->accept();
+            } else if (step == 1 && dialog->objectName() == QStringLiteral("remotePayloadDialog")) {
+                dialog->findChild<QLineEdit *>(QStringLiteral("payloadUrl"))->setText(fixture.url()); ++step; dialog->accept();
+            } else if (step == 2 && dialog->objectName() == QStringLiteral("payloadPartitionsDialog")) {
+                auto *path = dialog->findChild<QLineEdit *>(QStringLiteral("payloadOutputDirectory"));
+                valid &= path != nullptr; if (path) path->setText(root.path()); ++step; dialog->accept();
+            }
+        });
+        QTimer watchdog; watchdog.setInterval(7000); connect(&watchdog, &QTimer::timeout, &window, [&] { valid = false; if (auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget())) dialog->reject(); });
+        driver.start(); watchdog.start(); PayloadTestAccess::open(window);
+        QTRY_COMPARE_WITH_TIMEOUT(step, 3, 5000); QTRY_VERIFY_WITH_TIMEOUT(!PayloadTestAccess::busy(window), 5000);
+        driver.stop(); watchdog.stop(); QVERIFY(valid); QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), QByteArray(4096, 'd'));
+        QCOMPARE(readSettings(settings).value(QStringLiteral("payload_output_directory")).toString(), root.path());
+        QVERIFY(!QApplication::activeModalWidget()); QVERIFY(window.findChildren<QProgressDialog *>().isEmpty());
+        QVERIFY(window.findChild<QWidget *>(QStringLiteral("taskProgress"))->toolTip().contains(root.path())); window.close();
+    }
+    void transferByteProgressAndCancellation() {
+        QTemporaryDir root; const QString source = root.filePath(QStringLiteral("source")), target = root.filePath(QStringLiteral("target"));
+        QVERIFY(QDir().mkpath(source + QStringLiteral("/nested"))); QVERIFY(QDir().mkpath(target));
+        const QByteArray data(3 * 1024 * 1024 + 17, 'x'); QVERIFY(writeFile(source + QStringLiteral("/first.bin"), data));
+        QVERIFY(writeFile(source + QStringLiteral("/nested/second.bin"), "second"));
+        Entry entry; entry.path = source; entry.name = QStringLiteral("source"); entry.directory = true;
+        qint64 previous = 0, expected = 0; int calls = 0; bool monotonic = true;
+        const Progress progress = [&](qint64 done, qint64 total, const QString &) { monotonic &= done >= previous && done <= total; previous = done; expected = total; ++calls; };
+        const Result copied = transferEntries({entry}, {Source::Local, target, {}, {}}, false, {}, progress);
+        QVERIFY2(copied.ok, qPrintable(copied.error)); QVERIFY(monotonic); QVERIFY(calls >= 5);
+        QCOMPARE(previous, data.size() + 6); QCOMPARE(expected, previous);
+        QCOMPARE(readFile(target + QStringLiteral("/source/first.bin")), data);
+        QVERIFY(QDir().mkpath(root.filePath(QStringLiteral("cancel"))));
+        auto cancellation = std::make_shared<std::atomic_bool>(false);
+        const Result stopped = transferEntries({entry}, {Source::Local, root.filePath(QStringLiteral("cancel")), {}, {}}, false, cancellation,
+            [&](qint64 done, qint64, const QString &) { if (done >= 1024 * 1024) cancellation->store(true); });
+        QVERIFY(!stopped.ok); QVERIFY(!QFileInfo::exists(root.filePath(QStringLiteral("cancel/source")))); QVERIFY(QFileInfo::exists(source));
+        const QString archive = root.filePath(QStringLiteral("test.zip")); previous = 0; calls = 0; monotonic = true;
+        QVERIFY(createArchive({source}, archive, {}, progress).ok); QVERIFY(monotonic); QVERIFY(calls > 1); QCOMPARE(previous, expected);
+        QVERIFY(QDir().mkpath(root.filePath(QStringLiteral("extract")))); previous = 0; calls = 0;
+        QVERIFY(extractArchive(archive, root.filePath(QStringLiteral("extract")), {}, {}, progress).ok); QVERIFY(monotonic); QVERIFY(calls > 1); QCOMPARE(previous, expected);
+    }
+    void inlineTaskSpeedCancellationAndFailure() {
+        TaskProgress task; task.resize(320, 44); bool cancelled = false;
+        task.begin(QStringLiteral("复制文件"), [&] { cancelled = true; }); task.show();
+        task.updateProgress(1024 * 1024, 4 * 1024 * 1024, QStringLiteral("source.bin"));
+        QTRY_VERIFY_WITH_TIMEOUT(!task.toolTip().section(QChar('\n'), 1).startsWith(QStringLiteral("0 B/s")), 1500);
+        QTRY_VERIFY_WITH_TIMEOUT(task.toolTip().section(QChar('\n'), 1).startsWith(QStringLiteral("0 B/s")), 1500);
+        task.cancel(); QVERIFY(cancelled); QVERIFY(task.active());
+        task.updateProgress(2 * 1024 * 1024, 4 * 1024 * 1024, QStringLiteral("late.bin"));
+        QVERIFY(task.toolTip().contains(QStringLiteral("正在取消")));
+        task.finish(QStringLiteral("操作已取消"), false); QVERIFY(!task.active());
+        task.begin(QStringLiteral("解析 Payload"), [] {}); task.updateProgress(100, 400, QStringLiteral("读取元数据"));
+        QCOMPARE(task.findChild<QProgressBar *>()->value(), 250);
+        task.finish(QStringLiteral("连接超时\n详细原因"), false); QVERIFY(!task.active());
+        QVERIFY(task.toolTip().contains(QStringLiteral("详细原因")));
+        QVERIFY(!QApplication::activeModalWidget());
     }
     void hfxLoopbackHandshakeAndListing() {
         HfxSession session; HfxOptions options; options.port = 0; options.interfaces = {{QStringLiteral("loopback"), QHostAddress::LocalHost}}; auto cancel = std::make_shared<std::atomic_bool>(false); std::promise<quint16> listening; auto port = listening.get_future();

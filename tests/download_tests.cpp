@@ -1,6 +1,7 @@
 #include "download.h"
 #include "appearance.h"
 #include "window.h"
+#include "task_progress.h"
 #include <QApplication>
 #include <QCryptographicHash>
 #include <QDir>
@@ -22,6 +23,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <QToolButton>
 #include <algorithm>
 #include <functional>
 
@@ -338,6 +340,39 @@ private slots:
     void windowMenuOpensSingleDialog() {
         Window window; window.show(); bool found = false; QTimer::singleShot(30, &window, [&] { auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget()); if (!menu) return; for (auto *action : menu->actions()) if (action->text().startsWith(QStringLiteral("直链下载"))) { found = true; action->trigger(); menu->close(); return; } menu->close(); });
         auto *more = window.findChild<QPushButton *>("action_more"); QVERIFY(more); more->click(); QVERIFY(found); QTRY_VERIFY(window.findChild<DownloadDialog *>("directDownloadDialog")); auto *dialog = window.findChild<DownloadDialog *>("directDownloadDialog"); window.showDownload(); QCOMPARE(window.findChildren<DownloadDialog *>().size(), 1); QVERIFY(dialog->isVisible()); dialog->close(); QTRY_VERIFY(window.findChild<DownloadDialog *>("directDownloadDialog") == nullptr); window.close();
+    }
+    void windowDownloadUsesInlineProgressAndRemembersDestination() {
+        QTemporaryDir root; const auto oldSettings = qgetenv("TWINFILE_SETTINGS");
+        qputenv("TWINFILE_SETTINGS", root.filePath("settings.json").toUtf8());
+        const auto restore = qScopeGuard([&] { if (oldSettings.isEmpty()) qunsetenv("TWINFILE_SETTINGS"); else qputenv("TWINFILE_SETTINGS", oldSettings); });
+        HttpFixture server; Window window; window.show(); window.showDownload();
+        auto *dialog = window.findChild<DownloadDialog *>("directDownloadDialog"); QVERIFY(dialog);
+        auto *path = dialog->findChild<QLineEdit *>("downloadPath"); QVERIFY(path);
+        QVERIFY(dialog->findChild<QPushButton *>("downloadBrowse"));
+        dialog->findChild<QLineEdit *>("downloadUrl")->setText(server.url("/chosen.bin").toString());
+        QVERIFY(path->text().endsWith(QStringLiteral("chosen.bin")));
+        const QString destination = root.filePath("saved.bin"); path->setText(destination);
+        dialog->findChild<QPushButton *>("downloadStart")->click();
+        QTRY_COMPARE(server.requests.size(), 1); QVERIFY(!dialog->isVisible());
+        auto *task = window.findChild<QWidget *>("taskProgress"); QVERIFY(task); QVERIFY(task->isVisible());
+        QVERIFY(!QApplication::activeModalWidget());
+        auto *engine = dialog->findChild<DirectDownload *>(); QVERIFY(engine);
+        engine->progress(1024, 4096, 2048, 1);
+        QCOMPARE(task->findChild<QProgressBar *>("jobProgress")->value(), 250);
+        QVERIFY(task->toolTip().contains(QStringLiteral("2.0 KB/s")));
+        task->findChild<QToolButton *>("taskCancel")->click(); QTRY_COMPARE(server.connected, 0);
+        QVERIFY(!dialog->isVisible()); QVERIFY(partials(root).isEmpty());
+        QCOMPARE(readSettings(root.filePath("settings.json")).value(QStringLiteral("download_directory")).toString(), root.path());
+        dialog->close(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        window.showDownload(); dialog = window.findChild<DownloadDialog *>("directDownloadDialog"); QVERIFY(dialog);
+        dialog->findChild<QLineEdit *>("downloadUrl")->setText(server.url("/second.bin").toString());
+        QCOMPARE(dialog->findChild<QLineEdit *>("downloadPath")->text(), root.filePath("second.bin"));
+        server.respond = [](QTcpSocket *socket, const HttpFixture::Request &) { HttpFixture::reply(socket, 200, "inline complete"); };
+        dialog->findChild<QPushButton *>("downloadStart")->click();
+        QTRY_COMPARE(contents(root.filePath("second.bin")), QByteArray("inline complete"));
+        QVERIFY(!dialog->isVisible()); QVERIFY(!QApplication::activeModalWidget());
+        QCOMPARE(task->findChild<QProgressBar *>("jobProgress")->value(), 1000);
+        window.close();
     }
 };
 QTEST_MAIN(DownloadTests)

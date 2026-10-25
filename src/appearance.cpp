@@ -266,6 +266,10 @@ QWidget#workspaceToolbar QPushButton:hover { background: palette(alternate-base)
 QWidget#workspaceToolbar QPushButton:pressed { background: palette(mid); }
 QWidget#workspaceToolbar QPushButton[primaryAction="true"] { background: palette(alternate-base); color: palette(text); padding: 8px 13px; font-weight: 600; }
 QWidget#workspaceToolbar QPushButton#assistantToggle:checked { background: palette(alternate-base); color: palette(text); }
+QWidget#taskProgress QLabel { font-size: 12px; background: transparent; }
+QWidget#taskProgress QLabel#taskSpeed { color: %1; font-size: 11px; }
+QWidget#taskProgress QToolButton { border: none; padding: 0; background: transparent; border-radius: 4px; }
+QWidget#taskProgress QToolButton:hover { background: palette(alternate-base); }
 QSplitter#fileSplitter::handle { background: palette(window); width: 12px; }
 QSplitter#fileSplitter { qproperty-handleWidth: 12; }
 QSplitter#fileSplitter::handle:hover { background: palette(alternate-base); border-radius: 5px; }

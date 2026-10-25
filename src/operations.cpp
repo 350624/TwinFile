@@ -46,8 +46,16 @@ Result commitArchiveMounts(const ArchiveMounts &mounts, const Cancellation &canc
     return {};
 }
 
-Result editArchive(const QString &path, const ArchiveChanges &changes, const Cancellation &cancel) {
+Result editArchive(const QString &path, const ArchiveChanges &changes, const Cancellation &cancel, const Progress &progress) {
     if (stopped(cancel)) return failed(QStringLiteral("操作已取消"));
+    qint64 processed = 0;
+    const auto streamProgress = [&]() -> Progress {
+        auto previous = std::make_shared<qint64>(0);
+        return [&, previous](qint64 done, qint64, const QString &name) {
+            processed += done - *previous; *previous = done;
+            if (progress) progress(processed, 0, name);
+        };
+    };
     QLockFile lock(path + QStringLiteral(".twinfile-lock")); if (!lock.tryLock(0)) return failed(QStringLiteral("压缩包正被其它操作编辑"));
     const QFileInfo before(path); if (!before.isFile() || before.isSymLink() || before.isJunction()) return failed(QStringLiteral("无效的压缩包来源"));
     const QByteArray originalHash = fileDigest(path, cancel); if (originalHash.isEmpty()) return failed(QStringLiteral("无法校验压缩包或已取消"));
@@ -92,12 +100,12 @@ Result editArchive(const QString &path, const ArchiveChanges &changes, const Can
         for (const QString &name : changes.directories) writer.addDirectory(name);
         for (auto item = finalFiles.cbegin(); item != finalFiles.cend(); ++item) {
             if (stopped(cancel)) return failed(QStringLiteral("操作已取消，原包未修改"));
-            QTemporaryFile inflated(staging.filePath(QStringLiteral("entry-XXXXXX"))); if (!inflated.open() || !reader.streamFile(item.value(), &inflated, cancel) || !inflated.seek(0)) return failed(QStringLiteral("读取 ZIP 条目失败，原包未修改：") + item.value());
+            QTemporaryFile inflated(staging.filePath(QStringLiteral("entry-XXXXXX"))); if (!inflated.open() || !reader.streamFile(item.value(), &inflated, cancel, streamProgress()) || !inflated.seek(0)) return failed(QStringLiteral("读取 ZIP 条目失败，原包未修改：") + item.value());
             const auto original = std::find_if(files.cbegin(), files.cend(), [&](const ZipInfo &info) { return info.filePath == item.value(); });
-            writer.addFile(item.key(), &inflated, cancel, original != files.cend() ? &*original : nullptr); if (writer.status() != ZipWriter::NoError) return failed(QStringLiteral("写入 ZIP 失败，原包未修改"));
+            writer.addFile(item.key(), &inflated, cancel, original != files.cend() ? &*original : nullptr, streamProgress()); if (writer.status() != ZipWriter::NoError) return failed(QStringLiteral("写入 ZIP 失败，原包未修改"));
         }
         for (auto item = changes.files.cbegin(); item != changes.files.cend(); ++item) {
-            QFile input(item.value()); if (!input.open(QIODevice::ReadOnly)) return failed(input.errorString()); const auto original = std::find_if(files.cbegin(), files.cend(), [&](const ZipInfo &info) { return info.filePath == item.key(); }); writer.addFile(item.key(), &input, cancel, original != files.cend() ? &*original : nullptr);
+            QFile input(item.value()); if (!input.open(QIODevice::ReadOnly)) return failed(input.errorString()); const auto original = std::find_if(files.cbegin(), files.cend(), [&](const ZipInfo &info) { return info.filePath == item.key(); }); writer.addFile(item.key(), &input, cancel, original != files.cend() ? &*original : nullptr, streamProgress());
         }
         writer.close(); if (writer.status() != ZipWriter::NoError) return failed(QStringLiteral("ZIP 保存失败，原包未修改"));
     }
@@ -161,19 +169,19 @@ Result renameEntry(const Entry &entry, const QString &name, const Cancellation &
     return failed(QStringLiteral("此项目不能重命名"));
 }
 
-Result materializeEntry(const Entry &entry, const QString &destination, const Cancellation &cancel) {
+Result materializeEntry(const Entry &entry, const QString &destination, const Cancellation &cancel, const Progress &progress) {
     if (entry.directory || !validateName(entry.name).isEmpty()) return failed(QStringLiteral("请选择普通文件"));
     const QString target = QDir(destination).filePath(entry.name);
     if (QFileInfo::exists(target)) return failed(QStringLiteral("暂存文件已经存在"));
-    if (entry.source == Source::Local) return transferFiles({entry.path}, destination, false, cancel);
-    if (entry.source == Source::Phone) return phoneTransfer({entry}, {Source::Local, destination, {}, {}}, false, cancel);
+    if (entry.source == Source::Local) return transferFiles({entry.path}, destination, false, cancel, progress);
+    if (entry.source == Source::Phone) return phoneTransfer({entry}, {Source::Local, destination, {}, {}}, false, cancel, progress);
     if (entry.source == Source::Archive) {
         ZipReader reader(entry.path); if (reader.status() != ZipReader::NoError) return failed(reader.errorString());
         const auto files = reader.fileInfoList(); const auto info = std::find_if(files.cbegin(), files.cend(), [&](const auto &file) { return file.filePath == entry.inner; });
         const QStorageInfo storage(destination);
         if (info == files.cend() || !info->isFile || info->isSymLink || info->size < 0 || info->size > 64LL * 1024 * 1024 * 1024 || (storage.bytesAvailable() >= 0 && info->size > storage.bytesAvailable())) return failed(QStringLiteral("包内文件不存在、为链接、超过 64 GiB 或暂存空间不足"));
         QFile output(target); if (!output.open(QIODevice::WriteOnly | QIODevice::NewOnly)) return failed(output.errorString());
-        if (!reader.streamFile(entry.inner, &output, cancel) || !output.flush()) { output.close(); QFile::remove(target); return failed(QStringLiteral("压缩包文件读取失败")); }
+        if (!reader.streamFile(entry.inner, &output, cancel, progress) || !output.flush()) { output.close(); QFile::remove(target); return failed(QStringLiteral("压缩包文件读取失败")); }
         return {true, {}, {}, {target}};
     }
     return failed(QStringLiteral("不支持的文件来源"));
@@ -196,15 +204,15 @@ Result writeBackEntry(const Entry &entry, const QString &local, const QByteArray
     return failed(QStringLiteral("本地编辑请直接原子保存"));
 }
 
-Result transferEntries(const QList<Entry> &entries, const Location &destination, bool move, const Cancellation &cancel) {
+Result transferEntries(const QList<Entry> &entries, const Location &destination, bool move, const Cancellation &cancel, const Progress &progress) {
     if (entries.isEmpty()) return {};
     if (move && destination.source == Source::Archive && entries.first().source == Source::Archive && entries.first().path == destination.path) {
         ArchiveChanges changes;
         for (const auto &entry : entries) { if (entry.source != Source::Archive || entry.path != destination.path) return failed(QStringLiteral("不能混合多个压缩包内部移动")); const QString target = destination.inner.isEmpty() ? entry.name : destination.inner + QChar('/') + entry.name; if (target != entry.inner) changes.rename.insert(entry.inner, target); }
-        return changes.rename.isEmpty() ? Result{} : editArchive(destination.path, changes, cancel);
+        return changes.rename.isEmpty() ? Result{} : editArchive(destination.path, changes, cancel, progress);
     }
     bool allLocal = true; for (const auto &entry : entries) allLocal &= entry.source == Source::Local;
-    if (allLocal && destination.source == Source::Local) { QStringList paths; for (const auto &entry : entries) paths.append(entry.path); return transferFiles(paths, destination.path, move, cancel); }
+    if (allLocal && destination.source == Source::Local) { QStringList paths; for (const auto &entry : entries) paths.append(entry.path); return transferFiles(paths, destination.path, move, cancel, progress); }
     if (destination.source == Source::Phone && entries.first().source == Source::Phone && entries.first().serial == destination.path) {
         for (const auto &entry : entries) {
             const QString target = remoteChild(destination.inner, entry.name);
@@ -214,19 +222,19 @@ Result transferEntries(const QList<Entry> &entries, const Location &destination,
         }
         return {};
     }
-    if (destination.source != Source::Archive && entries.first().source != Source::Archive) return phoneTransfer(entries, destination, move, cancel);
+    if (destination.source != Source::Archive && entries.first().source != Source::Archive) return phoneTransfer(entries, destination, move, cancel, progress);
     QTemporaryDir staging; if (!staging.isValid()) return failed(QStringLiteral("无法创建传输暂存目录"));
     QList<Entry> materialized; ArchiveChanges additions;
     if (allLocal) materialized = entries;
     else for (const auto &entry : entries) {
         if (entry.source == Source::Archive && entry.directory) {
-            Result result = extractArchive(entry.path, staging.path(), entry.inner, cancel); if (!result.ok) return result;
+            Result result = extractArchive(entry.path, staging.path(), entry.inner, cancel, progress); if (!result.ok) return result;
             Entry local; local.path = QDir(staging.path()).filePath(entry.inner); local.name = entry.name; local.directory = true; materialized.append(local);
         } else if (entry.source == Source::Phone && entry.directory) {
             const QString target = staging.filePath(entry.name);
-            const Result result = adbSyncPull(entry.serial, entry.path, target, cancel); if (!result.ok) return result;
+            const Result result = adbSyncPull(entry.serial, entry.path, target, cancel, progress); if (!result.ok) return result;
             Entry local; local.path = target; local.name = entry.name; local.directory = true; materialized.append(local);
-        } else { Result result = materializeEntry(entry, staging.path(), cancel); if (!result.ok) return result; Entry local; local.path = result.paths.first(); local.name = entry.name; materialized.append(local); }
+        } else { Result result = materializeEntry(entry, staging.path(), cancel, progress); if (!result.ok) return result; Entry local; local.path = result.paths.first(); local.name = entry.name; materialized.append(local); }
     }
     Result copied;
     if (destination.source == Source::Archive) {
@@ -240,8 +248,8 @@ Result transferEntries(const QList<Entry> &entries, const Location &destination,
                 while (iterator.hasNext()) { iterator.next(); const auto info = iterator.fileInfo(); if (info.isSymLink() || info.isJunction()) return failed(QStringLiteral("不压缩符号链接")); const QString name = root + QChar('/') + QDir(entry.path).relativeFilePath(iterator.filePath()); if (info.isDir()) additions.directories.append(name); else additions.files.insert(name, iterator.filePath()); }
             }
         }
-        copied = editArchive(destination.path, additions, cancel);
-    } else { QStringList paths; for (const auto &entry : materialized) paths.append(entry.path); copied = destination.source == Source::Local ? transferFiles(paths, destination.path, false, cancel) : phoneTransfer(materialized, destination, false, cancel); }
+        copied = editArchive(destination.path, additions, cancel, progress);
+    } else { QStringList paths; for (const auto &entry : materialized) paths.append(entry.path); copied = destination.source == Source::Local ? transferFiles(paths, destination.path, false, cancel, progress) : phoneTransfer(materialized, destination, false, cancel, progress); }
     if (!copied.ok || !move) return copied;
     if (entries.first().source == Source::Archive && destination.source == Source::Archive && entries.first().path == destination.path) return failed(QStringLiteral("复制已完成；同包移动请使用重命名，源文件已保留"));
     if (stopped(cancel)) return failed(QStringLiteral("复制完成但取消了删除，源文件已保留"));
