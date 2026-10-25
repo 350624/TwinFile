@@ -32,6 +32,7 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QToolButton>
 #include <QTextStream>
 #include <QThread>
 #include <QUrl>
