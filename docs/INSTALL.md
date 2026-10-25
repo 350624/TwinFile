@@ -62,6 +62,6 @@ Get-FileHash .\TwinFile-3.1.4-Windows-x64-Setup.exe -Algorithm SHA256
 
 - 更新前退出程序并备份 `%APPDATA%\TwinFileNative` 和重要文件，不要在文件传输过程中覆盖安装目录。
 - 主配置为 `settings.json`；可选记住的 AI 配置为 `ai.json`。DPAPI 加密的密钥不可直接迁移给另一 Windows 账户。
-- “⋯ → 导入旧版设置 / 工作区”可读取旧 JSON，不会修改旧文件；旧配置不应包含在公开仓库。
+- 菜单不再提供旧版设置/工作区导入入口；旧配置不应包含在公开仓库。
 - 安装版通过 Windows“已安装的应用”卸载；便携版退出后移除程序目录。用户配置可能保留，若要清除请先备份并自行确认目录。
 - 尚未完成所有系统上的真实安装/覆盖升级/卸载验收，详见[验证范围](../VERIFICATION.md)。

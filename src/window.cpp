@@ -14,6 +14,7 @@
 #include "mcp.h"
 #include "download.h"
 #include "task_progress.h"
+#include "properties.h"
 
 #include <QApplication>
 #include <QActionGroup>
@@ -179,7 +180,7 @@ Window::Window(QWidget *parent, const QUrl &updateTestEndpoint) : QMainWindow(pa
         pane->setAnimationsEnabled(!settings_.value(QStringLiteral("reduced_motion")).toBool());
         connect(pane, &Pane::activated, this, &Window::setActive);
         connect(pane, &Pane::openRequested, this, &Window::open);
-        connect(pane, &Pane::previewRequested, this, &Window::preview);
+        connect(pane, &Pane::previewRequested, this, &Window::properties);
         connect(pane, &Pane::menuRequested, this, &Window::menu);
         connect(pane, &Pane::locationChanged, this, &Window::updateNavigation);
     }
@@ -200,7 +201,7 @@ Window::Window(QWidget *parent, const QUrl &updateTestEndpoint) : QMainWindow(pa
     connect(storageMonitor_, &StorageMonitor::changed, this, [this](const QList<Entry> &entries) { navigationDrives_ = entries; updateDeviceNavigation(); });
     QTimer::singleShot(0, storageMonitor_, &StorageMonitor::start);
     statusBar()->showMessage(QStringLiteral("就绪"));
-    auto *statusHint = new QLabel(QStringLiteral("空格预览   ·   F2 刷新   ·   F5 复制   ·   F6 移动")); statusHint->setObjectName(QStringLiteral("workspaceShortcuts")); statusBar()->addPermanentWidget(statusHint);
+    auto *statusHint = new QLabel(QStringLiteral("空格属性   ·   F2 刷新   ·   F5 复制   ·   F6 移动")); statusHint->setObjectName(QStringLiteral("workspaceShortcuts")); statusBar()->addPermanentWidget(statusHint);
     buildExtensions();
     mcp_ = new McpServer(this);
     connect(mcp_, &McpServer::filesChanged, this, [this] { left_->refresh(); right_->refresh(); });
@@ -657,7 +658,7 @@ void Window::extract() {
     const QList<Entry> selected = active_->selected();
     QString archive, prefix;
     if (active_->location().source == Source::Archive) { archive = active_->location().path; if (selected.size() == 1) prefix = selected.first().inner; }
-    else if (selected.size() == 1 && selected.first().source == Source::Local && isArchive(selected.first().name)) archive = selected.first().path;
+    else if (selected.size() == 1 && !selected.first().directory && selected.first().source == Source::Local && isArchive(selected.first().name)) archive = selected.first().path;
     if (archive.isEmpty()) return;
     const QString destination = QFileDialog::getExistingDirectory(this, QStringLiteral("解压到文件夹")); if (destination.isEmpty()) return;
     runJob(QStringLiteral("解压 ZIP/APK"), [archive, destination, prefix](const Cancellation &cancel, const Progress &progress) { return extractArchive(archive, destination, prefix, cancel, progress); });
@@ -715,19 +716,14 @@ void Window::open(const Entry &entry) {
     else QDesktopServices::openUrl(QUrl::fromLocalFile(entry.path));
 }
 
-void Window::preview() {
-    const QList<Entry> entries = active_->selected(); if (entries.size() != 1) return;
-    const Entry entry = entries.first();
-    if (!entry.directory && (isDex(entry.name) || isImage(entry.name) || isMedia(entry.name) || isText(entry.name))) { open(entry); return; }
-    QString text = QStringLiteral("%1\n%2\n大小：%3\n修改：%4\n").arg(entry.name, entry.path, humanSize(entry.size), entry.modified.toString(Qt::ISODate));
-    if (entry.source == Source::Local && !entry.directory) { QString error; const QString contents = readText(entry.path, 1024 * 1024, &error); if (error.isEmpty()) text += QStringLiteral("\n") + contents; }
-    showText(QStringLiteral("快速预览"), text);
-}
 void Window::properties() {
-    const QList<Entry> entries = active_->selected(); QStringList text;
-    for (const Entry &entry : entries) text.append(QStringLiteral("名称：%1\n路径：%2\n包内：%3\n大小：%4\n修改：%5\n").arg(entry.name, entry.path, entry.inner, humanSize(entry.size), entry.modified.toString(Qt::ISODate)));
-    if (text.isEmpty()) text.append(active_->location().display());
-    showText(QStringLiteral("属性"), text.join(QChar('\n')));
+    QList<Entry> entries = active_->selected();
+    if (entries.isEmpty()) {
+        const auto location = active_->location(); Entry entry; entry.source = location.source; entry.directory = true;
+        entry.path = location.source == Source::Phone ? location.inner : location.path; entry.inner = location.inner; entry.serial = location.source == Source::Phone ? location.path : QString();
+        entry.name = location.display(); entries.append(entry);
+    }
+    (new PropertiesDialog(entries, this))->show();
 }
 
 void Window::image(const QString &path, const QList<Entry> &sourceEntries) {
@@ -1100,17 +1096,22 @@ void Window::hfx() {
 
 void Window::menu(const QPoint &position) {
     QMenu popup(this);
-    popup.addAction(QStringLiteral("打开"), this, [this] { const auto entries = active_->selected(); if (entries.size() == 1) open(entries.first()); });
-    popup.addAction(QStringLiteral("快速预览（空格）"), this, &Window::preview);
     const auto selected = active_->selected();
-    if (selected.size() == 1 && selected.first().source == Source::Local && !batchPlan(selected.first().path).program.isEmpty()) popup.addAction(QStringLiteral("运行脚本（内置 ADB / Fastboot，新控制台）"), this, [this, path = selected.first().path] { if (QMessageBox::warning(this, QStringLiteral("运行本地脚本"), QStringLiteral("只运行可信脚本。脚本可执行任意命令，包括刷机或删除文件。继续？"), QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return; const Result result = launchBatch(path); if (!result.ok) report(result.error); });
+    popup.addAction(QStringLiteral("打开"), this, [this] { const auto entries = active_->selected(); if (entries.size() == 1) open(entries.first()); });
+    popup.addAction(QStringLiteral("属性（空格）"), this, &Window::properties);
+    const bool singleFile = selected.size() == 1 && !selected.first().directory;
+    if (singleFile && selected.first().source == Source::Local && !batchPlan(selected.first().path).program.isEmpty()) popup.addAction(QStringLiteral("运行脚本（内置 ADB / Fastboot，新控制台）"), this, [this, path = selected.first().path] { if (QMessageBox::warning(this, QStringLiteral("运行本地脚本"), QStringLiteral("只运行可信脚本。脚本可执行任意命令，包括刷机或删除文件。继续？"), QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return; const Result result = launchBatch(path); if (!result.ok) report(result.error); });
     popup.addSeparator();
     popup.addAction(QStringLiteral("复制"), this, [this] { transfer(false, true); }); popup.addAction(QStringLiteral("剪切"), this, [this] { transfer(true, true); }); popup.addAction(QStringLiteral("粘贴"), this, &Window::paste);
     popup.addAction(QStringLiteral("重命名"), this, [this] { rename(false); }); popup.addAction(QStringLiteral("批量重命名"), this, [this] { rename(true); }); popup.addAction(QStringLiteral("移到回收站"), this, &Window::remove);
     popup.addSeparator();
-    popup.addAction(QStringLiteral("压缩为 ZIP"), this, &Window::compress); popup.addAction(QStringLiteral("解压 ZIP/APK"), this, &Window::extract);
-    auto *apk = popup.addMenu(QStringLiteral("APK 工具")); apk->addAction(QStringLiteral("快速修改清单并签名"), this, &Window::apkEdit); apk->addAction(QStringLiteral("反编译"), this, &Window::apkDecompile); apk->addAction(QStringLiteral("回编译并签名"), this, &Window::apkBuild); apk->addAction(QStringLiteral("编辑工程 / 更换图标并生成 APK"), this, &Window::apkProjectEdit); apk->addAction(QStringLiteral("安装到手机"), this, &Window::apkInstall);
-    popup.addAction(QStringLiteral("校验值"), this, &Window::hashes); popup.addAction(QStringLiteral("属性"), this, &Window::properties);
+    popup.addAction(QStringLiteral("压缩为 ZIP"), this, &Window::compress);
+    if (singleFile && ((selected.first().source == Source::Local && isArchive(selected.first().name)) || selected.first().source == Source::Archive))
+        popup.addAction(QStringLiteral("解压 ZIP/APK"), this, &Window::extract);
+    if (singleFile && selected.first().source == Source::Local && isApk(selected.first().name)) {
+        auto *apk = popup.addMenu(QStringLiteral("APK 工具")); apk->addAction(QStringLiteral("快速修改清单并签名"), this, &Window::apkEdit); apk->addAction(QStringLiteral("反编译"), this, &Window::apkDecompile); apk->addAction(QStringLiteral("安装到手机"), this, &Window::apkInstall);
+    }
+    popup.addAction(QStringLiteral("校验值"), this, &Window::hashes);
     popup.addSeparator(); popup.addAction(QStringLiteral("刷新当前栏"), this, &Window::refreshActive); popup.exec(position);
 }
 
@@ -1129,6 +1130,9 @@ void Window::moreMenu() {
     popup.addAction(QStringLiteral("刷新当前栏"), this, &Window::refreshActive);
     popup.addAction(QStringLiteral("立即检测手机"), monitor_, &DeviceMonitor::detect);
     popup.addAction(QStringLiteral("新建文件"), this, [this] { create(false); }); popup.addAction(QStringLiteral("新建文件夹"), this, [this] { create(true); });
+    if (active_->location().source == Source::Local && QFileInfo(QDir(active_->location().path).filePath(QStringLiteral("apktool.yml"))).isFile()) {
+        auto *project = popup.addMenu(QStringLiteral("APK 工程")); project->addAction(QStringLiteral("回编译并签名"), this, &Window::apkBuild); project->addAction(QStringLiteral("编辑工程 / 更换图标并生成 APK"), this, &Window::apkProjectEdit);
+    }
     popup.addAction(QStringLiteral("比较文本（左右各选一项）"), this, [this] { compare(false); }); popup.addAction(QStringLiteral("比较目录"), this, [this] { compare(true); });
     popup.addAction(QStringLiteral("导入并验证校验清单"), this, [this] { checksumList(true); });
     popup.addAction(QStringLiteral("粘贴校验值并验证所选文件"), this, &Window::verifyHash);
@@ -1158,14 +1162,6 @@ void Window::moreMenu() {
         QJsonArray favorites = settings_.value(QStringLiteral("favorites")).toArray(); const QString path = active_->location().path;
         if (!favorites.contains(path)) favorites.append(path);
         settings_.insert(QStringLiteral("favorites"), favorites); statusBar()->showMessage(QStringLiteral("已收藏，下次启动显示"), 5000);
-    });
-    popup.addAction(QStringLiteral("导入旧版设置 / 工作区"), this, [this] {
-        const QString source = QFileDialog::getOpenFileName(this, QStringLiteral("选择旧版 settings.json；只读取，不修改旧文件"), QDir(qEnvironmentVariable("APPDATA", QDir::homePath())).filePath(QStringLiteral("WinMT/settings.json")), QStringLiteral("JSON (*.json)")); if (source.isEmpty()) return;
-        const auto legacy = readSettings(source); if (legacy.isEmpty()) { report(QStringLiteral("配置为空、格式不正确或超过大小上限")); return; }
-        if (QMessageBox::question(this, QStringLiteral("导入设置"), QStringLiteral("替换当前原生版设置与工作区？旧版配置文件不变；收藏列表重启后显示。")) != QMessageBox::Yes) return;
-        settings_ = migrateLegacySettings(legacy); const auto workspace = settings_.value(QStringLiteral("workspace")).toObject();
-        setReducedMotion(settings_.value(QStringLiteral("reduced_motion")).toBool());
-        left_->restore(workspace.value(QStringLiteral("left")).toObject()); right_->restore(workspace.value(QStringLiteral("right")).toObject()); setActive(workspace.value(QStringLiteral("active")).toString() == QStringLiteral("right") ? right_ : left_); setTheme(settings_.value(QStringLiteral("theme")).toString()); for (Pane *pane : {left_, right_}) pane->setOptions(settings_.value(QStringLiteral("show_hidden")).toBool(), settings_.value(QStringLiteral("sort")).toString(), settings_.value(QStringLiteral("descending")).toBool()); QString error; if (!writeSettings(settingsPath(), settings_, &error)) report(error);
     });
     popup.addSeparator();
     popup.addAction(QStringLiteral("本地 / 远程 Payload 分区提取"), this, &Window::payload);

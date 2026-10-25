@@ -38,9 +38,9 @@ try {
     if ($Process.ExitCode -ne 0) { throw 'Native icon UI check failed' }
     $ExtensionExecutable = Join-Path $PSScriptRoot 'build\bin\twinfile_extension_tests.exe'
     $ExtensionResults = Join-Path $Evidence 'extension-ui-test-results.txt'
-    $ExtensionTests = @('sidebarRendersAndDoesNotStealFileShortcuts','appearanceMigrationAndPalette','appearanceRendersAllModesAndRestores','toolbarSelectionAndDirection','toolbarTransfersFollowActivePane','workspaceRedesignLayoutAndNavigation','workspaceNavigationScrollsWithoutGrowingWindow','storageLocationsAndTestModeIsolation','deviceAndDriveShortcuts','modelsEndpointAndExplicitGet','modelsFailures','modelsCancelAndRestart','modelSettingsDialogFetchAndManualFallback','codexComposerRendersAllModes','codexComposerMenusKeyboardAndStop','updateReleaseValidation','updateCheckIsAsyncBoundedAndShowsReleaseNotes','applicationChecksUpdatesAtStartupAndFromSettings','updateCheckFailureCancelAndStartupOnce')
+    $ExtensionTests = @('sidebarRendersAndDoesNotStealFileShortcuts','appearanceMigrationAndPalette','appearanceRendersAllModesAndRestores','propertiesRenderAndSpaceOpensProperties','contextMenusMatchSelectedEntryTypes','toolbarSelectionAndDirection','toolbarTransfersFollowActivePane','workspaceRedesignLayoutAndNavigation','workspaceNavigationScrollsWithoutGrowingWindow','storageLocationsAndTestModeIsolation','deviceAndDriveShortcuts','modelsEndpointAndExplicitGet','modelsFailures','modelsCancelAndRestart','modelSettingsDialogFetchAndManualFallback','codexComposerRendersAllModes','codexComposerMenusKeyboardAndStop','updateReleaseValidation','updateCheckIsAsyncBoundedAndShowsReleaseNotes','applicationChecksUpdatesAtStartupAndFromSettings','updateCheckFailureCancelAndStartupOnce')
     $Process = Start-Process -FilePath $ExtensionExecutable -ArgumentList (@('-platform','windows') + $ExtensionTests + @('-o',('"' + $ExtensionResults + ',txt"'))) -WindowStyle Hidden -PassThru
-    if (-not $Process.WaitForExit(45000)) { $Process.Kill(); throw 'AI and extension UI check timed out' }
+    if (-not $Process.WaitForExit(60000)) { $Process.Kill(); throw 'AI and extension UI check timed out' }
     Get-Content -LiteralPath $ExtensionResults
     if ($Process.ExitCode -ne 0) { throw 'AI and extension UI check failed' }
     $AgentExecutable = Join-Path $PSScriptRoot 'build\bin\twinfile_agent_tests.exe'

@@ -5,6 +5,7 @@
 #include "appearance.h"
 #include "updates.h"
 #include "task_progress.h"
+#include "properties.h"
 
 #include <QApplication>
 #include <QAction>
@@ -404,6 +405,95 @@ private slots:
         QVERIFY(file.open(QIODevice::ReadOnly)); QVERIFY(!file.readAll().contains("protected_key")); file.close();
         QVERIFY(writeSettings(file.fileName(), {{QStringLiteral("remember_key"), true}, {QStringLiteral("protected_key"), QStringLiteral("ZmFrZQ==")}}));
         QVERIFY(AiSettings::load(root.path(), &error).apiKey.isEmpty()); QVERIFY(!error.isEmpty());
+    }
+    void propertiesRenderAndSpaceOpensProperties_data() {
+        QTest::addColumn<QString>("theme"); QTest::addColumn<QString>("mode");
+        for (const QString &theme : themeIds()) for (const QString &mode : {QStringLiteral("dark"), QStringLiteral("light")})
+            QTest::newRow(qPrintable(theme + QChar('-') + mode)) << theme << mode;
+    }
+    void propertiesRenderAndSpaceOpensProperties() {
+        QFETCH(QString, theme); QFETCH(QString, mode); QTemporaryDir root;
+        QVERIFY(QDir().mkpath(root.filePath(QStringLiteral("folder/nested"))));
+        { QFile file(root.filePath(QStringLiteral("folder/nested/data.bin"))); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(QByteArray(4096, 'x')), 4096); }
+        { QFile file(root.filePath(QStringLiteral("note.txt"))); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write("hello"), 5); }
+        Window window; window.setAttribute(Qt::WA_DontShowOnScreen); window.setReducedMotion(true); window.setTheme(theme); window.setColorMode(mode); window.show();
+        window.leftPane()->navigate({Source::Local, root.path(), {}, {}}); QTRY_COMPARE(window.leftPane()->fileModel()->rowCount(), 2);
+        window.setActive(window.leftPane()); auto *view = window.leftPane()->view(); view->setCurrentIndex(window.leftPane()->fileModel()->index(0));
+        QTest::keyClick(view, Qt::Key_Space);
+        QPointer<QDialog> dialog = window.findChild<QDialog *>(QStringLiteral("fileProperties")); QVERIFY(dialog); QCOMPARE(dialog->windowTitle(), QStringLiteral("属性"));
+        QTRY_VERIFY(dialog->property("statisticsFinished").toBool());
+        QCOMPARE(dialog->findChild<QLabel *>(QStringLiteral("propertySize"))->text(), QStringLiteral("4.0 KB（4096 字节）"));
+        QCOMPARE(dialog->findChild<QLabel *>(QStringLiteral("propertyContents"))->text(), QStringLiteral("1 个文件，1 个子文件夹"));
+        QVERIFY(!dialog->findChild<QPlainTextEdit *>()); QVERIFY(!dialog->findChild<QLineEdit *>()); QVERIFY(!QApplication::activeModalWidget());
+        dialog->resize(480, 320); QTest::qWait(20);
+        for (auto *label : dialog->findChildren<QLabel *>()) QVERIFY(dialog->rect().contains(label->mapTo(dialog, label->rect().topLeft())));
+        const QString evidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT");
+        if (!evidence.isEmpty()) QVERIFY(dialog->grab().save(QDir(evidence).filePath(QStringLiteral("native-properties-") + theme + QChar('-') + mode + QStringLiteral(".png"))));
+        dialog->close(); QTRY_VERIFY(dialog.isNull());
+        view->setCurrentIndex(window.leftPane()->fileModel()->index(1)); QTest::keyClick(view, Qt::Key_Space);
+        dialog = window.findChild<QDialog *>(QStringLiteral("fileProperties")); QVERIFY(dialog); QTRY_VERIFY(dialog->property("statisticsFinished").toBool());
+        QCOMPARE(dialog->findChild<QLabel *>(QStringLiteral("propertySize"))->text(), QStringLiteral("5 B（5 字节）"));
+        QVERIFY(!dialog->findChild<QPlainTextEdit *>()); dialog->close(); QTRY_VERIFY(dialog.isNull());
+        view->selectionModel()->clearSelection(); QTest::keyClick(view, Qt::Key_Space);
+        dialog = window.findChild<QDialog *>(QStringLiteral("fileProperties")); QVERIFY(dialog); QTRY_VERIFY(dialog->property("statisticsFinished").toBool());
+        QCOMPARE(dialog->findChild<QLabel *>(QStringLiteral("propertySize"))->text(), QStringLiteral("4.0 KB（4101 字节）")); dialog->close(); QTRY_VERIFY(dialog.isNull());
+        Entry missing; missing.path = root.filePath(QStringLiteral("missing"));
+        dialog = new PropertiesDialog({missing}, &window); dialog->show(); QTRY_VERIFY(dialog->property("statisticsFinished").toBool());
+        QCOMPARE(dialog->findChild<QLabel *>(QStringLiteral("propertySize"))->text(), QStringLiteral("未完成")); QVERIFY(!dialog->findChild<QLabel *>(QStringLiteral("propertyStatus"))->text().isEmpty());
+        dialog->close(); QTRY_VERIFY(dialog.isNull());
+        Entry folder; folder.path = root.path(); folder.directory = true;
+        dialog = new PropertiesDialog({folder}, &window); dialog->show(); dialog->close(); QTRY_VERIFY(dialog.isNull());
+        window.close();
+    }
+    void contextMenusMatchSelectedEntryTypes() {
+        QTemporaryDir root; QVERIFY(QDir().mkpath(root.filePath(QStringLiteral("folder.apk")))); QVERIFY(QDir().mkpath(root.filePath(QStringLiteral("folder.zip"))));
+        for (const QString &name : {QStringLiteral("file.apk"), QStringLiteral("file.zip"), QStringLiteral("note.txt")}) { QFile file(root.filePath(name)); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("fixture"); }
+        { QFile file(root.filePath(QStringLiteral("folder.apk/apktool.yml"))); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("fixture"); }
+        Window window; window.setAttribute(Qt::WA_DontShowOnScreen); window.setReducedMotion(true); window.show();
+        auto *pane = window.leftPane(); pane->navigate({Source::Local, root.path(), {}, {}}); QTRY_COMPARE(pane->fileModel()->rowCount(), 5); window.setActive(pane);
+        auto select = [&](const QStringList &names) {
+            pane->view()->selectionModel()->clear();
+            const auto entries = pane->fileModel()->entries();
+            for (qsizetype row = 0; row < entries.size(); ++row) if (names.contains(entries[row].name)) pane->view()->selectionModel()->select(pane->fileModel()->index(int(row)), QItemSelectionModel::Select);
+        };
+        QStringList actions;
+        auto inspectMenu = [&] {
+            actions.clear();
+            QTimer::singleShot(0, &window, [&] {
+                auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget()); if (!popup) return;
+                const auto close = qScopeGuard([popup] { popup->close(); });
+                const QString evidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT");
+                if (!evidence.isEmpty() && pane->selected().size() == 1 && pane->selected().first().name == QStringLiteral("folder.apk"))
+                    QVERIFY(popup->grab().save(QDir(evidence).filePath(QStringLiteral("native-context-folder.png"))));
+                for (auto *action : popup->actions()) { actions.append(action->text()); if (action->text() == QStringLiteral("属性（空格）")) { action->trigger(); } }
+            });
+            pane->menuRequested(window.mapToGlobal(QPoint(280, 150)));
+        };
+        for (const QString &name : {QStringLiteral("folder.apk"), QStringLiteral("folder.zip"), QStringLiteral("note.txt")}) {
+            select({name}); inspectMenu(); QVERIFY(!actions.isEmpty()); QVERIFY(!actions.contains(QStringLiteral("APK 工具"))); QVERIFY(!actions.contains(QStringLiteral("解压 ZIP/APK")));
+            QCOMPARE(actions.count(QStringLiteral("属性（空格）")), 1); QVERIFY(!actions.contains(QStringLiteral("属性"))); QVERIFY(!actions.contains(QStringLiteral("快速预览（空格）")));
+            auto *dialog = window.findChild<QDialog *>(QStringLiteral("fileProperties")); QVERIFY(dialog); dialog->close(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        }
+        select({QStringLiteral("file.zip")}); inspectMenu(); QVERIFY(actions.contains(QStringLiteral("解压 ZIP/APK"))); QVERIFY(!actions.contains(QStringLiteral("APK 工具")));
+        window.findChild<QDialog *>(QStringLiteral("fileProperties"))->close(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        select({QStringLiteral("file.apk")}); inspectMenu(); QVERIFY(actions.contains(QStringLiteral("解压 ZIP/APK"))); QVERIFY(actions.contains(QStringLiteral("APK 工具")));
+        window.findChild<QDialog *>(QStringLiteral("fileProperties"))->close(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        select({QStringLiteral("file.apk"), QStringLiteral("folder.apk")}); inspectMenu(); QVERIFY(!actions.contains(QStringLiteral("APK 工具"))); QVERIFY(!actions.contains(QStringLiteral("解压 ZIP/APK")));
+        window.findChild<QDialog *>(QStringLiteral("fileProperties"))->close(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        bool inspected = false, projectFound = false;
+        QTimer::singleShot(0, &window, [&] {
+            auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget()); if (!popup) return;
+            const auto close = qScopeGuard([popup] { popup->close(); });
+            inspected = true; for (auto *action : popup->actions()) { QVERIFY(!action->text().contains(QStringLiteral("导入旧版"))); if (action->text() == QStringLiteral("APK 工程")) projectFound = true; }
+        });
+        window.findChild<QPushButton *>(QStringLiteral("action_more"))->click(); QVERIFY(inspected); QVERIFY(!projectFound);
+        pane->navigate({Source::Local, root.filePath(QStringLiteral("folder.apk")), {}, {}}); QTRY_COMPARE(pane->fileModel()->rowCount(), 1);
+        QTimer::singleShot(0, &window, [&] {
+            auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget()); if (!popup) return;
+            const auto close = qScopeGuard([popup] { popup->close(); });
+            for (auto *action : popup->actions()) if (action->text() == QStringLiteral("APK 工程")) { projectFound = true; QVERIFY(action->menu()); QCOMPARE(action->menu()->actions().size(), 2); }
+        });
+        window.findChild<QPushButton *>(QStringLiteral("action_more"))->click(); QVERIFY(projectFound); window.close();
     }
     void toolbarSelectionAndDirection_data() {
         QTest::addColumn<QString>("theme"); QTest::addColumn<QString>("mode");

@@ -63,7 +63,6 @@ private:
     void compress();
     void extract();
     void open(const Entry &entry);
-    void preview();
     void properties();
     void edit(const QString &path);
     void image(const QString &path, const QList<Entry> &neighbors = {});

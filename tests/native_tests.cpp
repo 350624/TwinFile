@@ -10,6 +10,7 @@
 #include "shell.h"
 #include "appearance.h"
 #include "dex.h"
+#include "properties.h"
 #include <QComboBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -79,6 +80,50 @@ public:
 class NativeTests : public QObject {
     Q_OBJECT
 private slots:
+    void propertiesCountLocalContentsAndSkipJunctions() {
+        QTemporaryDir root, outside; QVERIFY(root.isValid()); QVERIFY(outside.isValid());
+        QVERIFY(QDir().mkpath(root.filePath(QStringLiteral("nested/empty"))));
+        QVERIFY(writeFixture(root.filePath(QStringLiteral("nested/data.bin")), QByteArray(1024, 'x')));
+        QVERIFY(writeFixture(root.filePath(QStringLiteral(".hidden")), QByteArray(3, 'h')));
+        QVERIFY(writeFixture(root.filePath(QStringLiteral("archive.zip")), QByteArray(5, 'z')));
+        QVERIFY(writeFixture(outside.filePath(QStringLiteral("outside.bin")), QByteArray(8192, 'o')));
+        Entry folder; folder.name = QStringLiteral("folder"); folder.path = root.path(); folder.directory = true;
+        const auto counted = inspectEntries({folder}); QVERIFY2(counted.error.isEmpty(), qPrintable(counted.error));
+        QCOMPARE(counted.bytes, 1032); QCOMPARE(counted.files, 3); QCOMPARE(counted.directories, 2);
+        Entry file; file.path = root.filePath(QStringLiteral("nested/data.bin")); file.size = 0;
+        const auto fresh = inspectEntries({file}); QVERIFY(fresh.error.isEmpty()); QCOMPARE(fresh.bytes, 1024); QCOMPARE(fresh.files, 1);
+        const auto combined = inspectEntries({file, folder, file}); QVERIFY(combined.error.isEmpty()); QCOMPARE(combined.bytes, 1032); QCOMPARE(combined.files, 3); QCOMPARE(combined.directories, 2);
+        Entry empty; empty.path = root.filePath(QStringLiteral("nested/empty")); empty.directory = true;
+        const auto zero = inspectEntries({empty}); QVERIFY(zero.error.isEmpty()); QCOMPARE(zero.bytes, 0); QCOMPARE(zero.files, 0); QCOMPARE(zero.directories, 0);
+        const QString junction = root.filePath(QStringLiteral("link"));
+        const auto linked = runProcess(QStringLiteral("C:/Windows/System32/cmd.exe"), {QStringLiteral("/d"), QStringLiteral("/c"), QStringLiteral("mklink"), QStringLiteral("/J"), QDir::toNativeSeparators(junction), QDir::toNativeSeparators(outside.path())});
+        QVERIFY2(linked.ok, qPrintable(linked.error));
+        const auto cleanup = qScopeGuard([&] { RemoveDirectoryW(reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(junction).utf16())); });
+        const auto bounded = inspectEntries({folder}); QVERIFY(bounded.error.isEmpty()); QCOMPARE(bounded.bytes, 1032); QCOMPARE(bounded.links, 1); QCOMPARE(bounded.directories, 2);
+    }
+    void propertiesCountArchiveUncompressedContents() {
+        QTemporaryDir root; const QString archive = root.filePath(QStringLiteral("fixture.zip"));
+        { ZipWriter writer(archive); writer.addFile(QStringLiteral("dir/nested/data.bin"), QByteArray(4096, 'x')); writer.addFile(QStringLiteral("dir/.hidden"), QByteArray(3, 'h')); writer.addDirectory(QStringLiteral("dir/empty")); writer.addFile(QStringLiteral("directory/other.bin"), QByteArray(100, 'o')); writer.addSymLink(QStringLiteral("dir/link"), QStringLiteral("../directory")); writer.close(); QCOMPARE(writer.status(), ZipWriter::NoError); }
+        Entry folder; folder.source = Source::Archive; folder.path = archive; folder.inner = QStringLiteral("dir"); folder.directory = true;
+        const auto counted = inspectEntries({folder}); QVERIFY2(counted.error.isEmpty(), qPrintable(counted.error));
+        QCOMPARE(counted.bytes, 4099); QCOMPARE(counted.files, 2); QCOMPARE(counted.directories, 2); QCOMPARE(counted.links, 1);
+        Entry file = folder; file.inner = QStringLiteral("dir/nested/data.bin"); file.directory = false; file.size = 0;
+        const auto exact = inspectEntries({file}); QVERIFY(exact.error.isEmpty()); QCOMPARE(exact.bytes, 4096); QCOMPARE(exact.directories, 0);
+        const auto combined = inspectEntries({file, folder}); QVERIFY(combined.error.isEmpty()); QCOMPARE(combined.bytes, 4099); QCOMPARE(combined.files, 2);
+        Entry second = file; second.inner = QStringLiteral("directory/other.bin");
+        const auto multiple = inspectEntries({file, second}); QVERIFY(multiple.error.isEmpty()); QCOMPARE(multiple.bytes, 4196); QCOMPARE(multiple.files, 2); QCOMPARE(multiple.directories, 0);
+        folder.inner = QStringLiteral("dir/empty"); const auto empty = inspectEntries({folder}); QVERIFY(empty.error.isEmpty()); QCOMPARE(empty.bytes, 0);
+        folder.inner = QStringLiteral("missing"); QVERIFY(!inspectEntries({folder}).error.isEmpty());
+    }
+    void propertiesCancellationAndMissingEntries() {
+        QTemporaryDir root; Entry folder; folder.path = root.path(); folder.directory = true;
+        auto cancel = std::make_shared<std::atomic_bool>(true); QVERIFY(inspectEntries({folder}, cancel).error.contains(QStringLiteral("取消")));
+        Entry missing; missing.path = root.filePath(QStringLiteral("missing")); QVERIFY(!inspectEntries({missing}).error.isEmpty());
+        QVERIFY(writeFixture(root.filePath(QStringLiteral("ok.bin")), QByteArray(16, 'x')));
+        Entry file; file.path = root.filePath(QStringLiteral("ok.bin")); const auto partial = inspectEntries({file, missing}); QVERIFY(!partial.error.isEmpty()); QCOMPARE(partial.bytes, 16);
+        const QString archive = root.filePath(QStringLiteral("broken.zip")); QVERIFY(writeFixture(archive, QByteArray("broken")));
+        Entry invalid; invalid.source = Source::Archive; invalid.path = archive; invalid.directory = true; QVERIFY(!inspectEntries({invalid}).error.isEmpty());
+    }
     void initTestCase() {
         QVERIFY(settings_.isValid()); qputenv("TWINFILE_TEST_MODE", "1");
         qputenv("TWINFILE_SETTINGS", settings_.filePath(QStringLiteral("settings.json")).toUtf8());

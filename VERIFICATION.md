@@ -1,5 +1,15 @@
 # 验证范围与复现
 
+## 3.1.12 属性与按类型显示菜单（2026-10-25）
+
+Windows 11 x64、Qt 6.10.3、MinGW GCC 13.1、C++20 Release。Windows 属性统计专项 **5 passed / 0 failed / 0 skipped**，属性与菜单 UI 专项 **13 passed / 0 failed / 0 skipped**（含五主题各亮暗与初始化/清理）；日志为 `build/properties-core-3.1.12-results.txt` 和 `build/properties-ui-3.1.12-results.txt`。发布流程 `publish.ps1` 另执行六组全量回归、Windows UI、便携启动与安装器打包，成功前不视为完成。
+
+本地夹具逐字节累计普通文件、隐藏文件、嵌套及空目录，确认旧的文件列表大小不会影响实际统计；父子混选与重复选择只计一次，真实 Windows 联接点指向目录外 8 KiB 文件时跳过，外部内容不计入。ZIP 夹具包含隐式父目录、显式空目录、符号链接、相似目录名前缀和多个所选文件，按未压缩字节数与文件/目录数量核对，不读取文件内容。取消、缺失文件、部分统计后失败、损坏 ZIP 返回明确错误。
+
+Windows 界面检查右键菜单中只有一个“属性（空格）”，普通目录、以 .apk/.zip 结尾的目录及混选隐藏 APK/解压操作；ZIP 与 APK 文件保留匹配操作。验证旧版导入入口移除、工程工具在真实含 apktool.yml 的当前目录可用；空格打开文件夹/文本属性，不启动文本编辑器，无选择时统计当前目录。窗口关闭立即释放，失败显示“未完成”；截图为 `verification/native-properties-主题-模式.png`。
+
+统计不跟随链接，不代表磁盘分配空间；目录存在权限或读取问题时不把不完整总量当成成品。上限为 200000 项、深度 128，文件变化期间不是一致性快照；手机目录复用原生 ADB 列表，但本轮未验证真实手机或 USB 性能。安装器不执行。新增属性 UI 场景的 Windows 专项约 10 秒，原 UI 分组约 35 秒，因此将该分组超时由 45 秒调整到 60 秒，保留原断言。
+
 ## 3.1.11 传输方向与当前栏选择（2026-10-25）
 
 Windows 11 x64、Qt 6.10.3、MinGW GCC 13.1、C++20 Release。新增工具栏场景及工作台布局专项在 offscreen 和 Windows 平台分别 **14 passed / 0 failed / 0 skipped**；Windows 日志为 `build/toolbar-3.1.11-windows-results.txt`。发布流程 `publish.ps1` 另执行六组全量回归、Windows UI、便携启动与安装器打包，发布成功前不视为完成。
