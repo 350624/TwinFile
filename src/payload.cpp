@@ -24,6 +24,7 @@
 #include <zstd.h>
 #include <zlib.h>
 #include <algorithm>
+#include <condition_variable>
 #include <future>
 #include <limits>
 #include <mutex>
@@ -82,6 +83,16 @@ private:
 
 class RangeSource {
 public:
+    RangeSource() = default;
+    // Copies start a thread-local connection pool; Qt network objects never cross workers.
+    RangeSource(const RangeSource &other)
+        : source(other.source), userAgent(other.userAgent), etag(other.etag), modified(other.modified),
+          total(other.total), base(other.base), length(other.length), temporary(other.temporary),
+          options(other.options), progress(other.progress), stage(other.stage), stageOffset(other.stageOffset),
+          stageTotal(other.stageTotal), connections(other.connections), inputSize(other.inputSize), interrupt(other.interrupt) {}
+    RangeSource &operator=(const RangeSource &other) { RangeSource copy(other); return *this = std::move(copy); }
+    RangeSource(RangeSource &&) = default;
+    RangeSource &operator=(RangeSource &&) = default;
     QString source;
     QByteArray userAgent;
     QByteArray etag, modified;
@@ -93,6 +104,8 @@ public:
     quint64 stageOffset = 0, stageTotal = 0;
     std::shared_ptr<std::atomic_int> connections = std::make_shared<std::atomic_int>(0);
     quint64 inputSize = 128 * 1024 * 1024;
+    Cancellation interrupt;
+    std::vector<std::unique_ptr<QNetworkAccessManager>> managers;
 
     bool remote() const {
         return source.startsWith(QStringLiteral("http://"), Qt::CaseInsensitive) || source.startsWith(QStringLiteral("https://"), Qt::CaseInsensitive);
@@ -103,6 +116,7 @@ public:
     }
 
     QByteArray raw(quint64 offset, quint64 count, const Cancellation &cancel) {
+        checkCancel(interrupt);
         checkCancel(cancel); ensure(count <= 128 * 1024 * 1024 && offset <= quint64(std::numeric_limits<qint64>::max()) && count <= quint64(std::numeric_limits<qint64>::max()) - offset, QStringLiteral("读取范围过大或越界"));
         if (!remote()) {
             QFile file(source); ensure(file.open(QIODevice::ReadOnly), file.errorString());
@@ -115,14 +129,18 @@ public:
             quint64 start = 0, size = 0, received = 0, requestStart = 0;
             QNetworkAccessManager *manager = nullptr;
             QNetworkReply *reply = nullptr;
-            QElapsedTimer elapsed;
-            int attempts = 0;
-            bool complete = false, held = false, timedOut = false, validated = false;
+            QElapsedTimer elapsed, lastData;
+            int attempts = 0, managerSlot = -1;
+            bool complete = false, held = false, timedOut = false, validated = false, recovered = false;
         };
         QEventLoop loop; QTimer poll; poll.setInterval(50);
-        std::vector<std::unique_ptr<QNetworkAccessManager>> managers;
+        std::vector<std::unique_ptr<QNetworkAccessManager>> recoveryManagers;
         std::vector<Part> parts;
         const int planned = int(qMin<quint64>(options.downloadConnections, qMax<quint64>(1, count / (256 * 1024))));
+        const quint64 chunkSize = planned == 1 ? count : qMax<quint64>(256 * 1024, (count + quint64(planned) * 4 - 1) / (quint64(planned) * 4));
+        quint64 nextOffset = 0, completedBytes = 0;
+        const int managerCount = (planned + 5) / 6;
+        std::vector<int> managerLoads(size_t(managerCount), 0);
         parts.resize(size_t(planned));
         QByteArray bytes(qsizetype(count), Qt::Uninitialized); char *const buffer = bytes.data();
         QString error;
@@ -135,8 +153,8 @@ public:
         });
         for (int index = 0; index < planned; ++index) {
             auto &part = parts[size_t(index)];
-            part.start = count * quint64(index) / quint64(planned);
-            part.size = count * quint64(index + 1) / quint64(planned) - part.start;
+            part.start = nextOffset; part.size = qMin(chunkSize, count - nextOffset);
+            nextOffset += part.size;
         }
         const auto receive = [&](Part &part) {
             if (!part.validated || !part.reply->isOpen()) return;
@@ -144,30 +162,40 @@ public:
             if (quint64(block.size()) > part.size - part.received) { error = QStringLiteral("服务器忽略 Range 或响应超出范围"); return; }
             std::copy(block.cbegin(), block.cend(), buffer + part.start + part.received);
             part.received += quint64(block.size());
+            if (!block.isEmpty()) part.lastData.restart();
         };
         const auto pump = [&] {
-            if (!error.isEmpty() || (cancel && cancel->load())) { loop.quit(); return; }
-            bool complete = true; quint64 received = 0;
+            if (!error.isEmpty() || (cancel && cancel->load()) || (interrupt && interrupt->load())) { loop.quit(); return; }
+            const auto finished = std::count_if(parts.cbegin(), parts.cend(), [](const Part &part) { return part.complete; });
+            bool complete = true; quint64 received = completedBytes;
             for (auto &part : parts) {
                 received += part.received; complete &= part.complete;
                 if (part.complete) continue;
                 if (part.reply) {
-                    if (part.elapsed.elapsed() >= options.requestTimeoutMs) { part.timedOut = true; part.reply->abort(); }
+                    // Rescue a silent batch tail once, without cutting off a connection that is still delivering bytes.
+                    if (!part.recovered && finished >= (planned + 1) / 2 && part.lastData.elapsed() >= 3000) {
+                        part.recovered = true; part.reply->abort();
+                    }
+                    else if (part.elapsed.elapsed() >= options.requestTimeoutMs) { part.timedOut = true; part.reply->abort(); }
                     continue;
                 }
                 int current = connections->load();
                 while (current < options.downloadConnections && !connections->compare_exchange_weak(current, current + 1)) {}
                 if (current >= options.downloadConnections) continue;
-                part.held = true; part.validated = false; part.timedOut = false; ++part.attempts; part.elapsed.start();
+                part.held = true; part.validated = false; part.timedOut = false; ++part.attempts; part.elapsed.start(); part.lastData.start();
                 part.requestStart = offset + part.start + part.received;
-                if (!part.manager) {
-                    size_t assigned = 0;
-                    for (const auto &other : parts) if (other.manager) ++assigned;
-                    if (assigned % 6 == 0) {
+                part.managerSlot = int(std::min_element(managerLoads.cbegin(), managerLoads.cend()) - managerLoads.cbegin());
+                ++managerLoads[size_t(part.managerSlot)];
+                if (part.recovered) {
+                    recoveryManagers.emplace_back(std::make_unique<QNetworkAccessManager>());
+                    recoveryManagers.back()->setProxy(QNetworkProxy::NoProxy);
+                    part.manager = recoveryManagers.back().get();
+                } else {
+                    while (size_t(part.managerSlot) >= managers.size()) {
                         managers.emplace_back(std::make_unique<QNetworkAccessManager>());
                         managers.back()->setProxy(QNetworkProxy::NoProxy);
                     }
-                    part.manager = managers.back().get();
+                    part.manager = managers[size_t(part.managerSlot)].get();
                 }
                 QNetworkRequest request{QUrl(source)};
                 request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
@@ -209,20 +237,30 @@ public:
                 QObject::connect(part.reply, &QNetworkReply::finished, &loop, [&, item = &part] {
                     receive(*item); auto *reply = item->reply;
                     item->held = false; connections->fetch_sub(1);
+                    --managerLoads[size_t(item->managerSlot)];
                     item->complete = error.isEmpty() && reply->error() == QNetworkReply::NoError && reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 206 && item->received == item->size;
+                    if (item->complete) {
+                        completedBytes += item->size; item->received = 0;
+                        if (nextOffset < count) {
+                            // Refill the freed slot immediately instead of waiting for the slowest range in a batch.
+                            item->start = nextOffset; item->size = qMin(chunkSize, count - nextOffset); nextOffset += item->size;
+                            item->complete = false; item->attempts = 0; item->recovered = false;
+                        }
+                    }
                     // A retry can append only to data protected by a stable validator.
                     if (!item->complete && ((etag.isEmpty() && modified.isEmpty()) || item->received == item->size)) item->received = 0;
                     if (!item->complete && error.isEmpty() && item->attempts >= 3)
                         error = QStringLiteral("Range 请求重试失败：") + (item->timedOut || reply->error() == QNetworkReply::TimeoutError ? QStringLiteral("网络请求超时") : reply->errorString());
+                    if (!item->complete && item->recovered) item->manager = nullptr;
                     reply->deleteLater(); item->reply = nullptr;
                 });
             }
-            notify(received, count, QStringLiteral(" · %1 连接").arg(connections->load()));
+            notify(received, count, QStringLiteral(" · %1/%2 连接").arg(connections->load()).arg(options.downloadConnections));
             if (complete) loop.quit();
         };
         QObject::connect(&poll, &QTimer::timeout, &loop, pump);
         notify(0, count); pump(); poll.start(); loop.exec();
-        checkCancel(cancel); ensure(error.isEmpty(), error); notify(count, count); return bytes;
+        checkCancel(interrupt); checkCancel(cancel); ensure(error.isEmpty(), error); notify(count, count); return bytes;
     }
     QByteArray read(quint64 offset, quint64 count, const Cancellation &cancel) {
         ensure(fits(offset, count, length), QStringLiteral("Payload 读取越界")); return count ? raw(base + offset, count, cancel) : QByteArray();
@@ -233,7 +271,7 @@ RangeSource locate(QString source, const Cancellation &cancel, const PayloadOpti
     RangeSource reader; reader.source = std::move(source); reader.userAgent = options.userAgent.toUtf8(); reader.options = options; reader.progress = progress;
     ensure(options.idleTimeoutMs > 0 && options.requestTimeoutMs > 0, QStringLiteral("网络超时必须大于零"));
     ensure(options.downloadConnections >= 1 && options.downloadConnections <= 512, QStringLiteral("下载线程数量须为 1–512"));
-    reader.inputSize = quint64(options.downloadConnections) * 256 * 1024;
+    reader.inputSize = options.downloadConnections == 1 ? 256 * 1024 : qMin<quint64>(128 * 1024 * 1024, quint64(options.downloadConnections) * 1024 * 1024);
     ensure(!reader.userAgent.isEmpty() && reader.userAgent.size() <= 512 && std::all_of(reader.userAgent.cbegin(), reader.userAgent.cend(), [](char value) { return quint8(value) >= 32 && quint8(value) <= 126; }), QStringLiteral("User-Agent 只能包含 1–512 个可打印 ASCII 字符"));
     const QByteArray magic = reader.raw(0, 4, cancel); reader.length = reader.total;
     if (magic == "CrAU") return reader;
@@ -346,25 +384,77 @@ void extractPartition(RangeSource source, const PayloadPartition &partition, qui
     QFile output(path); ensure(output.open(QIODevice::ReadWrite | QIODevice::NewOnly) && output.resize(qint64(partition.size)), output.errorString());
     quint64 done = 0;
     QByteArray inputCache; quint64 cacheOffset = 0;
+    source.interrupt = std::make_shared<std::atomic_bool>(false);
+    struct Window { quint64 offset; QByteArray bytes; };
+    std::future<Window> pending;
+    quint64 pendingOffset = 0;
+    // One bounded window overlaps network I/O with decoding. The shared connection cap still applies.
+    const auto fetchWindow = [&](RangeSource &reader, qsizetype operationIndex, quint64 offset) {
+        quint64 end = partition.operations[operationIndex].offset + partition.operations[operationIndex].length;
+        for (qsizetype index = operationIndex + 1; index < partition.operations.size() && end - offset < reader.inputSize; ++index) {
+            const auto &next = partition.operations[index];
+            if (!next.length || next.offset != end) break;
+            ensure(fits(dataOffset, next.offset, reader.length) && fits(dataOffset + next.offset, next.length, reader.length), QStringLiteral("分区操作读取越界"));
+            end += next.length;
+        }
+        qint64 reported = 0;
+        reader.progress = [&](qint64 received, qint64, const QString &) {
+            const qint64 current = qMax(reported, received);
+            if (downloaded && current > reported) downloaded(current - reported);
+            reported = current;
+        };
+        const auto reset = qScopeGuard([&] { reader.progress = {}; });
+        return Window{offset, reader.read(dataOffset + offset, qMin(reader.inputSize, end - offset), cancel)};
+    };
+    std::mutex queueMutex; std::condition_variable queueChanged;
+    bool stopping = false, queued = false; qsizetype queuedIndex = 0; quint64 queuedOffset = 0;
+    std::promise<Window> response; std::future<void> producer;
+    const auto stopProducer = qScopeGuard([&] {
+        source.interrupt->store(true);
+        { std::lock_guard<std::mutex> lock(queueMutex); stopping = true; }
+        queueChanged.notify_one(); if (producer.valid()) producer.wait();
+    });
+    const auto scheduleNext = [&](qsizetype operationIndex) {
+        quint64 offset = cacheOffset + quint64(inputCache.size());
+        for (qsizetype index = operationIndex; index < partition.operations.size(); ++index) {
+            const auto &operation = partition.operations[index];
+            if (!operation.length) continue;
+            ensure(fits(dataOffset, operation.offset, source.length) && fits(dataOffset + operation.offset, operation.length, source.length), QStringLiteral("分区操作读取越界"));
+            if (index == operationIndex) {
+                if (operation.offset + operation.length <= offset) continue;
+            } else {
+                if (operation.offset >= cacheOffset && operation.offset + operation.length <= offset) continue;
+                offset = operation.offset >= cacheOffset && operation.offset < offset ? offset : operation.offset;
+            }
+            pendingOffset = offset;
+            if (!producer.valid()) producer = std::async(std::launch::async, [&] {
+                RangeSource reader(source);
+                for (;;) {
+                    std::unique_lock<std::mutex> lock(queueMutex);
+                    queueChanged.wait(lock, [&] { return stopping || queued; });
+                    if (stopping) return;
+                    const auto index = queuedIndex; const auto offset = queuedOffset;
+                    auto result = std::move(response); queued = false; lock.unlock();
+                    try { result.set_value(fetchWindow(reader, index, offset)); }
+                    catch (...) { result.set_exception(std::current_exception()); }
+                }
+            });
+            {
+                std::lock_guard<std::mutex> lock(queueMutex);
+                response = std::promise<Window>(); pending = response.get_future();
+                queuedIndex = index; queuedOffset = offset; queued = true;
+            }
+            queueChanged.notify_one();
+            break;
+        }
+    };
     const auto readInput = [&](qsizetype operationIndex, quint64 offset, quint64 count) {
         if (!source.remote()) return source.read(dataOffset + offset, count, cancel);
         if (offset < cacheOffset || offset - cacheOffset >= quint64(inputCache.size())) {
-            quint64 end = partition.operations[operationIndex].offset + partition.operations[operationIndex].length;
-            // Coalesce adjacent operation blobs so small OTA blocks share parallel requests.
-            for (qsizetype index = operationIndex + 1; index < partition.operations.size() && end - offset < source.inputSize; ++index) {
-                const auto &next = partition.operations[index];
-                if (!next.length || next.offset != end) break;
-                ensure(fits(dataOffset, next.offset, source.length) && fits(dataOffset + next.offset, next.length, source.length), QStringLiteral("分区操作读取越界"));
-                end += next.length;
-            }
-            qint64 reported = 0;
-            source.progress = [&](qint64 received, qint64, const QString &) {
-                const qint64 current = qMax(reported, received);
-                if (downloaded && current > reported) downloaded(current - reported);
-                reported = current;
-            };
-            cacheOffset = offset; inputCache = source.read(dataOffset + offset, qMin(source.inputSize, end - offset), cancel);
-            source.progress = {};
+            Window window = pending.valid() && pendingOffset == offset ? pending.get() : fetchWindow(source, operationIndex, offset);
+            if (pending.valid()) pending.get();
+            cacheOffset = window.offset; inputCache = std::move(window.bytes);
+            scheduleNext(operationIndex);
         }
         return inputCache.mid(qsizetype(offset - cacheOffset), qsizetype(count));
     };
@@ -524,7 +614,7 @@ Result extractPayload(const QString &source, const QStringList &partitions, cons
                     }, [&](qint64 received) {
                         if (!progress) return;
                         std::lock_guard<std::mutex> lock(progressMutex); networkDone += received;
-                        progress(networkDone, networkTotal, QStringLiteral("下载 Payload 分区数据 · %1 连接").arg(payload.source.connections->load()));
+                        progress(networkDone, networkTotal, QStringLiteral("下载 Payload 分区数据 · %1/%2 连接").arg(payload.source.connections->load()).arg(options.downloadConnections));
                     });
             }
         }));

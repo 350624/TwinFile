@@ -38,8 +38,13 @@ TaskProgress::TaskProgress(QWidget *parent) : QWidget(parent) {
     connect(timer_, &QTimer::timeout, this, [this] {
         const qint64 now = elapsed_.elapsed();
         if (now - sampleAt_ >= 500) {
-            speed_ = double(qMax<qint64>(0, done_ - sampleBytes_)) * 1000 / qMax<qint64>(1, now - sampleAt_);
-            sampleBytes_ = done_; sampleAt_ = now; refresh();
+            const qint64 current = networkMode_ ? networkDone_ : done_;
+            samples_.append({now, current});
+            const qint64 window = networkMode_ ? 3000 : 500;
+            while (samples_.size() > 2 && samples_[1].first <= now - window) samples_.removeFirst();
+            const auto first = samples_.first();
+            speed_ = double(qMax<qint64>(0, current - first.second)) * 1000 / qMax<qint64>(1, now - first.first);
+            sampleBytes_ = current; sampleAt_ = now; refresh();
         }
     });
     hide();
@@ -48,18 +53,28 @@ TaskProgress::TaskProgress(QWidget *parent) : QWidget(parent) {
 void TaskProgress::begin(const QString &title, std::function<void()> cancel) {
     title_ = stage_ = title; cancelAction_ = std::move(cancel); active_ = true;
     done_ = total_ = sampleBytes_ = sampleAt_ = 0; speed_ = 0; elapsed_.start();
+    networkMode_ = false; networkDone_ = networkTotal_ = 0; samples_ = {{0, 0}};
     bar_->setRange(0, 0); cancel_->show(); cancel_->setEnabled(true); timer_->start(); refresh(); show();
 }
 
 void TaskProgress::updateProgress(qint64 done, qint64 total, const QString &stage, double speed) {
     if (!active_) return;
-    if (done < done_) { sampleBytes_ = done; sampleAt_ = elapsed_.elapsed(); speed_ = 0; }
+    if (!networkMode_ && done < done_) { sampleBytes_ = done; sampleAt_ = elapsed_.elapsed(); speed_ = 0; samples_ = {{sampleAt_, done}}; }
     done_ = done; total_ = total;
     if (cancel_->isEnabled()) stage_ = stage.isEmpty() ? title_ : stage;
-    if (speed >= 0) { speed_ = speed; sampleBytes_ = done; sampleAt_ = elapsed_.elapsed(); }
+    if (speed >= 0 && !networkMode_) { speed_ = speed; sampleBytes_ = done; sampleAt_ = elapsed_.elapsed(); samples_ = {{sampleAt_, done}}; }
+    if (networkMode_) { done = networkDone_; total = networkTotal_; }
     bar_->setRange(0, total > 0 ? 1000 : 0);
     if (total > 0) bar_->setValue(int(qBound(0.0, double(done) / double(total), 1.0) * 1000));
     refresh();
+}
+
+void TaskProgress::updateNetworkProgress(qint64 done, qint64 total) {
+    if (!active_) return;
+    if (!networkMode_) {
+        networkMode_ = true; sampleAt_ = elapsed_.elapsed(); sampleBytes_ = 0; speed_ = 0; samples_ = {{sampleAt_, 0}};
+    }
+    networkDone_ = qMax(networkDone_, done); networkTotal_ = total;
 }
 
 void TaskProgress::finish(const QString &message, bool success) {
@@ -76,9 +91,10 @@ void TaskProgress::cancel() {
 
 void TaskProgress::refresh() {
     if (active_) {
-        const QString amount = total_ > 0
-            ? QStringLiteral("%1% · %2 / %3").arg(int(qBound(0.0, double(done_) / double(total_), 1.0) * 100)).arg(bytes(done_), bytes(total_))
-            : bytes(done_);
+        const qint64 done = networkMode_ ? networkDone_ : done_, total = networkMode_ ? networkTotal_ : total_;
+        const QString amount = total > 0
+            ? QStringLiteral("%1% · %2 / %3").arg(int(qBound(0.0, double(done) / double(total), 1.0) * 100)).arg(bytes(done), bytes(total))
+            : bytes(done);
         detailText_ = bytes(qint64(speed_)) + QStringLiteral("/s · ") + amount;
     }
     label_->setText(label_->fontMetrics().elidedText(stage_.simplified(), Qt::ElideMiddle, label_->width()));

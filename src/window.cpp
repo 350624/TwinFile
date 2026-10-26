@@ -577,17 +577,19 @@ void Window::runJob(const QString &title, std::function<Result(const Cancellatio
 void Window::runJob(const QString &title, std::function<Result(const Cancellation &, const Progress &)> function, std::function<void(const Result &)> completed, std::function<void()> settled, bool writeBack) {
     if (busy_ || taskProgress_->active()) { statusBar()->showMessage(QStringLiteral("请等待当前操作完成"), 5000); return; }
     busy_ = true; cancellation_ = std::make_shared<std::atomic_bool>(false);
-    struct JobProgress { std::mutex mutex; qint64 done = 0, total = 0; QString stage; bool changed = false; };
+    struct JobProgress { std::mutex mutex; qint64 done = 0, total = 0, networkDone = 0, networkTotal = 0; QString stage; bool changed = false, network = false; };
     const auto state = std::make_shared<JobProgress>();
     taskProgress_->begin(title, [cancel = cancellation_] { cancel->store(true); }); adaptToolbar();
     auto *timer = new QTimer(this); timer->setInterval(100);
     connect(timer, &QTimer::timeout, this, [this, state] {
-        qint64 done, total; QString stage;
+        qint64 done, total, networkDone, networkTotal; bool network; QString stage;
         {
             std::lock_guard<std::mutex> lock(state->mutex);
             if (!state->changed) return;
             state->changed = false; done = state->done; total = state->total; stage = state->stage;
+            network = state->network; networkDone = state->networkDone; networkTotal = state->networkTotal;
         }
+        if (network) taskProgress_->updateNetworkProgress(networkDone, networkTotal);
         taskProgress_->updateProgress(done, total, stage);
     });
     timer->start();
@@ -604,6 +606,9 @@ void Window::runJob(const QString &title, std::function<Result(const Cancellatio
     watcher->setFuture(QtConcurrent::run([function = std::move(function), cancel, state, mounts = mounts_, writeBack] {
         const Progress notify = [state](qint64 done, qint64 total, const QString &stage) {
             std::lock_guard<std::mutex> lock(state->mutex); state->done = done; state->total = total; state->stage = stage; state->changed = true;
+            if (stage.startsWith(QStringLiteral("下载 Payload 分区数据"))) {
+                state->network = true; state->networkDone = done; state->networkTotal = total;
+            }
         };
         try { Result result = function(cancel, notify); if (result.ok && writeBack) { const Result committed = commitArchiveMounts(mounts, cancel); if (!committed.ok) return committed; } return result; }
         catch (const std::exception &exception) { return Result{false, QString::fromUtf8(exception.what()), {}, {}}; }
