@@ -1,5 +1,13 @@
 # 验证范围与复现
 
+## 3.1.20 Payload 确认崩溃（2026-10-26）
+
+Windows 应用日志中 TwinFile 3.1.19 的三次崩溃均为 Qt6Core.dll 6.10.3、异常 0xc0000005、偏移 0x000c1f64。将原 `payloadOutputDirectoryAndInlineCompletion` 改为实际点击 OK 后，在 miuix 深色下用 GDB 复现相同位置：`qt_qFindChild_helper` → `UiMotion::eventFilter` → 输入法/焦点事件 → `QWidget`/`QPushButton` 析构 → `Window::payload`。复现日志为 `build/payload-click-before-gdb.txt`，未开始外网下载。
+
+修复将动画子对象检查限制到弹窗 Show/Hide 及直接子对象。新增六主题亮暗数据行，实际点击来源、远程设置和分区对话框的 OK，以本地 HTTP Range 样本及 512 线程设置检查提取结果、自定义目录、设置保存与内嵌进度。Windows 专项 **14 passed / 0 failed / 0 skipped**，日志为 `build/payload-click-after.txt`；菜单圆角及原弹窗动画专项 **7 passed / 0 failed / 0 skipped**，日志为 `build/payload-popup-after.txt`。首次整组运行有一项完成等待超时，单项和整组复跑均通过。
+
+完整六组回归、Windows UI、便携启动和安装包构建继续由 `publish.ps1` 执行，以实际日志为准。未下载截图中的外部完整 OTA，不执行安装器。
+
 ## 3.1.19 菜单透明圆角（2026-10-26）
 
 新增 `roundedMenusKeepTransparentCorners`，覆盖 miuix 亮色/深色与动画启用/减少动画四种组合。检查原生菜单四角透明、中央不透明、键盘打开的子菜单、淡出快照、内容增加后的重新打开，以及切回 TwinFile 后恢复方形菜单。Windows UI 脚本的 miuix 分组同时运行此项，截图为 `verification/native-rounded-menu-模式-动画.png`。

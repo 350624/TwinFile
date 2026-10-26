@@ -257,9 +257,13 @@ bool UiMotion::eventFilter(QObject *object, QEvent *event) {
         }
     }
     const bool popup = widget->isWindow() && (qobject_cast<QMenu *>(widget) || qobject_cast<QDialog *>(widget));
-    const bool existingMotion = widget->findChild<QObject *>(QStringLiteral("mtMenuAnimation")) || widget->findChild<QObject *>(QStringLiteral("mtDialogAnimation"));
+    // Focus/input-method events also arrive while Qt is deleting child widgets.
+    // Only inspect popup children during the show/hide transitions that use them.
+    if (!popup || (type != QEvent::Show && type != QEvent::Hide)) return false;
+    const bool existingMotion = widget->findChild<QObject *>(QStringLiteral("mtMenuAnimation"), Qt::FindDirectChildrenOnly)
+        || widget->findChild<QObject *>(QStringLiteral("mtDialogAnimation"), Qt::FindDirectChildrenOnly);
     auto *fileDialog = qobject_cast<QFileDialog *>(widget);
-    if (popup && !existingMotion && (!fileDialog || fileDialog->testOption(QFileDialog::DontUseNativeDialog))) {
+    if (!existingMotion && (!fileDialog || fileDialog->testOption(QFileDialog::DontUseNativeDialog))) {
         if (type == QEvent::Show) {
             auto *animation = widget->findChild<QVariantAnimation *>(QStringLiteral("uiPopupAnimation"), Qt::FindDirectChildrenOnly);
             if (!animation) {
@@ -270,7 +274,7 @@ bool UiMotion::eventFilter(QObject *object, QEvent *event) {
             animation->stop(); animation->setStartValue(0.05); animation->setEndValue(1.0); widget->setWindowOpacity(0.05); animation->start();
         } else if (type == QEvent::Hide && owner_->isVisible()) {
             const qreal opacity = widget->windowOpacity();
-            if (auto *animation = widget->findChild<QVariantAnimation *>(QStringLiteral("uiPopupAnimation"))) animation->stop();
+            if (auto *animation = widget->findChild<QVariantAnimation *>(QStringLiteral("uiPopupAnimation"), Qt::FindDirectChildrenOnly)) animation->stop();
             const QPixmap before = capture();
             widget->setWindowOpacity(1);
             if (!before.isNull() && opacity > 0.1) {

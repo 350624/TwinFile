@@ -18,6 +18,7 @@
 #include <QJsonArray>
 #include <QComboBox>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QProgressDialog>
@@ -671,24 +672,32 @@ private slots:
         QVERIFY(task->toolTip().contains(QStringLiteral("测试网络错误"))); QVERIFY(!QApplication::activeModalWidget());
         window.close(); QCOMPARE(readSettings(settingsFile).value(QStringLiteral("payload_threads")).toInt(), 512);
     }
+    void payloadOutputDirectoryAndInlineCompletion_data() {
+        payloadDialogsAndProgress_data();
+    }
     void payloadOutputDirectoryAndInlineCompletion() {
+        QFETCH(QString, theme); QFETCH(QString, mode);
         QTemporaryDir root; const auto previous = qgetenv("TWINFILE_SETTINGS");
         const auto restore = qScopeGuard([&] { if (previous.isEmpty()) qunsetenv("TWINFILE_SETTINGS"); else qputenv("TWINFILE_SETTINGS", previous); });
         const QString settings = root.filePath(QStringLiteral("settings.json")); qputenv("TWINFILE_SETTINGS", settings.toUtf8());
-        PayloadHttpFixture fixture(encodePayload(QByteArray(4096, 'd'))); Window window; window.show();
-        int step = 0; bool valid = true; QTimer driver; driver.setInterval(20);
+        PayloadHttpFixture fixture(encodePayload(QByteArray(4096, 'd'))); Window window; window.setTheme(theme); window.setColorMode(mode); window.show();
+        int step = 0; bool valid = true; QTimer driver; driver.setInterval(250);
         connect(&driver, &QTimer::timeout, &window, [&] {
             auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); if (!dialog) return;
+            auto *buttons = dialog->findChild<QDialogButtonBox *>();
+            auto *ok = buttons ? buttons->button(QDialogButtonBox::Ok) : nullptr;
+            if (!ok) { valid = false; dialog->reject(); return; }
             if (step == 0) {
                 auto *source = qobject_cast<QInputDialog *>(dialog); if (!source) return;
-                source->findChild<QComboBox *>()->setCurrentIndex(1); ++step; source->accept();
+                source->findChild<QComboBox *>()->setCurrentIndex(1); ++step; QTest::mouseClick(ok, Qt::LeftButton);
             } else if (step == 1 && dialog->objectName() == QStringLiteral("remotePayloadDialog")) {
                 dialog->findChild<QLineEdit *>(QStringLiteral("payloadUrl"))->setText(fixture.url());
+                dialog->findChild<QSpinBox *>(QStringLiteral("payloadThreads"))->setValue(512);
                 auto *path = dialog->findChild<QLineEdit *>(QStringLiteral("payloadOutputDirectory"));
-                valid &= path != nullptr; if (path) path->setText(root.path()); ++step; dialog->accept();
+                valid &= path != nullptr; if (path) path->setText(root.path()); ++step; QTest::mouseClick(ok, Qt::LeftButton);
             } else if (step == 2 && dialog->objectName() == QStringLiteral("payloadPartitionsDialog")) {
                 auto *path = dialog->findChild<QLineEdit *>(QStringLiteral("payloadOutputDirectory"));
-                valid &= path && path->text() == root.path(); ++step; dialog->accept();
+                valid &= path && path->text() == root.path(); ++step; QTest::mouseClick(ok, Qt::LeftButton);
             }
         });
         QTimer watchdog; watchdog.setInterval(7000); connect(&watchdog, &QTimer::timeout, &window, [&] { valid = false; if (auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget())) dialog->reject(); });
