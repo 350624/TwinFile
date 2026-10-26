@@ -1,4 +1,5 @@
 #include "extensions.h"
+#include "motion.h"
 #include "ai_panel.h"
 #include "core.h"
 
@@ -243,7 +244,7 @@ bool ExtensionManager::configure(const QString &id, QWidget *parent, QString *er
 ExtensionSidebar::ExtensionSidebar(const QString &directory, QWidget *parent) : QWidget(parent) {
     setObjectName(QStringLiteral("extensionSidebar")); setMinimumWidth(310);
     auto *layout = new QVBoxLayout(this); layout->setContentsMargins(0, 0, 0, 0);
-    tabs_ = new QTabWidget; tabs_->setObjectName(QStringLiteral("extensionTabs")); tabs_->tabBar()->setObjectName(QStringLiteral("extensionTabBar")); tabs_->setDocumentMode(true); tabs_->tabBar()->setDrawBase(false); tabs_->setUsesScrollButtons(true); layout->addWidget(tabs_);
+    tabs_ = new MotionTabWidget; tabs_->setObjectName(QStringLiteral("extensionTabs")); tabs_->tabBar()->setObjectName(QStringLiteral("extensionTabBar")); tabs_->setDocumentMode(true); tabs_->tabBar()->setDrawBase(false); tabs_->setUsesScrollButtons(true); layout->addWidget(tabs_);
     auto *corner = new QWidget; corner->setFixedHeight(50); auto *cornerLayout = new QHBoxLayout(corner); cornerLayout->setContentsMargins(4, 0, 8, 0); cornerLayout->setAlignment(Qt::AlignVCenter);
     auto *close = new QPushButton(QStringLiteral("×")); close->setObjectName(QStringLiteral("extensionClose")); close->setFixedSize(28, 28); close->setToolTip(QStringLiteral("收起侧栏")); close->setAccessibleName(QStringLiteral("收起侧栏")); close->setCursor(Qt::PointingHandCursor); cornerLayout->addWidget(close); tabs_->setCornerWidget(corner);
     connect(close, &QPushButton::clicked, this, &ExtensionSidebar::closeRequested);

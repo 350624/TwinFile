@@ -3,6 +3,7 @@
 #include "android.h"
 #include "thumbnails.h"
 #include "appearance.h"
+#include "motion.h"
 
 #include <QEvent>
 #include <QDir>
@@ -107,7 +108,7 @@ Pane::Pane(QWidget *parent) : QFrame(parent) {
     auto *chromeLayout = new QVBoxLayout(chrome); chromeLayout->setContentsMargins(0, 0, 0, 0); chromeLayout->setSpacing(6);
     auto *tabLayout = new QHBoxLayout; tabLayout->setSpacing(4);
     auto *indicator = new QLabel(QStringLiteral("●")); indicator->setObjectName(QStringLiteral("paneIndicator")); indicator->setToolTip(QStringLiteral("点击此栏后，操作作用于此栏")); tabLayout->addWidget(indicator);
-    tabs_ = new QTabBar; tabs_->setObjectName(QStringLiteral("paneTabs")); tabs_->setDrawBase(false); tabs_->setExpanding(false); tabs_->setTabsClosable(true); tabs_->setUsesScrollButtons(true); tabs_->setElideMode(Qt::ElideMiddle); tabs_->addTab(QStringLiteral("此电脑"));
+    tabs_ = new MotionTabBar; tabs_->setObjectName(QStringLiteral("paneTabs")); tabs_->setDrawBase(false); tabs_->setExpanding(false); tabs_->setTabsClosable(true); tabs_->setUsesScrollButtons(true); tabs_->setElideMode(Qt::ElideMiddle); tabs_->addTab(QStringLiteral("此电脑"));
     auto *add = new QToolButton; add->setProperty("symbol", QStringLiteral("add")); add->setIcon(actionSymbol(QStringLiteral("add"), palette().color(QPalette::Text))); add->setFixedSize(28, 28); add->setToolTip(QStringLiteral("新标签 Ctrl+T")); add->setAccessibleName(QStringLiteral("新建标签页"));
     tabLayout->addWidget(tabs_, 1); tabLayout->addWidget(add); chromeLayout->addLayout(tabLayout);
     auto *navigation = new QHBoxLayout; navigation->setSpacing(2);

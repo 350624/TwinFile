@@ -414,7 +414,7 @@ QLabel#miuixTitle { font-size: 22px; font-weight: 600; background: transparent; 
 QLabel#miuixLocation { color: %3; font-size: 13px; background: transparent; }
 QWidget#miuixPaneSwitch { background: palette(alternate-base); border: none; border-radius: 18px; }
 QWidget#miuixPaneSwitch QToolButton { background: transparent; border: none; border-radius: 15px; padding: 0 14px; font-size: 12px; }
-QWidget#miuixPaneSwitch QToolButton:checked { background: palette(base); color: %2; font-weight: 600; }
+QWidget#miuixPaneSwitch QToolButton:checked { background: transparent; color: %2; font-weight: 600; }
 QPushButton#workspaceSearch { background: palette(base); border: 1px solid palette(mid); border-radius: 18px; min-height: 34px; padding: 0 14px; }
 QPushButton#workspaceSearch:hover { background: palette(alternate-base); border-color: %2; }
 QPushButton#appearanceButton { background: transparent; border: none; border-radius: 17px; min-height: 34px; }
@@ -463,6 +463,16 @@ QScrollBar::handle:vertical { background: palette(mid); border-radius: 3px; min-
 QScrollBar:horizontal { height: 6px; background: transparent; }
 QStatusBar { background: palette(window); color: %3; }
 )").arg(border, accent, muted, dark ? QStringLiteral("#34445f") : QStringLiteral("#e4efff"));
+    sheet += QStringLiteral(R"(
+QWidget#navigationLocations QPushButton[navigationItem="true"]:checked,
+QWidget#navigationLocations QPushButton[navigationItem="true"]:checked:hover { background: transparent; }
+QTabBar[motionTabs="true"]::tab:selected,
+QTabBar#paneTabs[motionTabs="true"]::tab:selected,
+QTabBar#extensionTabBar[motionTabs="true"]::tab:selected,
+QTabWidget#mtPlacesTabs QTabBar[motionTabs="true"]::tab:selected {
+    background: transparent; border-bottom-color: transparent;
+}
+)");
     return sheet;
 }
 

@@ -1,4 +1,5 @@
 #include "window.h"
+#include "motion.h"
 #include "appearance.h"
 
 #include <QApplication>
@@ -496,7 +497,7 @@ void Window::showMtPlaces() {
     connect(overlay, &QPushButton::clicked, overlay, &QWidget::close); mtPlaces_ = overlay;
     auto *sheet = new QFrame(overlay); sheet->setObjectName(QStringLiteral("mtPlaces"));
     auto *layout = new QVBoxLayout(sheet); layout->setContentsMargins(0, 0, 0, 0); layout->setSpacing(0);
-    auto *tabs = new QTabWidget; tabs->setObjectName(QStringLiteral("mtPlacesTabs")); layout->addWidget(tabs, 1);
+    auto *tabs = new MotionTabWidget; tabs->setObjectName(QStringLiteral("mtPlacesTabs")); layout->addWidget(tabs, 1);
     const QPointer<Pane> target = active_;
     auto list = [&](const QString &name, const QList<Location> &locations) {
         auto *view = new QListWidget; view->setObjectName(QStringLiteral("mtPlacesList")); view->setIconSize(QSize(36, 36)); view->setAccessibleName(name);

@@ -1,5 +1,11 @@
 # 验证范围与复现
 
+## 3.1.18 通用界面动效（2026-10-26）
+
+新增 `commonUiTransitions` 六主题各亮暗测试：侧栏精确目录选择、中间位置和中途反向、减少动画立即停稳、文件标签滑动、主题切换、助手连续开关及缩放清理。`commonPopupAndPageMotion` 检查助手页面切换、Qt 对话框/菜单淡入淡出、退出快照不接受输入及释放、减少动画中断。保留 Miuix 分段开关与 MT 抽屉/底部面板既有测试，并纳入 Windows UI 独立分组。
+
+Windows 动效专项（新增两项及原 Miuix/MT 动效）**19 passed / 0 failed / 0 skipped**，日志为 `build/motion-focused-results.txt`。Miuix 额外核对分段滑块起点/中间帧实际像素，确保选中背景不会遮住滑动。已复核亮暗截图，侧栏截图为 `verification/native-common-motion-navigation-主题-模式.png`。全量回归与安装包验证由 `publish.ps1` 执行；通过结果以实际日志为准。Windows 原生文件选择框、系统标题栏、外部应用和真实手机不在新增动效范围内；安装器只打包不执行。
+
 ## 3.1.17 官方 Miuix 视觉重校准（2026-10-26）
 
 按官方 Miuix 组件目录重新组织 Qt 视觉层：TopAppBar、BreadcrumbBar、Surface/Card、TabRow、IconButton、FloatingToolbar、SearchBar 和 Overlay 分别映射到现有窗口、Pane、路径输入、工具栏、菜单和任务进度控件。色阶改为浅色/深色 surface 与 primary-container 分层，圆角、选中容器、浮动工具栏和底部进度区统一重做。

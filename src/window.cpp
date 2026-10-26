@@ -15,6 +15,7 @@
 #include "download.h"
 #include "task_progress.h"
 #include "properties.h"
+#include "motion.h"
 
 #include <QApplication>
 #include <QActionGroup>
@@ -143,6 +144,7 @@ protected:
 Window::Window(QWidget *parent, const QUrl &updateTestEndpoint) : QMainWindow(parent) {
     settings_ = readSettings(settingsPath());
     normalizeAppearance(settings_);
+    setProperty("uiMotionEnabled", !settings_.value(QStringLiteral("reduced_motion")).toBool());
     setWindowTitle(QStringLiteral("TwinFile"));
     QIcon applicationIcon(QStringLiteral(":/app.ico"));
     if (applicationIcon.isNull()) applicationIcon.addFile(QStringLiteral(":/app.png"));
@@ -176,12 +178,13 @@ Window::Window(QWidget *parent, const QUrl &updateTestEndpoint) : QMainWindow(pa
     taskProgress_ = new TaskProgress(toolbarWidget); toolbar->addWidget(taskProgress_, 1);
     toolbar->addStretch();
     auto *sort = addButton(QStringLiteral("排序"), QStringLiteral("sort"), QStringLiteral("排序与隐藏文件"), [] {}); connect(sort, &QPushButton::clicked, this, [this, sort] { sortMenu(sort); });
-    auto *assistant = addButton(QStringLiteral("助手"), QStringLiteral("assistant"), QStringLiteral("AI / 扩展 Ctrl+Shift+A"), [this] { extensionDock_->setVisible(!extensionDock_->isVisible()); }); assistant->setObjectName(QStringLiteral("assistantToggle")); assistant->setCheckable(true);
+    auto *assistant = addButton(QStringLiteral("助手"), QStringLiteral("assistant"), QStringLiteral("AI / 扩展 Ctrl+Shift+A"), [this] { setExtensionsVisible(!extensionDock_->isVisible()); }); assistant->setObjectName(QStringLiteral("assistantToggle")); assistant->setCheckable(true);
     addButton(QString(), QStringLiteral("more"), QStringLiteral("更多工具"), &Window::moreMenu)->setFixedWidth(36);
     contentLayout->addWidget(toolbarWidget);
     auto *splitter = new QSplitter; splitter->setObjectName(QStringLiteral("fileSplitter")); splitter->setChildrenCollapsible(false); left_ = new Pane; right_ = new Pane; splitter->addWidget(left_); splitter->addWidget(right_); contentLayout->addWidget(splitter, 1); body->addWidget(content, 1); root->addLayout(body, 1);
     buildMtChrome(root, headingLayout);
     buildMiuixChrome(headingLayout);
+    motion_ = new UiMotion(this);
     for (Pane *pane : {left_, right_}) {
         pane->setAnimationsEnabled(!settings_.value(QStringLiteral("reduced_motion")).toBool());
         connect(pane, &Pane::activated, this, &Window::setActive);
@@ -232,7 +235,7 @@ void Window::buildExtensions() {
     extensionDock_->setFeatures(QDockWidget::DockWidgetClosable);
     auto *dockTitle = new QWidget(extensionDock_); dockTitle->setFixedHeight(0); extensionDock_->setTitleBarWidget(dockTitle);
     extensions_ = new ExtensionSidebar(QFileInfo(settingsPath()).dir().filePath(QStringLiteral("extensions")), extensionDock_);
-    connect(extensions_, &ExtensionSidebar::closeRequested, extensionDock_, &QWidget::hide);
+    connect(extensions_, &ExtensionSidebar::closeRequested, this, [this] { setExtensionsVisible(false); });
     extensions_->contextProvider = [this] {
         QJsonArray selected;
         const auto entries = active_ ? active_->selected() : QList<Entry>();
@@ -255,7 +258,15 @@ void Window::buildExtensions() {
     resizeDocks({extensionDock_}, {qBound(330, settings_.value(QStringLiteral("extension_width")).toInt(370), 700)}, Qt::Horizontal);
     extensionDock_->setVisible(settings_.value(QStringLiteral("extension_visible")).toBool(true));
     auto *shortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+A")), this);
-    connect(shortcut, &QShortcut::activated, this, [this] { extensionDock_->setVisible(!extensionDock_->isVisible()); });
+    connect(shortcut, &QShortcut::activated, this, [this] { setExtensionsVisible(!extensionDock_->isVisible()); });
+}
+
+void Window::setExtensionsVisible(bool visible) {
+    if (extensionDock_->isVisible() == visible) return;
+    const QPixmap before = motionAllowed(this) ? grab() : QPixmap();
+    extensionDock_->setVisible(visible);
+    if (layout()) layout()->activate();
+    transitionSnapshot(this, before, visible ? -10 : 10);
 }
 
 void Window::buildSidebar(QWidget *sidebar) {
@@ -286,7 +297,7 @@ void Window::buildSidebar(QWidget *sidebar) {
         const QString path = value.toString(); if (QFileInfo(path).isDir()) addLocation(QFileInfo(path).fileName(), path);
     }
     locationsLayout->addStretch();
-    auto *tools = new QPushButton(QStringLiteral("扩展与工具")); tools->setFlat(true); tools->setProperty("navigationItem", true); tools->setIcon(actionSymbol(QStringLiteral("assistant"), palette().color(QPalette::PlaceholderText))); tools->setProperty("symbol", QStringLiteral("assistant")); tools->setCursor(Qt::PointingHandCursor); connect(tools, &QPushButton::clicked, this, [this] { extensionDock_->show(); extensions_->showExtensions(); }); layout->addWidget(tools);
+    auto *tools = new QPushButton(QStringLiteral("扩展与工具")); tools->setFlat(true); tools->setProperty("navigationItem", true); tools->setIcon(actionSymbol(QStringLiteral("assistant"), palette().color(QPalette::PlaceholderText))); tools->setProperty("symbol", QStringLiteral("assistant")); tools->setCursor(Qt::PointingHandCursor); connect(tools, &QPushButton::clicked, this, [this] { setExtensionsVisible(true); extensions_->showExtensions(); }); layout->addWidget(tools);
 }
 
 void Window::updateNavigation() {
@@ -309,6 +320,7 @@ void Window::updateNavigation() {
         const QString path = button->property("navigationPath").toString();
         button->setChecked(path.isEmpty() ? location.source == Source::Drive : location.source == Source::Local && QDir::cleanPath(location.path).compare(QDir::cleanPath(path), Qt::CaseInsensitive) == 0);
     }
+    if (motion_) motion_->updateNavigation();
 }
 
 void Window::updateDeviceNavigation() {
@@ -392,6 +404,8 @@ void Window::report(const QString &message) { QMessageBox::warning(this, QString
 
 void Window::setReducedMotion(bool enabled) {
     settings_.insert(QStringLiteral("reduced_motion"), enabled);
+    setProperty("uiMotionEnabled", !enabled);
+    if (enabled && motion_) motion_->settle();
     if (enabled) settleMtAnimations();
     updateMiuixContext();
     for (Pane *pane : {left_, right_}) {
@@ -401,6 +415,8 @@ void Window::setReducedMotion(bool enabled) {
 }
 
 void Window::setTheme(const QString &theme) {
+    const QPixmap before = motionAllowed(this) ? grab() : QPixmap();
+    const quint64 generation = ++themeMotionGeneration_;
     settings_.insert(QStringLiteral("theme"), theme);
     normalizeAppearance(settings_);
     const QString current = settings_.value(QStringLiteral("theme")).toString();
@@ -432,6 +448,10 @@ void Window::setTheme(const QString &theme) {
         auto *create = findChild<QPushButton *>(QStringLiteral("action_add"));
         create->setIcon(actionSymbol(QStringLiteral("add"), Qt::white));
     }
+    if (motion_) motion_->updateNavigation();
+    QTimer::singleShot(0, this, [this, generation, before] {
+        if (generation == themeMotionGeneration_) transitionSnapshot(this, before);
+    });
 }
 
 void Window::setColorMode(const QString &mode) {

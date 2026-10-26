@@ -1,4 +1,5 @@
 #include "mcp.h"
+#include "motion.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -28,7 +29,7 @@ void showMcpDialog(McpServer *server, McpSettings settings, QWidget *parent, con
     QDialog dialog(parent); dialog.setObjectName("mcpDialog"); dialog.setWindowTitle(QStringLiteral("MCP 服务")); dialog.resize(660, 540);
     auto *layout = new QVBoxLayout(&dialog);
     auto *status = new QLabel; status->setObjectName("mcpStatus"); layout->addWidget(status);
-    auto *tabs = new QTabWidget; layout->addWidget(tabs, 1);
+    auto *tabs = new MotionTabWidget; layout->addWidget(tabs, 1);
     auto *general = new QWidget; auto *form = new QFormLayout(general);
     auto *homeRow = new QWidget; auto *homeLayout = new QHBoxLayout(homeRow); homeLayout->setContentsMargins(0, 0, 0, 0);
     auto *home = new QLineEdit(settings.home); home->setObjectName("mcpHome"); auto *browse = new QPushButton(QStringLiteral("选择…")); homeLayout->addWidget(home, 1); homeLayout->addWidget(browse);

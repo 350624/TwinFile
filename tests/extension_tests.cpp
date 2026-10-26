@@ -6,6 +6,7 @@
 #include "updates.h"
 #include "task_progress.h"
 #include "properties.h"
+#include "motion.h"
 
 #include <QApplication>
 #include <QAction>
@@ -448,10 +449,14 @@ private slots:
             if (!evidence.isEmpty()) QVERIFY(window.grab().save(QDir(evidence).filePath(QStringLiteral("native-miuix-%1-%2.png").arg(scene, mode))));
         };
         QTest::qWait(60); screenshot(QStringLiteral("desktop"));
+        QCOMPARE(selector->grab().toImage().pixelColor(43, 8), qApp->palette().base().color());
+        QCOMPARE(selector->grab().toImage().pixelColor(121, 8), qApp->palette().alternateBase().color());
         window.setReducedMotion(false);
         QTest::mouseClick(right, Qt::LeftButton); QCOMPARE(window.activePane(), window.rightPane()); QVERIFY(right->isChecked()); QVERIFY(!left->isChecked());
         QCOMPARE(window.findChild<QPushButton *>(QStringLiteral("action_copy"))->property("symbol").toString(), QStringLiteral("copy-back"));
-        QCOMPARE(motion->state(), QAbstractAnimation::Running); motion->setCurrentTime(105);
+        QCOMPARE(motion->state(), QAbstractAnimation::Running); motion->setCurrentTime(70);
+        QCOMPARE(selector->grab().toImage().pixelColor(150, 19), qApp->palette().alternateBase().color());
+        motion->setCurrentTime(105);
         const qreal middle = selector->property("position").toReal(); QVERIFY(middle > 0 && middle < 1);
         screenshot(QStringLiteral("switch-moving"));
         QTest::mouseClick(left, Qt::LeftButton);
@@ -498,6 +503,101 @@ private slots:
         }
         window.close(); QCOMPARE(readSettings(settingsPath()).value(QStringLiteral("theme")).toString(), QStringLiteral("miuix"));
         Window restored; QCOMPARE(qApp->property("miuixStyle").toBool(), true); QCOMPARE(restored.leftPane()->location().path, source); restored.close();
+    }
+    void commonUiTransitions_data() {
+        QTest::addColumn<QString>("theme"); QTest::addColumn<QString>("mode");
+        for (const auto &theme : themeIds()) for (const auto &mode : {QStringLiteral("light"), QStringLiteral("dark")})
+            QTest::newRow(qPrintable(theme + u'-' + mode)) << theme << mode;
+    }
+    void commonUiTransitions() {
+        QFETCH(QString, theme); QFETCH(QString, mode);
+        QTemporaryDir root; QVERIFY(QDir().mkpath(root.filePath(QStringLiteral("first")))); QVERIFY(QDir().mkpath(root.filePath(QStringLiteral("second"))));
+        const QString first = root.filePath(QStringLiteral("first")), second = root.filePath(QStringLiteral("second"));
+        auto state = readSettings(settingsPath()); state.insert(QStringLiteral("favorites"), QJsonArray{first, second});
+        state.remove(QStringLiteral("workspace"));
+        state.insert(QStringLiteral("extension_visible"), false); state.insert(QStringLiteral("geometry"), QString());
+        QVERIFY(writeSettings(settingsPath(), state));
+        Window window; window.setAttribute(Qt::WA_DontShowOnScreen); window.setTheme(theme); window.setColorMode(mode); window.setReducedMotion(true);
+        window.resize(1440, 900); window.show(); window.leftPane()->navigate({Source::Local, first, {}, {}}); window.setActive(window.leftPane());
+        if (theme == QStringLiteral("mt")) window.findChild<QPushButton *>(QStringLiteral("mtDrawer"))->click();
+        QTest::qWait(60);
+        auto *navigation = window.findChild<QWidget *>(QStringLiteral("navigationLocations"));
+        auto *indicator = navigation->findChild<QWidget *>(QStringLiteral("navigationSelection"));
+        auto *motion = indicator->findChild<QVariantAnimation *>(QStringLiteral("navigationSelectionAnimation"));
+        QVERIFY(indicator && motion);
+        QPushButton *firstButton = nullptr, *secondButton = nullptr;
+        for (auto *button : navigation->findChildren<QPushButton *>()) {
+            if (button->property("navigationPath").toString() == first) firstButton = button;
+            if (button->property("navigationPath").toString() == second) secondButton = button;
+        }
+        QVERIFY(firstButton && secondButton); QVERIFY(firstButton->isChecked());
+        const QRectF initial = indicator->property("selectionRect").toRectF(); QVERIFY(!initial.isEmpty());
+        window.setReducedMotion(false);
+        // Navigate directly so MT's drawer remains open while its selection moves.
+        window.leftPane()->navigate({Source::Local, second, {}, {}});
+        QCOMPARE(motion->state(), QAbstractAnimation::Running); motion->pause(); motion->setCurrentTime(90);
+        const QRectF middle = indicator->property("selectionRect").toRectF();
+        QVERIFY(middle.top() > initial.top()); QVERIFY(middle.top() < indicator->property("targetRect").toRectF().top());
+        const QString evidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT");
+        if (!evidence.isEmpty()) QVERIFY(window.grab().save(QDir(evidence).filePath(QStringLiteral("native-common-motion-navigation-%1-%2.png").arg(theme, mode))));
+        window.leftPane()->navigate({Source::Local, first, {}, {}});
+        QCOMPARE(indicator->property("selectionRect").toRectF(), middle);
+        window.setReducedMotion(true); QCOMPARE(motion->state(), QAbstractAnimation::Stopped);
+        QCOMPARE(indicator->property("selectionRect").toRectF(), initial);
+        if (theme == QStringLiteral("mt")) window.findChild<QPushButton *>(QStringLiteral("mtDrawerShade"))->click();
+        window.setReducedMotion(false);
+        if (theme != QStringLiteral("mt")) {
+            auto *tabs = window.leftPane()->findChild<QTabBar *>(QStringLiteral("paneTabs")); QVERIFY(tabs);
+            window.leftPane()->newTab(); QTest::qWait(30);
+            auto *tabMotion = tabs->findChild<QVariantAnimation *>(QStringLiteral("tabSelectionAnimation")); QVERIFY(tabMotion);
+            QTRY_COMPARE(tabMotion->state(), QAbstractAnimation::Stopped);
+            const QRectF last = tabs->property("selectionRect").toRectF();
+            tabs->setCurrentIndex(0); QCOMPARE(tabMotion->state(), QAbstractAnimation::Running);
+            tabMotion->pause(); tabMotion->setCurrentTime(80);
+            const QRectF partial = tabs->property("selectionRect").toRectF(); QVERIFY(partial.left() < last.left()); QVERIFY(partial.left() > tabs->tabRect(0).left());
+            tabs->setCurrentIndex(1); QCOMPARE(tabs->property("selectionRect").toRectF(), partial);
+            window.setReducedMotion(true); QCOMPARE(tabMotion->state(), QAbstractAnimation::Stopped);
+            QCOMPARE(tabs->property("selectionRect").toRectF(), QRectF(tabs->tabRect(1)));
+        }
+        window.setReducedMotion(false);
+        window.setColorMode(mode == QStringLiteral("dark") ? QStringLiteral("light") : QStringLiteral("dark"));
+        QTRY_VERIFY(window.findChild<QWidget *>(QStringLiteral("uiSnapshotTransition"), Qt::FindDirectChildrenOnly));
+        QPointer<QWidget> snapshot = window.findChild<QWidget *>(QStringLiteral("uiSnapshotTransition"), Qt::FindDirectChildrenOnly);
+        QVERIFY(snapshot->testAttribute(Qt::WA_TransparentForMouseEvents));
+        window.setReducedMotion(true); QVERIFY(snapshot.isNull());
+        window.setReducedMotion(false);
+        auto *assistant = window.findChild<QPushButton *>(QStringLiteral("assistantToggle")); assistant->click();
+        QVERIFY(window.findChild<QDockWidget *>(QStringLiteral("extensionDock"))->isVisible());
+        QVERIFY(window.findChild<QWidget *>(QStringLiteral("uiSnapshotTransition"), Qt::FindDirectChildrenOnly));
+        assistant->click(); QVERIFY(!window.findChild<QDockWidget *>(QStringLiteral("extensionDock"))->isVisible());
+        window.resize(1100, 650); QTRY_VERIFY(!window.findChild<QWidget *>(QStringLiteral("uiSnapshotTransition"), Qt::FindDirectChildrenOnly));
+        window.close();
+    }
+    void commonPopupAndPageMotion() {
+        auto state = readSettings(settingsPath()); state.insert(QStringLiteral("extension_visible"), true); QVERIFY(writeSettings(settingsPath(), state));
+        Window window; window.setAttribute(Qt::WA_DontShowOnScreen); window.setTheme(QStringLiteral("miuix")); window.setReducedMotion(false); window.show(); QTest::qWait(40);
+        auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("extensionTabs")); QVERIFY(tabs); QVERIFY(tabs->count() > 1);
+        const int index = tabs->currentIndex(); tabs->setCurrentIndex(index == 0 ? 1 : 0);
+        QTRY_VERIFY(tabs->currentWidget()->findChild<QWidget *>(QStringLiteral("uiSnapshotTransition"), Qt::FindDirectChildrenOnly));
+        window.setReducedMotion(true);
+        QVERIFY(!tabs->currentWidget()->findChild<QWidget *>(QStringLiteral("uiSnapshotTransition"), Qt::FindDirectChildrenOnly));
+        window.setReducedMotion(false);
+        QDialog dialog(&window); dialog.setAttribute(Qt::WA_DontShowOnScreen); dialog.resize(340, 180);
+        dialog.show();
+        auto *motion = dialog.findChild<QVariantAnimation *>(QStringLiteral("uiPopupAnimation")); QVERIFY(motion);
+        QCOMPARE(motion->state(), QAbstractAnimation::Running); motion->pause(); motion->setCurrentTime(60);
+        QVERIFY(dialog.windowOpacity() > 0); QVERIFY(dialog.windowOpacity() < 1);
+        window.setReducedMotion(true); QCOMPARE(motion->state(), QAbstractAnimation::Stopped); QCOMPARE(dialog.windowOpacity(), 1.0);
+        window.setReducedMotion(false); dialog.hide();
+        QPointer<QWidget> ghost = window.findChild<QWidget *>(QStringLiteral("uiSnapshotTransition"), Qt::FindDirectChildrenOnly);
+        QVERIFY(ghost); QVERIFY(ghost->isWindow()); QVERIFY(ghost->windowFlags().testFlag(Qt::WindowTransparentForInput));
+        QTRY_VERIFY(ghost.isNull());
+        QMenu menu(&window); menu.addAction(QStringLiteral("Test")); menu.popup(window.mapToGlobal(QPoint(300, 200)));
+        auto *menuMotion = menu.findChild<QVariantAnimation *>(QStringLiteral("uiPopupAnimation")); QVERIFY(menuMotion);
+        QTRY_COMPARE(menuMotion->state(), QAbstractAnimation::Stopped); QCOMPARE(menu.windowOpacity(), 1.0);
+        menu.hide(); QVERIFY(window.findChild<QWidget *>(QStringLiteral("uiSnapshotTransition"), Qt::FindDirectChildrenOnly));
+        window.setReducedMotion(true); QVERIFY(!window.findChild<QWidget *>(QStringLiteral("uiSnapshotTransition"), Qt::FindDirectChildrenOnly));
+        window.close();
     }
     void paneAddressNavigation() {
         QTemporaryDir root; QVERIFY(root.isValid());

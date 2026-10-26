@@ -21,6 +21,7 @@ class UpdateChecker;
 class UpdateDialog;
 class McpServer;
 class TaskProgress;
+class UiMotion;
 
 class Window : public QMainWindow {
     Q_OBJECT
@@ -50,6 +51,7 @@ private:
     void updateNavigation();
     void updateDeviceNavigation();
     void buildExtensions();
+    void setExtensionsVisible(bool visible);
     void menu(const QPoint &position);
     void moreMenu();
     void populateMoreMenu(QMenu &popup);
@@ -127,6 +129,8 @@ private:
     QPointer<UpdateDialog> updateDialog_;
     McpServer *mcp_ = nullptr;
     bool closing_ = false;
+    UiMotion *motion_ = nullptr;
+    quint64 themeMotionGeneration_ = 0;
 };
 
 }

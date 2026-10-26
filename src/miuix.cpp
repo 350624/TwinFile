@@ -37,18 +37,19 @@ public:
         findChild<QToolButton *>(QStringLiteral("miuixLeftPane"))->setChecked(!right);
         findChild<QToolButton *>(QStringLiteral("miuixRightPane"))->setChecked(right);
         if (!animate) {
-            motion_.stop(); position_ = target; setProperty("position", target); update(); return;
+            motion_.stop(); target_ = target; position_ = target; setProperty("position", target); update(); return;
         }
         if (target_ == target && (motion_.state() == QAbstractAnimation::Running || qFuzzyCompare(position_ + 1, target + 1))) return;
         target_ = target; motion_.stop();
         motion_.setStartValue(position_); motion_.setEndValue(target); motion_.start();
     }
 protected:
+    void hideEvent(QHideEvent *event) override { select(target_ > 0.5, false); QWidget::hideEvent(event); }
     void paintEvent(QPaintEvent *) override {
         QPainter painter(this); painter.setRenderHint(QPainter::Antialiasing); painter.setPen(Qt::NoPen);
-        painter.setBrush(palette().alternateBase()); painter.drawRoundedRect(rect(), 19, 19);
+        painter.setBrush(qApp->palette().alternateBase()); painter.drawRoundedRect(rect(), 19, 19);
         const qreal segment = (width() - 8.0) / 2;
-        painter.setBrush(palette().base()); painter.drawRoundedRect(QRectF(4 + segment * position_, 4, segment, height() - 8), 15, 15);
+        painter.setBrush(qApp->palette().base()); painter.drawRoundedRect(QRectF(4 + segment * position_, 4, segment, height() - 8), 15, 15);
     }
 private:
     QVariantAnimation motion_{this};

@@ -53,6 +53,11 @@ try {
     if (-not $Process.WaitForExit(90000)) { $Process.Kill(); throw 'miuix UI check timed out' }
     Get-Content -LiteralPath $MiuixResults
     if ($Process.ExitCode -ne 0) { throw 'miuix UI check failed' }
+    $CommonMotionResults = Join-Path $Evidence 'common-motion-ui-test-results.txt'
+    $Process = Start-Process -FilePath $ExtensionExecutable -ArgumentList @('-platform','windows','commonUiTransitions','commonPopupAndPageMotion','-o',('"' + $CommonMotionResults + ',txt"')) -WindowStyle Hidden -PassThru
+    if (-not $Process.WaitForExit(90000)) { $Process.Kill(); throw 'Common UI motion check timed out' }
+    Get-Content -LiteralPath $CommonMotionResults
+    if ($Process.ExitCode -ne 0) { throw 'Common UI motion check failed' }
     $AgentExecutable = Join-Path $PSScriptRoot 'build\bin\twinfile_agent_tests.exe'
     $AgentResults = Join-Path $Evidence 'agent-ui-test-results.txt'
     $Process = Start-Process -FilePath $AgentExecutable -ArgumentList @('-platform','windows','panelAgentAuthorizationApprovalAndChatIsolation','fullAccessPanelConsentAndReset','-o',('"' + $AgentResults + ',txt"')) -WindowStyle Hidden -PassThru
