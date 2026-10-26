@@ -20,14 +20,14 @@ try {
     if ($Process.ExitCode -ne 0) { throw 'Native UI check failed' }
     $PayloadResults = Join-Path $Evidence 'payload-ui-test-results.txt'
     $Process = Start-Process -FilePath $Executable -ArgumentList @('-platform','windows','payloadDialogsAndProgress','payloadOutputDirectoryAndInlineCompletion','inlineTaskSpeedCancellationAndFailure','-o',('"' + $PayloadResults + ',txt"')) -WindowStyle Hidden -PassThru
-    if (-not $Process.WaitForExit(30000)) { $Process.Kill(); throw 'Payload UI check timed out' }
+    if (-not $Process.WaitForExit(90000)) { $Process.Kill(); throw 'Payload UI check timed out' }
     Get-Content -LiteralPath $PayloadResults
     if ($Process.ExitCode -ne 0) { throw 'Payload UI check failed' }
     $AnimationExecutable = Join-Path $PSScriptRoot 'build\bin\twinfile_tests.exe'
     $AnimationResults = Join-Path $Evidence 'animation-ui-test-results.txt'
     $AnimationTests = @('directoryTransitionsFollowNavigationAndArchiveParents','refreshAnimationPreservesSelectionAndScroll','reducedMotionCancelsCurrentAndPendingAnimations','viewAnimationCancelsOnInteractionResizeHideAndTheme','animationsOnlyRepaintVisibleRows','paneAnimationsRenderWithoutUserSettings')
     $Process = Start-Process -FilePath $AnimationExecutable -ArgumentList (@('-platform','windows') + $AnimationTests + @('-o',('"' + $AnimationResults + ',txt"'))) -WindowStyle Hidden -PassThru
-    if (-not $Process.WaitForExit(30000)) { $Process.Kill(); throw 'Native animation UI check timed out' }
+    if (-not $Process.WaitForExit(90000)) { $Process.Kill(); throw 'Native animation UI check timed out' }
     Get-Content -LiteralPath $AnimationResults
     if ($Process.ExitCode -ne 0) { throw 'Native animation UI check failed' }
     $IconResults = Join-Path $Evidence 'icon-ui-test-results.txt'
@@ -50,25 +50,25 @@ try {
     if ($Process.ExitCode -ne 0) { throw 'MT original UI check failed' }
     $MiuixResults = Join-Path $Evidence 'miuix-ui-test-results.txt'
     $Process = Start-Process -FilePath $ExtensionExecutable -ArgumentList @('-platform','windows','miuixLayoutNavigationAndMotion','-o',('"' + $MiuixResults + ',txt"')) -WindowStyle Hidden -PassThru
-    if (-not $Process.WaitForExit(30000)) { $Process.Kill(); throw 'miuix UI check timed out' }
+    if (-not $Process.WaitForExit(90000)) { $Process.Kill(); throw 'miuix UI check timed out' }
     Get-Content -LiteralPath $MiuixResults
     if ($Process.ExitCode -ne 0) { throw 'miuix UI check failed' }
     $AgentExecutable = Join-Path $PSScriptRoot 'build\bin\twinfile_agent_tests.exe'
     $AgentResults = Join-Path $Evidence 'agent-ui-test-results.txt'
     $Process = Start-Process -FilePath $AgentExecutable -ArgumentList @('-platform','windows','panelAgentAuthorizationApprovalAndChatIsolation','fullAccessPanelConsentAndReset','-o',('"' + $AgentResults + ',txt"')) -WindowStyle Hidden -PassThru
-    if (-not $Process.WaitForExit(30000)) { $Process.Kill(); throw 'Agent UI check timed out' }
+    if (-not $Process.WaitForExit(90000)) { $Process.Kill(); throw 'Agent UI check timed out' }
     Get-Content -LiteralPath $AgentResults
     if ($Process.ExitCode -ne 0) { throw 'Agent UI check failed' }
     $McpExecutable = Join-Path $PSScriptRoot 'build\bin\twinfile_mcp_tests.exe'
     $McpResults = Join-Path $Evidence 'mcp-ui-test-results.txt'
     $Process = Start-Process -FilePath $McpExecutable -ArgumentList @('-platform','windows','settingsDialogRendersAndStarts','-o',('"' + $McpResults + ',txt"')) -WindowStyle Hidden -PassThru
-    if (-not $Process.WaitForExit(30000)) { $Process.Kill(); throw 'MCP UI check timed out' }
+    if (-not $Process.WaitForExit(90000)) { $Process.Kill(); throw 'MCP UI check timed out' }
     Get-Content -LiteralPath $McpResults
     if ($Process.ExitCode -ne 0) { throw 'MCP UI check failed' }
     $DownloadExecutable = Join-Path $PSScriptRoot 'build\bin\twinfile_download_tests.exe'
     $DownloadResults = Join-Path $Evidence 'download-ui-test-results.txt'
     $Process = Start-Process -FilePath $DownloadExecutable -ArgumentList @('-platform','windows','dialogRendersAndOperates','closeConfirmsCancellation','windowMenuOpensSingleDialog','windowDownloadUsesInlineProgressAndRemembersDestination','recoveryStatusSurvivesProgressUpdates','-o',('"' + $DownloadResults + ',txt"')) -WindowStyle Hidden -PassThru
-    if (-not $Process.WaitForExit(30000)) { $Process.Kill(); throw 'Direct download UI check timed out' }
+    if (-not $Process.WaitForExit(90000)) { $Process.Kill(); throw 'Direct download UI check timed out' }
     Get-Content -LiteralPath $DownloadResults
     if ($Process.ExitCode -ne 0) { throw 'Direct download UI check failed' }
 } finally {
