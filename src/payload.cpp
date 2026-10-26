@@ -16,6 +16,7 @@
 #include <QSet>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
+#include <QThread>
 #include <QTimer>
 #include <QUrl>
 #include <QtEndian>
@@ -408,11 +409,11 @@ void extractPartition(RangeSource source, const PayloadPartition &partition, qui
     };
     std::mutex queueMutex; std::condition_variable queueChanged;
     bool stopping = false, queued = false; qsizetype queuedIndex = 0; quint64 queuedOffset = 0;
-    std::promise<Window> response; std::future<void> producer;
+    std::promise<Window> response; std::unique_ptr<QThread> producer;
     const auto stopProducer = qScopeGuard([&] {
         source.interrupt->store(true);
         { std::lock_guard<std::mutex> lock(queueMutex); stopping = true; }
-        queueChanged.notify_one(); if (producer.valid()) producer.wait();
+        queueChanged.notify_one(); if (producer) producer->wait();
     });
     const auto scheduleNext = [&](qsizetype operationIndex) {
         quint64 offset = cacheOffset + quint64(inputCache.size());
@@ -427,18 +428,22 @@ void extractPartition(RangeSource source, const PayloadPartition &partition, qui
                 offset = operation.offset >= cacheOffset && operation.offset < offset ? offset : operation.offset;
             }
             pendingOffset = offset;
-            if (!producer.valid()) producer = std::async(std::launch::async, [&] {
-                RangeSource reader(source);
-                for (;;) {
-                    std::unique_lock<std::mutex> lock(queueMutex);
-                    queueChanged.wait(lock, [&] { return stopping || queued; });
-                    if (stopping) return;
-                    const auto index = queuedIndex; const auto offset = queuedOffset;
-                    auto result = std::move(response); queued = false; lock.unlock();
-                    try { result.set_value(fetchWindow(reader, index, offset)); }
-                    catch (...) { result.set_exception(std::current_exception()); }
-                }
-            });
+            if (!producer) {
+                // Qt owns TLS initialization and teardown for workers using its network classes.
+                producer.reset(QThread::create([&] {
+                    RangeSource reader(source);
+                    for (;;) {
+                        std::unique_lock<std::mutex> lock(queueMutex);
+                        queueChanged.wait(lock, [&] { return stopping || queued; });
+                        if (stopping) return;
+                        const auto index = queuedIndex; const auto offset = queuedOffset;
+                        auto result = std::move(response); queued = false; lock.unlock();
+                        try { result.set_value(fetchWindow(reader, index, offset)); }
+                        catch (...) { result.set_exception(std::current_exception()); }
+                    }
+                }));
+                producer->start();
+            }
             {
                 std::lock_guard<std::mutex> lock(queueMutex);
                 response = std::promise<Window>(); pending = response.get_future();
@@ -600,25 +605,33 @@ Result extractPayload(const QString &source, const QStringList &partitions, cons
         ensure(selectedNames.size() == QSet<QString>(partitions.cbegin(), partitions.cend()).size(), QStringLiteral("未知分区名称"));
         const QStorageInfo storage(destination); ensure(!storage.isValid() || storage.bytesAvailable() < 0 || quint64(storage.bytesAvailable()) >= total, QStringLiteral("磁盘空间不足"));
         QTemporaryDir staging(QDir(destination).filePath(QStringLiteral(".twinfile-payload-XXXXXX"))); ensure(staging.isValid(), QStringLiteral("无法创建分区暂存目录"));
-        std::atomic<qsizetype> next{0}; const int concurrency = qBound(1, qMin(workers, int(selected.size())), 8); std::vector<std::future<void>> tasks;
+        std::atomic<qsizetype> next{0}; const int concurrency = qBound(1, qMin(workers, int(selected.size())), 8);
+        std::vector<std::future<void>> tasks; std::vector<std::unique_ptr<QThread>> threads;
         payload.source.inputSize = qMax<quint64>(256 * 1024, payload.source.inputSize / quint64(concurrency));
         qint64 networkTotal = 0, networkDone = 0;
         for (const auto &partition : selected) for (const auto &operation : partition.operations) networkTotal += qint64(operation.length);
         std::mutex progressMutex; std::vector<qint64> completed(size_t(selected.size()), 0); qint64 done = 0;
-        for (int worker = 0; worker < concurrency; ++worker) tasks.emplace_back(std::async(std::launch::async, [&] {
-            for (;;) { const qsizetype index = next.fetch_add(1); if (index >= selected.size()) break;
-                extractPartition(payload.source, selected[index], payload.manifest.blockSize, payload.dataOffset, staging.filePath(selected[index].name + QStringLiteral(".img")), cancel,
-                    [&](qint64 current, qint64, const QString &stage) {
-                        if (!progress) return;
-                        std::lock_guard<std::mutex> lock(progressMutex); done += current - completed[size_t(index)]; completed[size_t(index)] = current; progress(done, qint64(total), stage);
-                    }, [&](qint64 received) {
-                        if (!progress) return;
-                        std::lock_guard<std::mutex> lock(progressMutex); networkDone += received;
-                        progress(networkDone, networkTotal, QStringLiteral("下载 Payload 分区数据 · %1/%2 连接").arg(payload.source.connections->load()).arg(options.downloadConnections));
-                    });
-            }
-        }));
+        const auto waitWorkers = qScopeGuard([&] { for (auto &thread : threads) thread->wait(); });
+        for (int worker = 0; worker < concurrency; ++worker) {
+            std::packaged_task<void()> task([&] {
+                for (;;) { const qsizetype index = next.fetch_add(1); if (index >= selected.size()) break;
+                    extractPartition(payload.source, selected[index], payload.manifest.blockSize, payload.dataOffset, staging.filePath(selected[index].name + QStringLiteral(".img")), cancel,
+                        [&](qint64 current, qint64, const QString &stage) {
+                            if (!progress) return;
+                            std::lock_guard<std::mutex> lock(progressMutex); done += current - completed[size_t(index)]; completed[size_t(index)] = current; progress(done, qint64(total), stage);
+                        }, [&](qint64 received) {
+                            if (!progress) return;
+                            std::lock_guard<std::mutex> lock(progressMutex); networkDone += received;
+                            progress(networkDone, networkTotal, QStringLiteral("下载 Payload 分区数据 · %1/%2 连接").arg(payload.source.connections->load()).arg(options.downloadConnections));
+                        });
+                }
+            });
+            tasks.emplace_back(task.get_future());
+            threads.emplace_back(QThread::create([task = std::move(task)]() mutable { task(); }));
+            threads.back()->start();
+        }
         std::exception_ptr error; for (auto &task : tasks) { try { task.get(); } catch (...) { if (!error) error = std::current_exception(); } } if (error) std::rethrow_exception(error);
+        for (auto &thread : threads) thread->wait();
         checkCancel(cancel); QStringList published;
         for (const auto &partition : selected) {
             const QString name = partition.name + QStringLiteral(".img"), target = QDir(destination).filePath(name);

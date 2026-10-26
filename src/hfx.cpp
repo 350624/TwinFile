@@ -12,6 +12,7 @@
 #include <QSet>
 #include <QStorageInfo>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QtEndian>
 #include <algorithm>
 #include <future>
@@ -64,6 +65,26 @@ public:
 };
 Result failure(const std::exception &error) { return {false, QString::fromUtf8(error.what()), {}, {}}; }
 QString joinRemote(const QString &directory, const QString &relative) { return directory.endsWith(QChar('/')) ? directory + relative : directory + QChar('/') + relative; }
+// File and locale APIs also need Qt-owned worker teardown on Windows.
+class ChannelTasks {
+public:
+    ~ChannelTasks() { for (auto &thread : threads_) thread->wait(); }
+    template<class Function> void start(Function function) {
+        std::packaged_task<void()> task(std::move(function));
+        results_.emplace_back(task.get_future());
+        threads_.emplace_back(QThread::create([task = std::move(task)]() mutable { task(); }));
+        threads_.back()->start();
+    }
+    void wait() {
+        std::exception_ptr error;
+        for (auto &result : results_) try { result.get(); } catch (...) { if (!error) error = std::current_exception(); }
+        for (auto &thread : threads_) thread->wait();
+        if (error) std::rethrow_exception(error);
+    }
+private:
+    std::vector<std::future<void>> results_;
+    std::vector<std::unique_ptr<QThread>> threads_;
+};
 }
 
 struct HfxSession::State {
@@ -159,8 +180,8 @@ Result HfxSession::push(const QStringList &paths, const QString &destination, co
             if (QFileInfo(root).isDir()) { QDirIterator iterator(root, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDirIterator::Subdirectories); while (iterator.hasNext()) { iterator.next(); append(iterator.filePath(), joinRemote(remoteRoot, QDir(root).relativeFilePath(iterator.filePath()))); } }
         }
         Wire control{state_->control, cancel}; control.number<qint16>(10); std::mutex schedule, reports; qsizetype fileIndex = 0; qint32 block = 0; std::atomic<qint64> done{0}; auto aborted = std::make_shared<std::atomic_bool>(false);
-        std::vector<std::future<void>> tasks;
-        for (const SOCKET socket : state_->channels) tasks.emplace_back(std::async(std::launch::async, [&, socket] {
+        ChannelTasks tasks;
+        for (const SOCKET socket : state_->channels) tasks.start([&, socket] {
             try {
                 Wire channel{socket, cancel, aborted};
                 for (;;) {
@@ -174,9 +195,8 @@ Result HfxSession::push(const QStringList &paths, const QString &destination, co
                 }
                 channel.number<qint16>(3);
             } catch (...) { aborted->store(true); throw; }
-        }));
-        std::exception_ptr error; for (auto &task : tasks) try { task.get(); } catch (...) { if (!error) error = std::current_exception(); }
-        if (error) std::rethrow_exception(error);
+        });
+        tasks.wait();
         if (!control.boolean()) throw HfxError(QStringLiteral("手机写入失败：") + control.text()); control.boolean(true); return {};
     } catch (const std::exception &error) { state_->close(); return failure(error); }
 }
@@ -190,8 +210,8 @@ Result HfxSession::pull(const QStringList &paths, const QString &source, const Q
         Wire control{state_->control, cancel}; control.number<qint16>(11); control.number<qint32>(qint32(paths.size())); for (const QString &path : paths) control.text(path);
         control.text(QDir::toNativeSeparators(staging.path()) + QChar('\\')); control.number<qint32>(1); control.text(source.endsWith(QChar('/')) ? source : source + QChar('/'));
         struct FileState { QString path; qint64 total = 0, modified = 0; QSet<qint32> blocks; bool directory = false; };
-        QHash<qint32, FileState> files; QHash<QString, qint32> names; std::mutex write; qint64 done = 0, total = 0; auto aborted = std::make_shared<std::atomic_bool>(false); std::vector<std::future<void>> tasks;
-        for (const SOCKET socket : state_->channels) tasks.emplace_back(std::async(std::launch::async, [&, socket] {
+        QHash<qint32, FileState> files; QHash<QString, qint32> names; std::mutex write; qint64 done = 0, total = 0; auto aborted = std::make_shared<std::atomic_bool>(false); ChannelTasks tasks;
+        for (const SOCKET socket : state_->channels) tasks.start([&, socket] {
             try {
                 Wire channel{socket, cancel, aborted};
                 for (;;) {
@@ -215,9 +235,8 @@ Result HfxSession::pull(const QStringList &paths, const QString &source, const Q
                     done += length; if (progress) progress(done, total, relative);
                 }
             } catch (...) { aborted->store(true); throw; }
-        }));
-        std::exception_ptr error; for (auto &task : tasks) try { task.get(); } catch (...) { if (!error) error = std::current_exception(); }
-        if (error) std::rethrow_exception(error);
+        });
+        tasks.wait();
         for (const auto &file : files) { if (file.directory) continue; require(file.blocks.size() == qMax<qint64>(1, (file.total + blockSize - 1) / blockSize), QStringLiteral("手机文件块不完整")); QFile output(file.path); if (output.open(QIODevice::ReadWrite)) output.setFileTime(QDateTime::fromMSecsSinceEpoch(file.modified), QFileDevice::FileModificationTime); }
         for (const QString &root : roots) require(QFileInfo::exists(staging.filePath(root)), QStringLiteral("手机未发送所选文件：") + root);
         control.boolean(true); if (!control.boolean()) throw HfxError(QStringLiteral("手机读取失败：") + control.text()); cancelled(cancel);

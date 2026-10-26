@@ -44,6 +44,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QTest>
 #include <QtEndian>
 #include <bzlib.h>
@@ -54,6 +55,27 @@
 #include <thread>
 
 using namespace twinfile;
+
+template<class Function>
+class QtTask {
+    using Value = std::invoke_result_t<Function>;
+public:
+    explicit QtTask(Function function) {
+        std::packaged_task<Value()> task(std::move(function));
+        result_ = task.get_future();
+        thread_.reset(QThread::create([task = std::move(task)]() mutable { task(); }));
+        thread_->start();
+    }
+    ~QtTask() { thread_->wait(); }
+    template<class Rep, class Period> auto wait_for(const std::chrono::duration<Rep, Period> &duration) { return result_.wait_for(duration); }
+    Value get() { const auto wait = qScopeGuard([&] { thread_->wait(); }); return result_.get(); }
+private:
+    std::future<Value> result_;
+    std::unique_ptr<QThread> thread_;
+};
+
+// Match the application's Qt-owned workers, including deterministic thread teardown.
+template<class Function> static auto qtAsync(Function function) { return QtTask<Function>(std::move(function)); }
 
 namespace twinfile {
 class PayloadTestAccess {
@@ -372,20 +394,20 @@ private slots:
     void phoneDirectoryCanBeCopiedIntoArchive() {
         FakeAdb fake; fake.directories.append(QStringLiteral("/sdcard/folder")); fake.files.insert(QStringLiteral("/sdcard/folder/中文.txt"), "folder-content"); QTemporaryDir root; const QString archive = root.filePath(QStringLiteral("target.zip")); { ZipWriter writer(archive); writer.close(); }
         Entry entry; entry.source = Source::Phone; entry.serial = QStringLiteral("fixture"); entry.path = QStringLiteral("/sdcard/folder"); entry.name = QStringLiteral("folder"); entry.directory = true;
-        auto task = std::async(std::launch::async, [&] { return transferEntries({entry}, {Source::Archive, archive, {}, {}}, false); }); QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 10000); const Result result = task.get(); QVERIFY2(result.ok, qPrintable(result.error)); ZipReader reader(archive); QCOMPARE(reader.fileData(QStringLiteral("folder/中文.txt")), QByteArray("folder-content"));
+        auto task = qtAsync([&] { return transferEntries({entry}, {Source::Archive, archive, {}, {}}, false); }); QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 10000); const Result result = task.get(); QVERIFY2(result.ok, qPrintable(result.error)); ZipReader reader(archive); QCOMPARE(reader.fileData(QStringLiteral("folder/中文.txt")), QByteArray("folder-content"));
     }
     void adbNativeSyncListsAndCopiesUnicodeFile_data() { QTest::addColumn<bool>("version2"); QTest::newRow("v1") << false; QTest::newRow("v2") << true; }
     void adbNativeSyncListsAndCopiesUnicodeFile() {
         QFETCH(bool, version2); FakeAdb fake; fake.version2 = version2; fake.files.insert(QStringLiteral("/sdcard/中文.txt"), QByteArray(200000, 'q')); fake.directories.append(QStringLiteral("/sdcard")); QTemporaryDir root;
-        auto listing = std::async(std::launch::async, [&] { return adbSyncList(QStringLiteral("fixture"), QStringLiteral("/sdcard"), true); }); QTRY_VERIFY_WITH_TIMEOUT(listing.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000); const Listing listed = listing.get(); QVERIFY2(listed.error.isEmpty(), qPrintable(listed.error)); QCOMPARE(listed.entries.size(), 1); QCOMPARE(listed.entries[0].name, QStringLiteral("中文.txt"));
+        auto listing = qtAsync([&] { return adbSyncList(QStringLiteral("fixture"), QStringLiteral("/sdcard"), true); }); QTRY_VERIFY_WITH_TIMEOUT(listing.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000); const Listing listed = listing.get(); QVERIFY2(listed.error.isEmpty(), qPrintable(listed.error)); QCOMPARE(listed.entries.size(), 1); QCOMPARE(listed.entries[0].name, QStringLiteral("中文.txt"));
         qint64 previous = 0, reportedTotal = 0; int reports = 0; bool ordered = true;
         const Progress progress = [&](qint64 done, qint64 total, const QString &) { ordered &= done >= previous; previous = done; reportedTotal = total; ++reports; };
-        const QString local = root.filePath(QStringLiteral("local.txt")); auto pull = std::async(std::launch::async, [&] { return adbSyncPull(QStringLiteral("fixture"), QStringLiteral("/sdcard/中文.txt"), local, {}, progress); }); QTRY_VERIFY_WITH_TIMEOUT(pull.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000); const Result pulled = pull.get(); QVERIFY2(pulled.ok, qPrintable(pulled.error)); QCOMPARE(readFile(local), QByteArray(200000, 'q'));
+        const QString local = root.filePath(QStringLiteral("local.txt")); auto pull = qtAsync([&] { return adbSyncPull(QStringLiteral("fixture"), QStringLiteral("/sdcard/中文.txt"), local, {}, progress); }); QTRY_VERIFY_WITH_TIMEOUT(pull.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000); const Result pulled = pull.get(); QVERIFY2(pulled.ok, qPrintable(pulled.error)); QCOMPARE(readFile(local), QByteArray(200000, 'q'));
         QVERIFY(ordered); QCOMPARE(previous, 200000); QCOMPARE(reportedTotal, version2 ? 200000 : 0); QVERIFY(reports >= 4);
         previous = 0; reports = 0;
-        auto push = std::async(std::launch::async, [&] { return adbSyncPush(QStringLiteral("fixture"), local, QStringLiteral("/sdcard/new.txt"), {}, progress); }); QTRY_VERIFY_WITH_TIMEOUT(push.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000); const Result pushed = push.get(); QVERIFY2(pushed.ok, qPrintable(pushed.error)); QCOMPARE(fake.files.value(QStringLiteral("/sdcard/new.txt")), QByteArray(200000, 'q'));
+        auto push = qtAsync([&] { return adbSyncPush(QStringLiteral("fixture"), local, QStringLiteral("/sdcard/new.txt"), {}, progress); }); QTRY_VERIFY_WITH_TIMEOUT(push.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000); const Result pushed = push.get(); QVERIFY2(pushed.ok, qPrintable(pushed.error)); QCOMPARE(fake.files.value(QStringLiteral("/sdcard/new.txt")), QByteArray(200000, 'q'));
         QVERIFY(ordered); QCOMPARE(previous, 200000); QCOMPARE(reportedTotal, 200000); QVERIFY(reports >= 4);
-        Entry entry; entry.source = Source::Phone; entry.path = QStringLiteral("/sdcard/中文.txt"); entry.serial = QStringLiteral("fixture"); auto hashing = std::async(std::launch::async, [&] { return checksumEntries({entry}); }); QTRY_VERIFY_WITH_TIMEOUT(hashing.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000); const Result hashed = hashing.get(); QVERIFY2(hashed.ok, qPrintable(hashed.error)); QVERIFY(hashed.output.contains(QString::fromLatin1(QCryptographicHash::hash(QByteArray(200000, 'q'), QCryptographicHash::Sha256).toHex())));
+        Entry entry; entry.source = Source::Phone; entry.path = QStringLiteral("/sdcard/中文.txt"); entry.serial = QStringLiteral("fixture"); auto hashing = qtAsync([&] { return checksumEntries({entry}); }); QTRY_VERIFY_WITH_TIMEOUT(hashing.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000); const Result hashed = hashing.get(); QVERIFY2(hashed.ok, qPrintable(hashed.error)); QVERIFY(hashed.output.contains(QString::fromLatin1(QCryptographicHash::hash(QByteArray(200000, 'q'), QCryptographicHash::Sha256).toHex())));
     }
     void realApktoolProjectRebuildAndSign() {
         QTemporaryDir root; const QString project = root.filePath(QStringLiteral("decoded"));
@@ -398,7 +420,7 @@ private slots:
     }
     void adbNativeSyncRejectsMalformedFrameAndCancellation() {
         FakeAdb fake; fake.files.insert(QStringLiteral("/sdcard/file"), "data"); fake.badReceive = true; QTemporaryDir root;
-        auto task = std::async(std::launch::async, [&] { return adbSyncPull(QStringLiteral("fixture"), QStringLiteral("/sdcard/file"), root.filePath(QStringLiteral("file"))); }); QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000); QVERIFY(!task.get().ok);
+        auto task = qtAsync([&] { return adbSyncPull(QStringLiteral("fixture"), QStringLiteral("/sdcard/file"), root.filePath(QStringLiteral("file"))); }); QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000); QVERIFY(!task.get().ok);
         const Result cancelled = adbSyncPull(QStringLiteral("fixture"), QStringLiteral("/sdcard/file"), root.filePath(QStringLiteral("cancelled")), std::make_shared<std::atomic_bool>(true)); QVERIFY(!cancelled.ok); QVERIFY(!QFileInfo::exists(root.filePath(QStringLiteral("cancelled"))));
     }
     void textDiffAlignsInsertedLines() { const QStringList diff = textDifference(QStringLiteral("a\nb\nc"), QStringLiteral("a\ninserted\nb\nc")); QVERIFY(diff.contains(QStringLiteral("+ inserted"))); QVERIFY(!diff.contains(QStringLiteral("- b"))); QVERIFY(!diff.contains(QStringLiteral("- c"))); }
@@ -450,7 +472,7 @@ private slots:
         const QString archive = root.filePath(QStringLiteral("ota.zip"));
         { ZipWriter writer(archive); writer.addFile(QStringLiteral("payload.bin"), encodePayload(data)); writer.close(); }
         PayloadHttpFixture fixture(readFile(archive)); QVERIFY(fixture.server.isListening()); QVERIFY(fixture.bytes.size() > 8 * 1024 * 1024);
-        QStringList stages; auto task = std::async(std::launch::async, [&] { return inspectPayload(fixture.url(), {}, {}, [&](qint64, qint64, const QString &stage) { stages.append(stage); }); });
+        QStringList stages; auto task = qtAsync([&] { return inspectPayload(fixture.url(), {}, {}, [&](qint64, qint64, const QString &stage) { stages.append(stage); }); });
         QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000);
         const Result result = task.get(); QVERIFY2(result.ok, qPrintable(result.error)); QCOMPARE(result.paths, QStringList{QStringLiteral("system")});
         QVERIFY2(fixture.transferred < 256 * 1024, qPrintable(QString::number(fixture.transferred))); QVERIFY(!stages.isEmpty());
@@ -477,7 +499,7 @@ private slots:
         const QString archive = root.filePath(QStringLiteral("ota.zip"));
         { ZipWriter writer(archive); writer.addFile(QStringLiteral("payload.bin"), payload); writer.close(); }
         PayloadHttpFixture fixture(readFile(archive)); QVERIFY(fixture.bytes.size() > padding.size());
-        auto task = std::async(std::launch::async, [&] { return inspectPayload(fixture.url()); });
+        auto task = qtAsync([&] { return inspectPayload(fixture.url()); });
         QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000);
         const Result info = task.get(); QVERIFY2(info.ok, qPrintable(info.error)); QCOMPARE(info.paths, QStringList{QStringLiteral("system")});
         const Result result = extractPayload(archive, info.paths, root.path()); QVERIFY2(result.ok, qPrintable(result.error)); QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), data);
@@ -491,14 +513,14 @@ private slots:
     }
     void payloadNetworkDeadlines() {
         QFETCH(int, mode); QFETCH(bool, idle); PayloadHttpFixture fixture({}, PayloadHttpFixture::Mode(mode)); PayloadOptions options; options.idleTimeoutMs = idle ? 140 : 250; options.requestTimeoutMs = idle ? 2000 : 140;
-        auto task = std::async(std::launch::async, [&] { return inspectPayload(fixture.url(), {}, options); });
+        auto task = qtAsync([&] { return inspectPayload(fixture.url(), {}, options); });
         QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 3000);
         const Result result = task.get(); QVERIFY(!result.ok); QCOMPARE(fixture.requests, mode == PayloadHttpFixture::IgnoredRange ? 1 : 3);
         QVERIFY2(result.error.contains(mode == PayloadHttpFixture::IgnoredRange ? QStringLiteral("Range") : QStringLiteral("超时")), qPrintable(result.error));
     }
     void payloadCancelDuringNetworkAndManifest() {
         PayloadHttpFixture fixture({}, PayloadHttpFixture::Silent); auto cancel = std::make_shared<std::atomic_bool>(false);
-        auto task = std::async(std::launch::async, [&] { return inspectPayload(fixture.url(), cancel); });
+        auto task = qtAsync([&] { return inspectPayload(fixture.url(), cancel); });
         QTRY_COMPARE_WITH_TIMEOUT(fixture.requests, 1, 2000); cancel->store(true);
         QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 1000);
         QVERIFY(task.get().error.contains(QStringLiteral("取消"))); QCOMPARE(fixture.requests, 1);
@@ -522,7 +544,7 @@ private slots:
         PayloadHttpFixture fixture(QByteArray("CrAU") + network<quint64>(2) + network<quint64>(quint64(manifest.size())) + network<quint32>(0) + manifest + data.repeated(3));
         fixture.delayedFrom = 24 + manifest.size(); QTemporaryDir root; qint64 previous = 0, reportedTotal = 0; bool monotonic = true;
         PayloadOptions options; options.downloadConnections = connections;
-        auto task = std::async(std::launch::async, [&] {
+        auto task = qtAsync([&] {
             return extractPayload(fixture.url(), names, root.path(), threads, {}, [&](qint64 done, qint64 total, const QString &stage) {
                 if (!stage.startsWith(QStringLiteral("提取分区"))) return;
                 monotonic &= done >= previous; previous = done; reportedTotal = total;
@@ -559,7 +581,7 @@ private slots:
         fixture.releaseAt = connections;
         PayloadOptions options; options.downloadConnections = connections;
         qint64 networkBytes = 0;
-        auto task = std::async(std::launch::async, [&] {
+        auto task = qtAsync([&] {
             return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 4, {}, [&](qint64 done, qint64, const QString &stage) {
                 if (stage.startsWith(QStringLiteral("下载 Payload 分区数据")) || stage.startsWith(QStringLiteral("下载并解压"))) networkBytes = qMax(networkBytes, done);
             }, options);
@@ -581,7 +603,7 @@ private slots:
         fixture.delayedFrom = 24 + qint64(qFromBigEndian<quint64>(fixture.bytes.constData() + 12)); fixture.dataFailure = failure;
         if (failure == QStringLiteral("cancel")) fixture.releaseAt = 17;
         PayloadOptions options; options.downloadConnections = 16; auto cancel = std::make_shared<std::atomic_bool>(false);
-        auto task = std::async(std::launch::async, [&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 4, cancel, {}, options); });
+        auto task = qtAsync([&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 4, cancel, {}, options); });
         if (failure == QStringLiteral("cancel")) { QTRY_COMPARE_WITH_TIMEOUT(fixture.active, 16, 5000); cancel->store(true); }
         QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000);
         const Result result = task.get(); QVERIFY(!result.ok); QVERIFY(!QFileInfo::exists(root.filePath(QStringLiteral("system.img")))); QTRY_COMPARE(fixture.active, 0);
@@ -597,7 +619,7 @@ private slots:
         QTemporaryDir root; const QByteArray data(4 * 1024 * 1024, 'r'); PayloadHttpFixture fixture(encodePayload(data));
         fixture.delayedFrom = 24 + qint64(qFromBigEndian<quint64>(fixture.bytes.constData() + 12)); fixture.dataFailure = QStringLiteral("retry");
         PayloadOptions options; options.downloadConnections = 16;
-        auto task = std::async(std::launch::async, [&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 4, {}, {}, options); });
+        auto task = qtAsync([&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 4, {}, {}, options); });
         QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000);
         const Result result = task.get(); QVERIFY2(result.ok, qPrintable(result.error)); QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), data);
         QVERIFY(fixture.failureUsed); QCOMPARE(fixture.requests, 20); QVERIFY(fixture.peak <= 16); QTRY_COMPARE(fixture.active, 0);
@@ -616,7 +638,7 @@ private slots:
         fixture.dataFailure = QStringLiteral("stall"); PayloadOptions options; options.downloadConnections = 4;
         options.idleTimeoutMs = options.requestTimeoutMs = 20000; auto cancel = std::make_shared<std::atomic_bool>(false);
         QTimer::singleShot(10000, &fixture, [cancel] { cancel->store(true); });
-        auto task = std::async(std::launch::async, [&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 1, cancel, {}, options); });
+        auto task = qtAsync([&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 1, cancel, {}, options); });
         QTRY_VERIFY_WITH_TIMEOUT(fixture.ranges.size() >= 10, 2500);
         QVERIFY(fixture.active <= 4); QVERIFY(fixture.failureUsed);
         QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 9000);
@@ -655,7 +677,7 @@ private slots:
         }
         const int proxyRequests = hits;
         QTemporaryDir root; PayloadOptions options; options.downloadConnections = 16;
-        auto task = std::async(std::launch::async, [&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 4, {}, {}, options); });
+        auto task = qtAsync([&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 4, {}, {}, options); });
         QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000);
         const auto result = task.get(); QVERIFY2(result.ok, qPrintable(result.error)); QCOMPARE(hits, proxyRequests);
         QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), QByteArray(4 * 1024 * 1024, 'p'));
@@ -681,7 +703,7 @@ private slots:
         PayloadHttpFixture fixture(QByteArray("CrAU") + network<quint64>(2) + network<quint64>(manifest.size()) + network<quint32>(0) + manifest + data);
         fixture.delayedFrom = 24 + manifest.size(); fixture.releaseAt = connections;
         PayloadOptions options; options.downloadConnections = connections;
-        auto task = std::async(std::launch::async, [&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 4, {}, {}, options); });
+        auto task = qtAsync([&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 4, {}, {}, options); });
         QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000);
         const auto result = task.get(); QCOMPARE(result.ok, !corrupt); QCOMPARE(fixture.peak, connections); QCOMPARE(fixture.requests, connections == 1 ? 8 : 19);
         if (corrupt) { QVERIFY(result.error.contains(QStringLiteral("SHA256"))); QVERIFY(!QFileInfo::exists(root.filePath(QStringLiteral("system.img")))); }
@@ -722,7 +744,7 @@ private slots:
             }
         });
         std::atomic_bool writing{false}, release{false}; PayloadOptions options; options.downloadConnections = 1;
-        auto task = std::async(std::launch::async, [&] {
+        auto task = qtAsync([&] {
             return extractPayload(QStringLiteral("http://127.0.0.1:%1/payload").arg(server.serverPort()), {QStringLiteral("system")}, root.path(), 1, {},
                 [&](qint64, qint64, const QString &stage) {
                     if (!stage.startsWith(QStringLiteral("提取分区")) || writing.exchange(true)) return;
@@ -754,7 +776,7 @@ private slots:
         fixture.silentFrom = 24 + manifest.size() + block;
         auto cancel = std::make_shared<std::atomic_bool>(false); std::atomic_bool writing{false}, release{false};
         PayloadOptions options; options.downloadConnections = 1; options.requestTimeoutMs = 20000;
-        auto task = std::async(std::launch::async, [&] {
+        auto task = qtAsync([&] {
             return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 1, cancel,
                 [&](qint64, qint64, const QString &stage) {
                     if (!stage.startsWith(QStringLiteral("提取分区")) || writing.exchange(true)) return;
@@ -782,7 +804,7 @@ private slots:
                 header += "ETag: \"fixture\"\r\nContent-Length: " + QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n"; client->write(header + body); client->disconnectFromHost();
             }); connect(client, &QTcpSocket::disconnected, client, &QObject::deleteLater);
         });
-        const QString url = QStringLiteral("http://127.0.0.1:%1/payload.bin").arg(server.serverPort()); auto task = std::async(std::launch::async, [&] { return extractPayload(url, {QStringLiteral("system")}, root.path()); });
+        const QString url = QStringLiteral("http://127.0.0.1:%1/payload.bin").arg(server.serverPort()); auto task = qtAsync([&] { return extractPayload(url, {QStringLiteral("system")}, root.path()); });
         QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 10000); const Result result = task.get(); QCOMPARE(result.ok, valid); if (valid) QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), QByteArray(4096, 'r')); else QVERIFY(!QFileInfo::exists(root.filePath(QStringLiteral("system.img"))));
     }
     void payloadCancellationLeavesNoOutput() { QTemporaryDir root; const QString source = root.filePath(QStringLiteral("payload.bin")); QVERIFY(writeFile(source, encodePayload(QByteArray(4096, 'a')))); QVERIFY(!extractPayload(source, {QStringLiteral("system")}, root.path(), 4, std::make_shared<std::atomic_bool>(true)).ok); QVERIFY(!QFileInfo::exists(root.filePath(QStringLiteral("system.img")))); }
@@ -989,23 +1011,23 @@ private slots:
     }
     void hfxLoopbackHandshakeAndListing() {
         HfxSession session; HfxOptions options; options.port = 0; options.interfaces = {{QStringLiteral("loopback"), QHostAddress::LocalHost}}; auto cancel = std::make_shared<std::atomic_bool>(false); std::promise<quint16> listening; auto port = listening.get_future();
-        auto task = std::async(std::launch::async, [&] { return session.connect(options, cancel, [&](quint16 value) { listening.set_value(value); }); });
+        auto task = qtAsync([&] { return session.connect(options, cancel, [&](quint16 value) { listening.set_value(value); }); });
         QVERIFY(port.wait_for(std::chrono::seconds(3)) == std::future_status::ready); QTcpSocket control; control.connectToHost(QHostAddress::LocalHost, port.get()); QVERIFY(control.waitForConnected(3000));
         auto read = [&](qsizetype count) { QByteArray bytes; while (bytes.size() < count) { if (!control.bytesAvailable() && !control.waitForReadyRead(3000)) break; bytes += control.read(count - bytes.size()); } return bytes; };
         control.write(QByteArray("HFXC") + network<qint32>(300)); control.waitForBytesWritten(3000); QCOMPARE(read(1), QByteArray(1, char(1))); QCOMPARE(read(4), network<qint32>(1)); const QByteArray length = read(2); QCOMPARE(length.size(), 2); read(qFromBigEndian<quint16>(length.constData())); QCOMPARE(read(1), QByteArray(1, char(4))); read(4); QCOMPARE(read(1), QByteArray(1, '\0'));
         control.write(QByteArray(1, char(1)) + utf(QStringLiteral("loopback"))); control.waitForBytesWritten(3000); QTcpSocket channel; channel.connectToHost(QHostAddress::LocalHost, control.peerPort()); QVERIFY(channel.waitForConnected(3000)); QCOMPARE(read(1), QByteArray(1, char(1))); QCOMPARE(read(4), network<qint32>(64)); control.write(QByteArray(1, char(1))); control.waitForBytesWritten(3000); QCOMPARE(read(1), QByteArray(1, char(1))); control.write(network<qint32>(0) + utf(QStringLiteral("/sdcard"))); control.waitForBytesWritten(3000);
         QVERIFY(task.wait_for(std::chrono::seconds(3)) == std::future_status::ready); const Result connected = task.get(); QVERIFY2(connected.ok, qPrintable(connected.error)); QVERIFY(session.connected()); QCOMPARE(session.home(), QStringLiteral("/sdcard"));
-        auto listing = std::async(std::launch::async, [&] { return session.list(QStringLiteral("/sdcard"), cancel); }); QCOMPARE(read(2), network<qint16>(1)); const QByteArray pathLength = read(2); read(qFromBigEndian<quint16>(pathLength.constData())); control.write(network<qint32>(1) + utf(QStringLiteral("file.txt")) + utf(QStringLiteral("/sdcard/file.txt")) + network<qint64>(0) + network<qint64>(3) + QByteArray(1, '\0')); control.waitForBytesWritten(3000);
+        auto listing = qtAsync([&] { return session.list(QStringLiteral("/sdcard"), cancel); }); QCOMPARE(read(2), network<qint16>(1)); const QByteArray pathLength = read(2); read(qFromBigEndian<quint16>(pathLength.constData())); control.write(network<qint32>(1) + utf(QStringLiteral("file.txt")) + utf(QStringLiteral("/sdcard/file.txt")) + network<qint64>(0) + network<qint64>(3) + QByteArray(1, '\0')); control.waitForBytesWritten(3000);
         QVERIFY(listing.wait_for(std::chrono::seconds(3)) == std::future_status::ready); const Listing result = listing.get(); QVERIFY(result.error.isEmpty()); QCOMPARE(result.entries.size(), 1); QCOMPARE(result.entries.first().name, QStringLiteral("file.txt"));
         QVERIFY(!session.remove(QStringLiteral("/sdcard/..")).ok); QVERIFY(!session.remove(QStringLiteral("/storage/emulated/0/")).ok); QVERIFY(session.connected());
         auto readText = [&] { const QByteArray count = read(2); return count.size() == 2 ? QString::fromUtf8(read(qFromBigEndian<quint16>(count.constData()))) : QString(); };
         auto readChannel = [&](qsizetype count) { QByteArray bytes; while (bytes.size() < count) { if (!channel.bytesAvailable() && !channel.waitForReadyRead(3000)) break; bytes += channel.read(count - bytes.size()); } return bytes; };
         QTemporaryDir files; const QString source = files.filePath(QStringLiteral("push.bin")); const QByteArray contents(300000, 's'); QVERIFY(writeFile(source, contents));
-        auto push = std::async(std::launch::async, [&] { return session.push({source}, QStringLiteral("/sdcard"), cancel); });
+        auto push = qtAsync([&] { return session.push({source}, QStringLiteral("/sdcard"), cancel); });
         QCOMPARE(read(2), network<qint16>(1)); QCOMPARE(readText(), QStringLiteral("/sdcard")); control.write(network<qint32>(0)); control.waitForBytesWritten(3000);
         QCOMPARE(read(2), network<qint16>(10)); QCOMPARE(readChannel(2), network<qint16>(0)); QCOMPARE(readChannel(4), network<qint32>(0)); const QByteArray nameLength = readChannel(2); QCOMPARE(nameLength.size(), 2); QCOMPARE(QString::fromUtf8(readChannel(qFromBigEndian<quint16>(nameLength.constData()))), QStringLiteral("/sdcard/push.bin")); readChannel(8); QCOMPARE(readChannel(8), network<qint64>(contents.size())); QCOMPARE(readChannel(4), network<qint32>(0)); QCOMPARE(readChannel(4), network<qint32>(contents.size())); QCOMPARE(readChannel(contents.size()), contents); QCOMPARE(readChannel(2), network<qint16>(3)); control.write(QByteArray(1, char(1))); control.waitForBytesWritten(3000); QCOMPARE(read(1), QByteArray(1, char(1)));
         QVERIFY(push.wait_for(std::chrono::seconds(3)) == std::future_status::ready); const Result pushed = push.get(); QVERIFY2(pushed.ok, qPrintable(pushed.error));
-        auto pull = std::async(std::launch::async, [&] { return session.pull({QStringLiteral("/sdcard/pulled.bin")}, QStringLiteral("/sdcard"), files.path(), cancel); });
+        auto pull = qtAsync([&] { return session.pull({QStringLiteral("/sdcard/pulled.bin")}, QStringLiteral("/sdcard"), files.path(), cancel); });
         QCOMPARE(read(2), network<qint16>(11)); QCOMPARE(read(4), network<qint32>(1)); QCOMPARE(readText(), QStringLiteral("/sdcard/pulled.bin")); const QString destination = readText() + QStringLiteral("pulled.bin"); QCOMPARE(read(4), network<qint32>(1)); QCOMPARE(readText(), QStringLiteral("/sdcard/"));
         const QByteArray pulledContents(1024 * 1024 + 123, 'r');
         for (int block : {1, 0}) { const QByteArray data = pulledContents.mid(block * 1024 * 1024, 1024 * 1024); channel.write(network<qint16>(0) + network<qint32>(0) + utf(destination) + network<qint64>(1200) + network<qint64>(pulledContents.size()) + network<qint32>(block) + network<qint32>(data.size()) + data); while (channel.bytesToWrite()) QVERIFY(channel.waitForBytesWritten(3000)); }

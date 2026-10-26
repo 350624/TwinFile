@@ -1,12 +1,14 @@
 # 验证范围与复现
 
-## 3.1.22 Payload 下载停滞（2026-10-26）
+## 3.1.22 Payload 下载停滞与线程退出（2026-10-27）
 
 本地 Range 服务将首块只发送一半后保持连接沉默：检查其他连接持续领取后续块，停滞连接在常规 20 秒超时前恢复，最终输出与原数据一致。分别检查稳定标识下从已收偏移补读、无稳定标识下重新读取；活动请求始终不超过设置上限。
 
 使用连续、逆序及带间隙的操作数据，阻塞首次输出并确认下一窗口请求已到达服务端，检查复用连接及最终文件内容；预读连接沉默时分别触发取消和 SHA256 失败，检查及时退出且不发布残缺文件。网络速度测试在解压计数变化时保持独立采样，停收数据后速度归零，新任务重置计数。代理夹具收到完整对照 HTTP 请求后再拒绝，避免对照连接重试与提取阶段交错。
 
-专项 **27 passed / 0 failed / 0 skipped**，日志为 `build/payload-3.1.22-focused.txt`。完整六组回归、Windows UI、便携启动和安装包由 `publish.ps1` 执行，以实际日志为准。不执行安装器，未下载用户完整外部 OTA，尚未复现截图所述的界面变黑，不把本地回归等同于公网速度保证。
+Windows 应用日志中的 TwinFile 3.1.21 存在 Qt6Core.dll 6.10.3、异常 0xc0000005、偏移 0x0025635c 的崩溃。修复前迁移测试在 GDB 下复现 Qt 工作线程退出期间的内存访问错误，寄存器包含已释放堆内存标记；日志为 `build/payload-gdb-before-worker.txt`。将分区和常驻预读线程改为 Qt 管理并等待完整退出，测试夹具也使用 Qt 线程，避免测试本身引入同类退出故障。继续完整回归时又在 HFX 线程退出处复现 Qt6Core 相同故障偏移，因此一并将 HFX 传输线程改为 Qt 管理并等待清理。尚无用户当次进程转储，不能将日志中的故障与截图变黑作唯一对应。
+
+调度与速度专项 **27 passed / 0 failed / 0 skipped**，日志为 `build/payload-3.1.22-focused.txt`。线程修复后 GDB 专项 **21 passed / 0 failed / 0 skipped**、进程正常退出，覆盖 1/16/512 连接、压缩操作、静默连接恢复、连续/逆序/间隙预读、取消、校验失败及多分区并发；日志为 `build/payload-gdb-after-worker.txt` 和 `build/payload-gdb-after-worker-tests.txt`。HFX 修复后 GDB 完整迁移回归 **116 passed / 0 failed / 0 skipped**、进程正常退出，日志为 `build/payload-gdb-full-after-worker.txt` 和 `build/payload-gdb-full-after-worker-tests.txt`。完整六组回归、Windows UI、便携启动和安装包由 `publish.ps1` 执行，以实际日志为准。不执行安装器，未下载用户完整外部 OTA，不把本地回归等同于公网速度保证。
 
 ## 3.1.21 分区全选与直连（2026-10-26）
 
