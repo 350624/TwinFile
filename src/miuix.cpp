@@ -95,8 +95,8 @@ void Window::applyMiuixChrome(bool enabled) {
         header->layout()->setContentsMargins(20, 14, 2, 14);
         findChild<QLabel *>(QStringLiteral("workspaceHeading"))->show();
         findChild<QLabel *>(QStringLiteral("workspaceDetail"))->show();
-        // Restore the native splitter width used by the non-Miuix themes.
-        findChild<QSplitter *>(QStringLiteral("fileSplitter"))->setHandleWidth(12);
+        // Restore the native splitter width used by the active non-Miuix theme.
+        findChild<QSplitter *>(QStringLiteral("fileSplitter"))->setHandleWidth(mt ? 3 : 12);
         centralWidget()->layout()->setContentsMargins(0, 0, 12, 0);
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(12);
