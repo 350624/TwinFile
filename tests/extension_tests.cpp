@@ -599,6 +599,54 @@ private slots:
         window.setReducedMotion(true); QVERIFY(!window.findChild<QWidget *>(QStringLiteral("uiSnapshotTransition"), Qt::FindDirectChildrenOnly));
         window.close();
     }
+    void roundedMenusKeepTransparentCorners_data() {
+        QTest::addColumn<QString>("mode"); QTest::addColumn<bool>("reduced");
+        for (const QString &mode : {QStringLiteral("light"), QStringLiteral("dark")})
+            for (bool reduced : {false, true})
+                QTest::newRow(qPrintable(mode + (reduced ? QStringLiteral("-reduced") : QStringLiteral("-animated")))) << mode << reduced;
+    }
+    void roundedMenusKeepTransparentCorners() {
+        QFETCH(QString, mode); QFETCH(bool, reduced);
+        Window window; window.setAttribute(Qt::WA_DontShowOnScreen);
+        window.setTheme(QStringLiteral("miuix")); window.setColorMode(mode); window.setReducedMotion(reduced);
+        window.show(); QTest::qWait(40);
+        QMenu menu(&window);
+        menu.addAction(QStringLiteral("Download"));
+        auto *submenu = menu.addMenu(QStringLiteral("Settings")); submenu->addAction(QStringLiteral("Appearance"));
+        menu.addSeparator(); menu.addAction(QStringLiteral("Refresh"));
+        const auto transparentCorners = [](QWidget *popup) {
+            const QImage image = popup->grab().toImage();
+            if (image.isNull()) return false;
+            return image.pixelColor(0, 0).alpha() == 0 && image.pixelColor(image.width() - 1, 0).alpha() == 0
+                && image.pixelColor(0, image.height() - 1).alpha() == 0
+                && image.pixelColor(image.width() - 1, image.height() - 1).alpha() == 0
+                && image.pixelColor(image.width() / 2, image.height() / 2).alpha() > 240;
+        };
+        menu.popup(window.mapToGlobal(QPoint(300, 200)));
+        QVERIFY(transparentCorners(&menu));
+        if (!reduced) {
+            auto *motion = menu.findChild<QVariantAnimation *>(QStringLiteral("uiPopupAnimation")); QVERIFY(motion);
+            QTRY_COMPARE(motion->state(), QAbstractAnimation::Stopped);
+        }
+        const QString evidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT");
+        if (!evidence.isEmpty()) QVERIFY(menu.grab().save(QDir(evidence).filePath(QStringLiteral("native-rounded-menu-%1-%2.png").arg(mode, reduced ? QStringLiteral("reduced") : QStringLiteral("animated")))));
+        menu.setActiveAction(submenu->menuAction()); QTest::keyClick(&menu, Qt::Key_Right);
+        QTRY_VERIFY(submenu->isVisible()); QVERIFY(transparentCorners(submenu));
+        submenu->hide(); static_cast<UiMotion *>(window.findChild<QObject *>(QStringLiteral("uiMotion")))->settle();
+        menu.hide();
+        if (!reduced) {
+            auto *ghost = window.findChild<QWidget *>(QStringLiteral("uiSnapshotTransition"), Qt::FindDirectChildrenOnly);
+            QVERIFY(ghost); QVERIFY(transparentCorners(ghost));
+        }
+        window.setReducedMotion(true);
+        menu.addAction(QStringLiteral("Another action after resize")); menu.popup(window.mapToGlobal(QPoint(300, 200)));
+        QVERIFY(transparentCorners(&menu));
+        menu.hide();
+        window.setTheme(QStringLiteral("twinfile")); menu.popup(window.mapToGlobal(QPoint(300, 200)));
+        // Reusing a menu after switching themes must restore that theme's square surface.
+        QVERIFY(menu.grab().toImage().pixelColor(0, 0).alpha() > 0);
+        menu.hide(); window.close();
+    }
     void paneAddressNavigation() {
         QTemporaryDir root; QVERIFY(root.isValid());
         const QString folder = root.filePath(QStringLiteral("nested"));

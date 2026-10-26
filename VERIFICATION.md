@@ -1,5 +1,11 @@
 # 验证范围与复现
 
+## 3.1.19 菜单透明圆角（2026-10-26）
+
+新增 `roundedMenusKeepTransparentCorners`，覆盖 miuix 亮色/深色与动画启用/减少动画四种组合。检查原生菜单四角透明、中央不透明、键盘打开的子菜单、淡出快照、内容增加后的重新打开，以及切回 TwinFile 后恢复方形菜单。Windows UI 脚本的 miuix 分组同时运行此项，截图为 `verification/native-rounded-menu-模式-动画.png`。
+
+修复前四种组合均在菜单四角透明断言失败；修复后与原弹窗动画专项合计 **7 passed / 0 failed / 0 skipped**，日志为 `build/rounded-menu-after.txt`，已复核亮暗菜单截图。全量回归、Windows UI、便携启动与打包由 `publish.ps1` 执行，以实际日志为准；安装器不执行。
+
 ## 3.1.18 通用界面动效（2026-10-26）
 
 新增 `commonUiTransitions` 六主题各亮暗测试：侧栏精确目录选择、中间位置和中途反向、减少动画立即停稳、文件标签滑动、主题切换、助手连续开关及缩放清理。`commonPopupAndPageMotion` 检查助手页面切换、Qt 对话框/菜单淡入淡出、退出快照不接受输入及释放、减少动画中断。保留 Miuix 分段开关与 MT 抽屉/底部面板既有测试，并纳入 Windows UI 独立分组。

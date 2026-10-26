@@ -230,6 +230,11 @@ bool UiMotion::eventFilter(QObject *object, QEvent *event) {
     if (widget == owner_ && event->type() == QEvent::Hide) { settle(); return false; }
     if (widget == owner_ && event->type() == QEvent::Show) QTimer::singleShot(0, this, &UiMotion::updateNavigation);
     const auto type = event->type();
+    if (type == QEvent::Polish && qobject_cast<QMenu *>(widget)) {
+        // Configure the native surface before creation; QSS rounds only the painted background.
+        widget->setWindowFlags(widget->windowFlags() | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint);
+        widget->setAttribute(Qt::WA_TranslucentBackground);
+    }
     if (type == QEvent::MouseButtonPress || type == QEvent::KeyPress || type == QEvent::Wheel) {
         for (auto *parent = widget; parent; parent = parent->parentWidget()) {
             discardSnapshots(parent);
