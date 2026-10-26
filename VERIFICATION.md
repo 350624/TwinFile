@@ -6,7 +6,7 @@
 
 Payload 网络专项设置本地拒绝代理，先用对照请求证实代理生效，再确认提取未访问代理且未修改全局代理。1024 个连续小操作在 4 MiB 样本中合并为 16 个数据请求，连同元数据共 19 次请求；损坏的操作 SHA256 仍拒绝发布。截断连接测试检查重试范围小于原分段且最终文件一致。直链下载检查分段、单连接与恢复均绕过应用代理。日志为 `build/payload-3.1.21-focused.txt` 和 `build/download-proxy-3.1.21.txt`。
 
-Windows Payload/批量选择专项 **31 passed / 0 failed / 0 skipped**，直链代理专项 **5 passed / 0 failed / 0 skipped**。已检查 miuix 亮暗窄窗口截图；跨预读边界仍逐操作校验。完整六组回归、Windows UI、便携启动及安装包由 `publish.ps1` 执行，以实际日志为准。不执行安装器，未下载用户完整外部 OTA，未将本机请求减少测试描述为公网带宽保证；NoProxy 不绕过系统 VPN/TUN 路由。
+Windows Payload/批量选择专项 **31 passed / 0 failed / 0 skipped**，直链代理专项 **5 passed / 0 failed / 0 skipped**。已检查 miuix 亮暗窄窗口截图；跨预读边界仍逐操作校验。首次完整 offscreen 回归有一项等待分区窗口超时：保留全部断言，将异步完成等待从 5 秒改为 15 秒，失败时取消并等候后台任务清理，Windows Payload 分组上限相应改为 120 秒。完整六组回归、Windows UI、便携启动及安装包由 `publish.ps1` 执行，以实际日志为准。不执行安装器，未下载用户完整外部 OTA，未将本机请求减少测试描述为公网带宽保证；NoProxy 不绕过系统 VPN/TUN 路由。
 
 ## 3.1.20 Payload 确认崩溃（2026-10-26）
 

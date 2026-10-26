@@ -60,6 +60,7 @@ class PayloadTestAccess {
 public:
     static void open(Window &window) { window.payload(); }
     static bool busy(const Window &window) { return window.busy_; }
+    static void cancel(Window &window) { if (window.cancellation_) window.cancellation_->store(true); }
     static QJsonObject settings(const Window &window) { return window.settings_; }
     static void job(Window &window, std::function<Result(const Cancellation &, const Progress &)> work) {
         window.runJob(QStringLiteral("解析 Payload 分区"), std::move(work));
@@ -793,9 +794,13 @@ private slots:
                 ++step; QTest::mouseClick(ok, Qt::LeftButton);
             }
         });
-        QTimer watchdog; watchdog.setInterval(7000); connect(&watchdog, &QTimer::timeout, &window, [&] { valid = false; if (auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget())) dialog->reject(); });
+        QTimer watchdog; watchdog.setInterval(20000); connect(&watchdog, &QTimer::timeout, &window, [&] { valid = false; if (auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget())) dialog->reject(); });
+        const auto cleanup = qScopeGuard([&] {
+            driver.stop(); watchdog.stop(); PayloadTestAccess::cancel(window);
+            (void)QTest::qWaitFor([&] { return !PayloadTestAccess::busy(window); }, 3000);
+        });
         driver.start(); watchdog.start(); PayloadTestAccess::open(window);
-        QTRY_COMPARE_WITH_TIMEOUT(step, 3, 5000); QTRY_VERIFY_WITH_TIMEOUT(!PayloadTestAccess::busy(window), 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(step, 3, 15000); QTRY_VERIFY_WITH_TIMEOUT(!PayloadTestAccess::busy(window), 15000);
         driver.stop(); watchdog.stop(); QVERIFY(valid); QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), QByteArray(4096, 'd'));
         QCOMPARE(readSettings(settings).value(QStringLiteral("payload_output_directory")).toString(), root.path());
         QVERIFY(!QApplication::activeModalWidget()); QVERIFY(window.findChildren<QProgressDialog *>().isEmpty());

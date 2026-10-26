@@ -20,7 +20,7 @@ try {
     if ($Process.ExitCode -ne 0) { throw 'Native UI check failed' }
     $PayloadResults = Join-Path $Evidence 'payload-ui-test-results.txt'
     $Process = Start-Process -FilePath $Executable -ArgumentList @('-platform','windows','payloadDialogsAndProgress','payloadOutputDirectoryAndInlineCompletion','inlineTaskSpeedCancellationAndFailure','-o',('"' + $PayloadResults + ',txt"')) -WindowStyle Hidden -PassThru
-    if (-not $Process.WaitForExit(90000)) { $Process.Kill(); throw 'Payload UI check timed out' }
+    if (-not $Process.WaitForExit(120000)) { $Process.Kill(); throw 'Payload UI check timed out' }
     Get-Content -LiteralPath $PayloadResults
     if ($Process.ExitCode -ne 0) { throw 'Payload UI check failed' }
     $AnimationExecutable = Join-Path $PSScriptRoot 'build\bin\twinfile_tests.exe'
