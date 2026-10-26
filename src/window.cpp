@@ -143,7 +143,11 @@ protected:
 Window::Window(QWidget *parent, const QUrl &updateTestEndpoint) : QMainWindow(parent) {
     settings_ = readSettings(settingsPath());
     normalizeAppearance(settings_);
-    setWindowTitle(QStringLiteral("TwinFile")); setWindowIcon(QIcon(QStringLiteral(":/app.ico"))); resize(1520, 900); setMinimumSize(1100, 650);
+    setWindowTitle(QStringLiteral("TwinFile"));
+    QIcon applicationIcon(QStringLiteral(":/app.ico"));
+    if (applicationIcon.isNull()) applicationIcon.addFile(QStringLiteral(":/app.png"));
+    setWindowIcon(applicationIcon);
+    resize(1520, 900); setMinimumSize(1100, 650);
     auto *central = new QWidget; central->setObjectName(QStringLiteral("workspace")); setCentralWidget(central); central->installEventFilter(this);
     auto *root = new QVBoxLayout(central); root->setContentsMargins(0, 0, 12, 0); root->setSpacing(0);
     auto *heading = new QWidget; heading->setObjectName(QStringLiteral("workspaceHeader"));

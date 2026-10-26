@@ -577,8 +577,11 @@ Result createArchive(const QStringList &paths, const QString &destination, const
         for (const QString &other : paths) if (normalizedPath(other).startsWith(key + QChar('/'))) return failure(QStringLiteral("不能同时压缩父目录与其子项"));
         if (QFileInfo(path).isDir() && destinationKey.startsWith(key + QChar('/'))) return failure(QStringLiteral("不能将压缩包输出到来源文件夹内部"));
     }
-    QTemporaryFile output(QDir(destinationParent).filePath(QStringLiteral(".twinfile-XXXXXX.tmp")));
-    if (!output.open()) return failure(output.errorString());
+    // QTemporaryFile cannot be created reliably when the final path traverses
+    // a Windows junction. Stage in the system temp directory, then copy
+    // through the lexical destination path after the archive is complete.
+    QTemporaryFile output(QDir(QDir::tempPath()).filePath(QStringLiteral(".twinfile-XXXXXX.tmp")));
+    if (!output.open()) return failure(QStringLiteral("无法创建临时压缩包：") + output.errorString());
     ZipWriter writer(&output);
     QStringList files;
     QSet<QString> names;
@@ -610,8 +613,18 @@ Result createArchive(const QStringList &paths, const QString &destination, const
     }
     writer.close();
     if (writer.status() != ZipWriter::NoError) return failure(QStringLiteral("压缩包保存失败"));
-    if (!output.rename(destination)) return failure(QStringLiteral("保存失败或目标已存在"));
-    output.setAutoRemove(false);
+    const QString temporaryPath = output.fileName();
+    output.close();
+    bool copied = false;
+#ifdef Q_OS_WIN
+    const QString nativeTemporaryPath = QDir::toNativeSeparators(temporaryPath);
+    const QString nativeDestination = QDir::toNativeSeparators(destination);
+    copied = CopyFileW(reinterpret_cast<LPCWSTR>(nativeTemporaryPath.utf16()),
+                       reinterpret_cast<LPCWSTR>(nativeDestination.utf16()), FALSE) != FALSE;
+#else
+    copied = QFile::copy(temporaryPath, destination);
+#endif
+    if (!copied) return failure(QStringLiteral("保存失败或目标已存在：") + destination);
     return {true, {}, {}, {destination}};
 }
 
