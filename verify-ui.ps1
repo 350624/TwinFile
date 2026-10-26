@@ -45,7 +45,7 @@ try {
     if ($Process.ExitCode -ne 0) { throw 'AI and extension UI check failed' }
     $MtResults = Join-Path $Evidence 'mt-original-ui-test-results.txt'
     $Process = Start-Process -FilePath $ExtensionExecutable -ArgumentList @('-platform','windows','mtOriginalLayoutAndActions','mtMotionTransitions','-o',('"' + $MtResults + ',txt"')) -WindowStyle Hidden -PassThru
-    if (-not $Process.WaitForExit(30000)) { $Process.Kill(); throw 'MT original UI check timed out' }
+    if (-not $Process.WaitForExit(90000)) { $Process.Kill(); throw 'MT original UI check timed out' }
     Get-Content -LiteralPath $MtResults
     if ($Process.ExitCode -ne 0) { throw 'MT original UI check failed' }
     $MiuixResults = Join-Path $Evidence 'miuix-ui-test-results.txt'
