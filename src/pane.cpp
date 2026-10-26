@@ -282,8 +282,9 @@ void Pane::setMiuixStyle(bool enabled) {
     } else {
         layout()->setContentsMargins(10, 10, 10, 0);
         layout()->setSpacing(6);
-        findChild<QWidget *>(QStringLiteral("paneColumns"))->show();
-        blank_->show();
+        const bool mt = property("mtStyle").toBool();
+        findChild<QWidget *>(QStringLiteral("paneColumns"))->setVisible(!mt);
+        blank_->setVisible(!mt);
     }
     updateMiuixHeading();
     view_->doItemsLayout(); view_->viewport()->update();
