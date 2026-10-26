@@ -16,10 +16,10 @@ namespace {
 class PaneSwitch : public QWidget {
 public:
     explicit PaneSwitch(QWidget *parent) : QWidget(parent) {
-        setObjectName(QStringLiteral("miuixPaneSwitch")); setFixedSize(148, 36);
+        setObjectName(QStringLiteral("miuixPaneSwitch")); setFixedSize(164, 38);
         motion_.setObjectName(QStringLiteral("miuixPaneAnimation"));
         motion_.setDuration(210); motion_.setEasingCurve(QEasingCurve::OutCubic);
-        auto *row = new QHBoxLayout(this); row->setContentsMargins(3, 3, 3, 3); row->setSpacing(0);
+        auto *row = new QHBoxLayout(this); row->setContentsMargins(4, 4, 4, 4); row->setSpacing(0);
         for (int index = 0; index < 2; ++index) {
             auto *button = new QToolButton(this); button->setText(index ? QStringLiteral("右栏") : QStringLiteral("左栏"));
             button->setObjectName(index ? QStringLiteral("miuixRightPane") : QStringLiteral("miuixLeftPane"));
@@ -46,9 +46,9 @@ public:
 protected:
     void paintEvent(QPaintEvent *) override {
         QPainter painter(this); painter.setRenderHint(QPainter::Antialiasing); painter.setPen(Qt::NoPen);
-        painter.setBrush(palette().mid()); painter.drawRoundedRect(rect(), 8, 8);
-        const qreal segment = (width() - 6.0) / 2;
-        painter.setBrush(palette().base()); painter.drawRoundedRect(QRectF(3 + segment * position_, 3, segment, height() - 6), 6, 6);
+        painter.setBrush(palette().alternateBase()); painter.drawRoundedRect(rect(), 19, 19);
+        const qreal segment = (width() - 8.0) / 2;
+        painter.setBrush(palette().base()); painter.drawRoundedRect(QRectF(4 + segment * position_, 4, segment, height() - 8), 15, 15);
     }
 private:
     QVariantAnimation motion_{this};
@@ -84,12 +84,21 @@ void Window::applyMiuixChrome(bool enabled) {
     auto *toolbar = findChild<QWidget *>(QStringLiteral("workspaceToolbar"));
     layout->removeWidget(toolbar); layout->insertWidget(enabled ? layout->count() : 0, toolbar);
     if (enabled) {
-        header->layout()->setContentsMargins(22, 17, 10, 17);
+        header->layout()->setContentsMargins(24, 18, 18, 16);
         findChild<QLabel *>(QStringLiteral("workspaceHeading"))->hide();
         findChild<QLabel *>(QStringLiteral("workspaceDetail"))->hide();
-        findChild<QSplitter *>(QStringLiteral("fileSplitter"))->setHandleWidth(10);
-        centralWidget()->layout()->setContentsMargins(0, 0, 10, 0);
-        layout->setSpacing(10);
+        findChild<QSplitter *>(QStringLiteral("fileSplitter"))->setHandleWidth(14);
+        centralWidget()->layout()->setContentsMargins(0, 0, 16, 0);
+        layout->setContentsMargins(8, 0, 8, 10);
+        layout->setSpacing(14);
+    } else {
+        header->layout()->setContentsMargins(20, 14, 2, 14);
+        findChild<QLabel *>(QStringLiteral("workspaceHeading"))->show();
+        findChild<QLabel *>(QStringLiteral("workspaceDetail"))->show();
+        findChild<QSplitter *>(QStringLiteral("fileSplitter"))->setHandleWidth(6);
+        centralWidget()->layout()->setContentsMargins(0, 0, 12, 0);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(12);
     }
     updateMiuixContext(); adaptMiuixChrome(); adaptToolbar();
 }

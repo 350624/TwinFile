@@ -10,9 +10,9 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "TwinFile\0"
             VALUE "FileDescription", "TwinFile Native C++\0"
-            VALUE "FileVersion", "3.1.16.0\0"
+            VALUE "FileVersion", "3.1.17.0\0"
             VALUE "ProductName", "TwinFile\0"
-            VALUE "ProductVersion", "3.1.16.0\0"
+            VALUE "ProductVersion", "3.1.17.0\0"
         END
     END
     BLOCK "VarFileInfo"

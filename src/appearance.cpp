@@ -129,14 +129,14 @@ void normalizeAppearance(QJsonObject &settings) {
 
 QPalette appearancePalette(const QString &theme, bool dark, const QString &accent) {
     static const QMap<QString, QStringList> lightColors{
-        {QStringLiteral("miuix"), {QStringLiteral("#f6f6f6"), QStringLiteral("#ffffff"), QStringLiteral("#eaf1ff"), QStringLiteral("#191919"), QStringLiteral("#e4e4e4"), QStringLiteral("#707070")}},
+        {QStringLiteral("miuix"), {QStringLiteral("#f7f7f7"), QStringLiteral("#ffffff"), QStringLiteral("#e7f0ff"), QStringLiteral("#1a1a1a"), QStringLiteral("#dedede"), QStringLiteral("#767676")}},
         {QStringLiteral("twinfile"), {QStringLiteral("#f3f4f7"), QStringLiteral("#ffffff"), QStringLiteral("#edf0f6"), QStringLiteral("#252936"), QStringLiteral("#e2e5ec"), QStringLiteral("#697386")}},
         {QStringLiteral("mt"), {QStringLiteral("#eeeeee"), QStringLiteral("#fafafa"), QStringLiteral("#e5e5e5"), QStringLiteral("#242424"), QStringLiteral("#cccccc"), QStringLiteral("#626262")}},
         {QStringLiteral("cream"), {QStringLiteral("#f3eee5"), QStringLiteral("#fffdf8"), QStringLiteral("#eee4d5"), QStringLiteral("#352e27"), QStringLiteral("#d7cbb9"), QStringLiteral("#74634f")}},
         {QStringLiteral("bataUI01"), {QStringLiteral("#e9eff7"), QStringLiteral("#fcfdff"), QStringLiteral("#e0e9f5"), QStringLiteral("#23344b"), QStringLiteral("#bfcee1"), QStringLiteral("#526985")}},
         {QStringLiteral("macos"), {QStringLiteral("#ececec"), QStringLiteral("#ffffff"), QStringLiteral("#e8edf4"), QStringLiteral("#242424"), QStringLiteral("#cdcdcf"), QStringLiteral("#636368")}}};
     static const QMap<QString, QStringList> darkColors{
-        {QStringLiteral("miuix"), {QStringLiteral("#090909"), QStringLiteral("#191919"), QStringLiteral("#252d40"), QStringLiteral("#f1f1f1"), QStringLiteral("#333333"), QStringLiteral("#aaaaaa")}},
+        {QStringLiteral("miuix"), {QStringLiteral("#181818"), QStringLiteral("#222222"), QStringLiteral("#29364d"), QStringLiteral("#f4f4f4"), QStringLiteral("#3b3b3b"), QStringLiteral("#b6b6b6")}},
         {QStringLiteral("twinfile"), {QStringLiteral("#17191f"), QStringLiteral("#20232b"), QStringLiteral("#2b303c"), QStringLiteral("#e9ecf4"), QStringLiteral("#333845"), QStringLiteral("#a0a8b8")}},
         {QStringLiteral("mt"), {QStringLiteral("#222222"), QStringLiteral("#2b2b2b"), QStringLiteral("#393939"), QStringLiteral("#efefef"), QStringLiteral("#505050"), QStringLiteral("#b0b0b0")}},
         {QStringLiteral("cream"), {QStringLiteral("#29251f"), QStringLiteral("#332e27"), QStringLiteral("#474035"), QStringLiteral("#f2e9db"), QStringLiteral("#5c5245"), QStringLiteral("#c4b59e")}},
@@ -409,50 +409,60 @@ QStatusBar { background: palette(base); }
         dark ? QStringLiteral("#202020") : QStringLiteral("#303030"));
     if (theme == QStringLiteral("miuix")) sheet += QStringLiteral(R"(
 QWidget { letter-spacing: 0; }
-QWidget#workspaceHeader { background: palette(window); }
-QLabel#miuixTitle { font-size: 26px; font-weight: 600; background: transparent; }
-QLabel#miuixLocation { color: %3; font-size: 12px; background: transparent; }
-QWidget#miuixPaneSwitch QToolButton { background: transparent; border: none; padding: 0; font-size: 12px; }
-QWidget#miuixPaneSwitch QToolButton:checked { background: transparent; color: %2; font-weight: 600; }
-QPushButton#workspaceSearch, QPushButton#appearanceButton { background: palette(base); border: none; border-radius: 8px; min-height: 34px; }
-QPushButton#workspaceSearch:hover, QPushButton#appearanceButton:hover { background: palette(alternate-base); }
+QWidget#workspaceHeader { background: palette(window); border: none; }
+QLabel#miuixTitle { font-size: 22px; font-weight: 600; background: transparent; }
+QLabel#miuixLocation { color: %3; font-size: 13px; background: transparent; }
+QWidget#miuixPaneSwitch { background: palette(alternate-base); border: none; border-radius: 18px; }
+QWidget#miuixPaneSwitch QToolButton { background: transparent; border: none; border-radius: 15px; padding: 0 14px; font-size: 12px; }
+QWidget#miuixPaneSwitch QToolButton:checked { background: palette(base); color: %2; font-weight: 600; }
+QPushButton#workspaceSearch { background: palette(base); border: 1px solid palette(mid); border-radius: 18px; min-height: 34px; padding: 0 14px; }
+QPushButton#workspaceSearch:hover { background: palette(alternate-base); border-color: %2; }
+QPushButton#appearanceButton { background: transparent; border: none; border-radius: 17px; min-height: 34px; }
+QPushButton#appearanceButton:hover { background: palette(alternate-base); }
 QWidget#navigationSidebar { background: palette(window); border: none; }
-QLabel#brandTitle { font-size: 16px; font-weight: 600; letter-spacing: 0; }
-QLabel#navigationSection { font-size: 11px; color: %3; padding-left: 10px; }
-QPushButton[navigationItem="true"] { border: none; border-radius: 8px; padding: 7px 10px; min-height: 25px; text-align: left; }
-QWidget#navigationSidebar QPushButton[navigationItem="true"]:checked, QWidget#navigationSidebar QPushButton[navigationItem="true"]:checked:hover { background: palette(alternate-base); color: %2; font-weight: 600; }
-QFrame#filePane, QFrame#filePane[active="true"] { border: 1px solid %1; border-radius: 8px; background: palette(base); }
-QFrame#filePane[active="true"] { border-color: %2; }
+QLabel#brandTitle { font-size: 17px; font-weight: 600; letter-spacing: 0; }
+QLabel#navigationSection { font-size: 11px; color: %3; padding: 12px 12px 5px; }
+QPushButton[navigationItem="true"] { border: none; border-radius: 16px; padding: 8px 12px; min-height: 28px; text-align: left; }
+QWidget#navigationSidebar QPushButton[navigationItem="true"]:hover { background: palette(alternate-base); }
+QWidget#navigationSidebar QPushButton[navigationItem="true"]:checked, QWidget#navigationSidebar QPushButton[navigationItem="true"]:checked:hover { background: %4; color: %2; font-weight: 600; }
+QFrame#filePane, QFrame#filePane[active="true"] { border: none; border-radius: 18px; background: palette(base); }
+QFrame#filePane[active="true"] { border: 1px solid %2; }
 QWidget#miuixPaneHeading { background: transparent; }
-QLabel#miuixFolderTitle { font-size: 18px; font-weight: 600; }
-QLabel#miuixFolderDetails { font-size: 11px; color: %3; }
-QLabel#paneIndicator { padding-left: 3px; }
-QTabBar#paneTabs::tab { padding: 4px 10px; margin: 0 2px; border-radius: 6px; font-size: 11px; min-width: 70px; }
-QTabBar#paneTabs::tab:selected { background: palette(alternate-base); color: %2; }
-QLineEdit#panePath { background: palette(window); border: 1px solid transparent; padding: 6px 8px; border-radius: 8px; }
+QLabel#miuixFolderTitle { font-size: 20px; font-weight: 600; }
+QLabel#miuixFolderDetails { font-size: 12px; color: %3; }
+QLabel#paneIndicator { color: %2; padding-left: 3px; }
+QTabBar#paneTabs { background: transparent; }
+QTabBar#paneTabs::tab { padding: 7px 14px; margin: 0 2px; border-radius: 14px; font-size: 12px; min-width: 70px; }
+QTabBar#paneTabs::tab:hover:!selected { background: palette(alternate-base); }
+QTabBar#paneTabs::tab:selected { background: %4; color: %2; font-weight: 600; }
+QLineEdit#panePath { background: palette(alternate-base); border: 1px solid transparent; padding: 8px 12px; border-radius: 16px; }
+QLineEdit#panePath:hover { background: palette(window); }
 QLineEdit#panePath:focus { border-color: %2; background: palette(base); }
-QLabel#paneFooter { padding: 5px 6px; border: none; font-size: 11px; }
-QWidget#workspaceToolbar { background: palette(base); border: none; border-top: 1px solid %1; border-radius: 0; }
-QWidget#workspaceToolbar QPushButton { border: none; border-radius: 8px; padding: 6px 8px; }
+QLabel#paneFooter { padding: 7px 8px; border: none; font-size: 11px; color: %3; }
+QWidget#workspaceToolbar { background: palette(alternate-base); border: none; border-radius: 20px; min-height: 50px; }
+QWidget#workspaceToolbar QPushButton { border: none; border-radius: 16px; padding: 7px 12px; }
+QWidget#workspaceToolbar QPushButton:hover { background: palette(base); }
 QWidget#workspaceToolbar QPushButton[primaryAction="true"] { background: %2; color: white; }
 QWidget#workspaceToolbar QPushButton[primaryAction="true"]:hover { background: %2; }
-QSplitter#fileSplitter::handle { background: palette(window); width: 10px; }
+QSplitter#fileSplitter::handle { background: transparent; width: 14px; }
 QWidget#extensionSidebar { background: palette(base); border-left: 1px solid %1; }
-QFrame#aiComposer { border-radius: 8px; }
+QFrame#aiComposer { border-radius: 18px; }
 QDialog { background: palette(window); }
-QDialog QPushButton, QDialog QToolButton { border: none; border-radius: 8px; padding: 8px 14px; background: palette(base); }
+QDialog QPushButton, QDialog QToolButton { border: none; border-radius: 16px; padding: 9px 16px; background: palette(base); }
+QDialog QPushButton:hover, QDialog QToolButton:hover { background: palette(alternate-base); }
 QDialog QPushButton:default, QDialog QPushButton:checked, QDialog QToolButton:checked { background: %2; color: white; }
-QDialog QLineEdit, QDialog QComboBox, QDialog QSpinBox, QDialog QDoubleSpinBox { border: 1px solid %1; border-radius: 8px; padding: 8px; background: palette(base); }
+QDialog QLineEdit, QDialog QComboBox, QDialog QSpinBox, QDialog QDoubleSpinBox { border: 1px solid palette(mid); border-radius: 16px; padding: 9px 12px; background: palette(base); }
 QDialog QLineEdit:focus, QDialog QComboBox:focus, QDialog QSpinBox:focus { border-color: %2; }
-QMenu { padding: 8px; border-radius: 8px; }
-QMenu::item { padding: 9px 30px; border-radius: 6px; }
+QMenu { padding: 8px; border: 1px solid palette(mid); border-radius: 18px; }
+QMenu::item { padding: 10px 30px; border-radius: 12px; }
 QMenu::item:selected { background: palette(alternate-base); color: palette(text); }
-QProgressBar { background: palette(window); border: none; border-radius: 4px; }
+QProgressBar { min-height: 8px; max-height: 8px; background: palette(window); border: none; border-radius: 4px; }
 QProgressBar::chunk { background: %2; border-radius: 4px; }
-QScrollBar:vertical { width: 8px; }
-QScrollBar:horizontal { height: 8px; }
-QStatusBar { background: palette(window); }
-)").arg(border, accent, muted);
+QScrollBar:vertical { width: 6px; background: transparent; }
+QScrollBar::handle:vertical { background: palette(mid); border-radius: 3px; min-height: 32px; }
+QScrollBar:horizontal { height: 6px; background: transparent; }
+QStatusBar { background: palette(window); color: %3; }
+)").arg(border, accent, muted, dark ? QStringLiteral("#34445f") : QStringLiteral("#e4efff"));
     return sheet;
 }
 

@@ -2,6 +2,14 @@
 
 每次发布在此记录用户可见变化、修复和已知限制，最新版本在前。版本号与 CMake / 安装器保持一致，不用同一个标签覆盖不同成品。
 
+## [3.1.17] - 2026-10-26
+
+### Miuix 视觉重构
+- 按官方 Miuix 组件语言重构主题层：TopAppBar、BreadcrumbBar、Surface/Card、TabRow、IconButton、FloatingToolbar、SearchBar 和 Overlay 映射到 Qt 原生窗口、Pane、路径、工具栏、菜单和任务进度。
+- 更新浅色/深色 surface 与 primary-container 色阶、圆角、选中容器、路径输入、底部浮动工具栏、菜单、进度条和滚动条；保留双栏文件管理、助手窄窗口和减少动画。
+- 修正从 miuix 切换回其他主题时标题、分栏、工具栏和 Pane 内边距未完全恢复的问题。
+- Miuix Compose 的 Android 专属渲染、系统动态取色、真实设备模糊与平滑圆角仍未覆盖；本项目继续使用 C++/Qt 原生实现。
+
 ## [3.1.16] - 2026-10-26
 
 ### 新增与调整

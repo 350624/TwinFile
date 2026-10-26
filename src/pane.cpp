@@ -275,9 +275,15 @@ void Pane::setMiuixStyle(bool enabled) {
     setProperty("miuixStyle", enabled);
     findChild<QWidget *>(QStringLiteral("miuixPaneHeading"))->setVisible(enabled);
     if (enabled) {
-        layout()->setContentsMargins(10, 8, 10, 0);
+        layout()->setContentsMargins(12, 10, 12, 0);
+        layout()->setSpacing(8);
         findChild<QWidget *>(QStringLiteral("paneColumns"))->hide();
         blank_->hide();
+    } else {
+        layout()->setContentsMargins(10, 10, 10, 0);
+        layout()->setSpacing(6);
+        findChild<QWidget *>(QStringLiteral("paneColumns"))->show();
+        blank_->show();
     }
     updateMiuixHeading();
     view_->doItemsLayout(); view_->viewport()->update();

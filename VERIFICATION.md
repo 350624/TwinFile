@@ -1,5 +1,11 @@
 # 验证范围与复现
 
+## 3.1.17 官方 Miuix 视觉重校准（2026-10-26）
+
+按官方 Miuix 组件目录重新组织 Qt 视觉层：TopAppBar、BreadcrumbBar、Surface/Card、TabRow、IconButton、FloatingToolbar、SearchBar 和 Overlay 分别映射到现有窗口、Pane、路径输入、工具栏、菜单和任务进度控件。色阶改为浅色/深色 surface 与 primary-container 分层，圆角、选中容器、浮动工具栏和底部进度区统一重做。
+
+保留双栏文件管理、路径输入、标签、助手窄窗口、明暗模式、减少动画及其他五套主题。Miuix Compose 官方库是 Compose Multiplatform；本项目是 C++/Qt，因此只复刻组件语言和交互层级，不引入 Android/Compose 运行库，也不宣称提供系统动态取色、模糊或 MIUI 系统渲染。
+
 ## 3.1.16 miuix 独立主题（2026-10-26）
 
 新增第六套主题 miuix，采用独立标题/活动栏分段、目录标题与数量、60 像素文件行、底部操作与含速度的任务进度。浅色/深色专项检查真实目录数量、选择计数、路径回车跳转、操作方向、分段动画中间帧/中途反向/减少动画立即结束、1100×650 助手与任务布局、切回 MT/TwinFile/macOS 后恢复及选择保留、设置重启恢复。截图为 `verification/native-miuix-{desktop|switch-moving|compact-assistant-progress|settings}-{light|dark}.png`。
