@@ -1,5 +1,5 @@
 #define MyAppName "TwinFile C++ 原生版"
-#define MyAppVersion "3.1.20"
+#define MyAppVersion "3.1.21"
 #ifndef MyDistDir
   #define MyDistDir AddBackslash(SourcePath) + "dist\TwinFile"
 #endif
@@ -16,7 +16,7 @@ DefaultDirName={autopf}\TwinFileCpp
 DefaultGroupName={#MyAppName}
 OutputDir=releases
 OutputBaseFilename=TwinFile-3.1-Cpp-Setup
-VersionInfoVersion=3.1.20.0
+VersionInfoVersion=3.1.21.0
 SetupIconFile=assets\app.ico
 UninstallDisplayIcon={app}\TwinFile.exe
 ArchitecturesAllowed=x64compatible

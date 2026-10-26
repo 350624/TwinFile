@@ -1,4 +1,4 @@
-# TwinFile 3.1.20 · C++ 原生版
+# TwinFile 3.1.21 · C++ 原生版
 
 **Windows 双栏文件管理器 · Android 工具箱 · 可选 AI / Agent · 原生插件扩展**
 
@@ -10,8 +10,8 @@ TwinFile 是面向 Windows 的双栏文件管理与 Android 工具箱。本版�
 
 ## 运行和安装
 
-- 面向 Windows x64。[下载 3.1.20 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.20/TwinFile-3.1.20-Windows-x64-Setup.exe)或[独立直链下载器](https://github.com/350624/TwinFile/releases/download/v3.1.20/TwinFile-Downloader-3.1.20-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
-- 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；独立下载器 `dist/TwinFileDownloader-3.1.20/TwinFileDownloader.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.20）。这些是构建后的路径，不是仓库已包含的文件。
+- 面向 Windows x64。[下载 3.1.21 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.21/TwinFile-3.1.21-Windows-x64-Setup.exe)或[独立直链下载器](https://github.com/350624/TwinFile/releases/download/v3.1.21/TwinFile-Downloader-3.1.21-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
+- 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；独立下载器 `dist/TwinFileDownloader-3.1.21/TwinFileDownloader.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.21）。这些是构建后的路径，不是仓库已包含的文件。
 - 完整发布包不需要安装 Python、Qt SDK 或编译器。手机需开启 USB 调试并授权电脑；HFX 需经用户确认安装配套手机端。源码编译与完整工具包的准备步骤不同，详见[安装说明](docs/INSTALL.md)。
 - 新配置：`%APPDATA%/TwinFileNative/settings.json`。配置与旧版独立，菜单不再提供旧版设置/工作区导入入口。
 - 第一次使用：点选左栏目录，再点选右栏目标目录，回到源栏选择文件，按 `F5` 复制到另一栏；顶部“助手”打开可选 AI，未配置 API 不影响文件管理。
@@ -126,7 +126,7 @@ HFX 提供 USB + 用户选择的 WLAN 多轨传输，支持列目录、新建、
 
 APK 工具包含反编译、工程副本修复、清单快速编辑、包名/版本/应用名修改、位图替换、保留自适应背景的前景替换或整体换图标、回编译、混淆组件原二进制清单恢复、对齐、独立调试签名和校验。构建不修改原 APK 或原工程。安装本地/包内 APK 需确认，调试签名不能覆盖原作者签名应用。
 
-Payload 支持本地 BIN / OTA ZIP、远程 HTTP(S) Range、分区勾选提取、REPLACE/BZ2/XZ/ZSTD/ZERO/DISCARD，以及范围、文件一致性、操作和分区 SHA256 检查。线程数量为 1–8，默认 4，控制同时提取的分区数并记住选择；使用程序默认 User-Agent，可选择是否明文记住直链。压缩 ZIP 先读取头部元数据列出分区，提取时才完整解压缓存并校验 ZIP CRC。解析、缓存、提取和校验显示进度；网络请求 15 秒空闲或单次超过 60 秒后中止，最多尝试三次；增量 OTA 明确拒绝。
+Payload 支持本地 BIN / OTA ZIP、远程 HTTP(S) Range、分区全选/取消全选与单项勾选、REPLACE/BZ2/XZ/ZSTD/ZERO/DISCARD，以及范围、文件一致性、操作和分区 SHA256 检查。远程下载连接数为 1–512，默认 16；本地分区并行数量为 1–8，默认 4。可自定义输出目录，使用程序默认 User-Agent，可选择是否明文记住直链。Payload 与直链下载均显式直连，不使用系统/应用/本地 HTTP 或 SOCKS 代理，不修改系统代理或 AI/API 设置。连续的小操作数据合并预读以减少请求，断连仅在有稳定版本标识时保留已接收数据并补读剩余部分；压缩 ZIP 先读取头部元数据列出分区，提取时才完整解压缓存并校验 ZIP CRC。解析、缓存、提取和校验显示内嵌进度；网络请求 15 秒空闲或单次超过 60 秒后中止，最多尝试三次；增量 OTA 明确拒绝。连接数是上限，服务器限流及线路决定实际速度；直连不绕过 VPN/TUN 路由。
 
 可信 `.bat/.cmd` 经警告确认后可在新控制台运行，并附带 ADB/Fastboot 路径。
 

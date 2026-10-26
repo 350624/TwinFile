@@ -1082,8 +1082,21 @@ void Window::payload() {
     runJob(QStringLiteral("解析 Payload 分区"), [source, options](const Cancellation &cancel, const Progress &progress) { return inspectPayload(source, cancel, options, progress); }, [this, source, options, threads, remote, outputDirectory](const Result &result) mutable {
         QDialog dialog(this); dialog.setObjectName(QStringLiteral("payloadPartitionsDialog")); dialog.setWindowTitle(QStringLiteral("选择要提取的分区")); dialog.resize(650, 550); auto *layout = new QVBoxLayout(&dialog);
         layout->addWidget(new QLabel(QStringLiteral("完整 OTA · 支持 REPLACE / BZ2 / XZ / ZSTD / ZERO\n输出为 .img，已有文件不会覆盖；含增量操作的 OTA 将拒绝提取。")));
-        QListWidget choices; const QStringList descriptions = result.output.split(QChar('\n'), Qt::SkipEmptyParts);
+        QListWidget choices; choices.setObjectName(QStringLiteral("payloadPartitions")); const QStringList descriptions = result.output.split(QChar('\n'), Qt::SkipEmptyParts);
         for (qsizetype index = 0; index < result.paths.size(); ++index) { auto *item = new QListWidgetItem(descriptions.value(index, result.paths[index]), &choices); item->setData(Qt::UserRole, result.paths[index]); item->setCheckState(Qt::Checked); }
+        auto *selectionRow = new QHBoxLayout;
+        const auto selectionButton = [&](const QString &text, const QString &name, const QString &symbol, Qt::CheckState state) {
+            auto *button = new QPushButton(text); button->setObjectName(name); button->setProperty("symbol", symbol);
+            button->setIcon(actionSymbol(symbol, palette().color(QPalette::Text)));
+            button->setAutoDefault(false); button->setToolTip(text + QStringLiteral("分区")); button->setAccessibleName(button->toolTip());
+            connect(button, &QPushButton::clicked, &dialog, [&choices, state] {
+                for (int index = 0; index < choices.count(); ++index) choices.item(index)->setCheckState(state);
+            });
+            selectionRow->addWidget(button);
+        };
+        selectionButton(QStringLiteral("全选"), QStringLiteral("payloadSelectAll"), QStringLiteral("select-all"), Qt::Checked);
+        selectionButton(QStringLiteral("取消全选"), QStringLiteral("payloadSelectNone"), QStringLiteral("select-none"), Qt::Unchecked);
+        selectionRow->addStretch(); layout->addLayout(selectionRow);
         layout->addWidget(&choices); QSpinBox workers; workers.setObjectName(QStringLiteral("payloadThreads")); workers.setRange(1, remote ? 512 : 8); workers.setValue(remote ? threads : settings_.value(QStringLiteral("payload_partition_workers")).toInt(4)); layout->addWidget(new QLabel(remote ? QStringLiteral("下载线程数量") : QStringLiteral("分区并行数量"))); layout->addWidget(&workers);
         layout->addWidget(new QLabel(QStringLiteral("保存位置")));
         QLineEdit output(outputDirectory);

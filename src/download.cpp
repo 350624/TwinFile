@@ -11,6 +11,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QNetworkReply>
+#include <QNetworkProxy>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -60,6 +61,7 @@ struct DirectDownload::Part {
 };
 
 DirectDownload::DirectDownload(QObject *parent) : QObject(parent), network_(this), watchdog_(this), deadline_(this) {
+    network_.setProxy(QNetworkProxy::NoProxy);
     progressTimer_.setInterval(250);
     connect(&progressTimer_, &QTimer::timeout, this, &DirectDownload::notify);
     watchdog_.setInterval(1000);
@@ -146,7 +148,10 @@ void DirectDownload::probeFinished() {
     emit status(QStringLiteral("分段下载中"));
     for (const auto &range : planned) {
         auto part = std::make_shared<Part>(); part->start = range.first; part->end = range.second;
-        if (parts_.size() % 6 == 0) networks_.append(new QNetworkAccessManager(this));
+        if (parts_.size() % 6 == 0) {
+            networks_.append(new QNetworkAccessManager(this));
+            networks_.last()->setProxy(QNetworkProxy::NoProxy);
+        }
         part->network = networks_.last(); parts_.append(part);
     }
     for (const auto &part : parts_) requestPart(part);
@@ -230,6 +235,7 @@ void DirectDownload::retryPart(const std::shared_ptr<Part> &part, const QString 
         item->waiting = true;
         if (!recoveryNetwork_ || recoverySlots_ == 6) {
             recoveryNetwork_ = new QNetworkAccessManager(this);
+            recoveryNetwork_->setProxy(QNetworkProxy::NoProxy);
             networks_.append(recoveryNetwork_); recoverySlots_ = 0;
         }
         item->network = recoveryNetwork_; ++recoverySlots_;

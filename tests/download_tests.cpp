@@ -11,6 +11,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QNetworkReply>
+#include <QNetworkProxy>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -105,6 +106,42 @@ private slots:
         QVERIFY(putFile(path, "original")); QVERIFY(!download.start(QUrl("http://127.0.0.1"), path, 16, &error)); QCOMPARE(contents(path), QByteArray("original")); QVERIFY(partials(root).isEmpty());
     }
     void segmentedConcurrent_data() { QTest::addColumn<int>("count"); QTest::newRow("16-connections") << 16; QTest::newRow("512-connections") << 512; }
+    void downloadsIgnoreApplicationProxy_data() {
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("segmented") << QStringLiteral("segmented");
+        QTest::newRow("single") << QStringLiteral("single");
+        QTest::newRow("recovery") << QStringLiteral("recovery");
+    }
+    void downloadsIgnoreApplicationProxy() {
+        QFETCH(QString, mode); QTemporaryDir root;
+        const auto previous = QNetworkProxy::applicationProxy();
+        const auto restore = qScopeGuard([&] { QNetworkProxy::setApplicationProxy(previous); });
+        QTcpServer proxy; QVERIFY(proxy.listen(QHostAddress::LocalHost)); int hits = 0;
+        connect(&proxy, &QTcpServer::newConnection, &proxy, [&] {
+            while (proxy.hasPendingConnections()) {
+                auto *socket = proxy.nextPendingConnection(); ++hits;
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+                socket->write("HTTP/1.1 502 Proxy blocked\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"); socket->disconnectFromHost();
+            }
+        });
+        QNetworkProxy::setApplicationProxy(QNetworkProxy(QNetworkProxy::HttpProxy, QStringLiteral("127.0.0.1"), proxy.serverPort()));
+        HttpFixture server; const qint64 size = 1024 * 1024; bool interrupted = false;
+        server.respond = [&](QTcpSocket *socket, const HttpFixture::Request &request) {
+            const QByteArray headers = mode == QStringLiteral("single") ? QByteArray() : QByteArray("ETag: \"fixture-v1\"\r\n");
+            if (mode == QStringLiteral("recovery") && request.range != "bytes=0-0" && !interrupted) {
+                interrupted = true; const auto range = HttpFixture::bounds(request);
+                HttpFixture::reply(socket, 206, payload(range.first, 32768), HttpFixture::rangeHeader(range.first, range.second, size) + headers, range.second - range.first + 1);
+            } else if (request.range.isEmpty()) HttpFixture::reply(socket, 200, payload(0, size), headers);
+            else HttpFixture::rangeReply(socket, request, size, headers);
+        };
+        DirectDownload download; QSignalSpy done(&download, &DirectDownload::completed), failed(&download, &DirectDownload::failed); QString error;
+        const auto path = root.filePath("direct.bin"); QVERIFY(download.start(server.url(), path, 4, &error));
+        QTRY_VERIFY_WITH_TIMEOUT(done.size() + failed.size() > 0, 7000);
+        QVERIFY2(failed.isEmpty(), failed.isEmpty() ? "" : qPrintable(failed.first().first().toString()));
+        QCOMPARE(contents(path), payload(0, size)); QCOMPARE(hits, 0);
+        QCOMPARE(QNetworkProxy::applicationProxy().type(), QNetworkProxy::HttpProxy);
+        QCOMPARE(interrupted, mode == QStringLiteral("recovery"));
+    }
     void segmentedConcurrent() {
         QFETCH(int, count); QTemporaryDir root; HttpFixture server; const qint64 size = qint64(count) * 262144 + 37; int segments = 0; QList<QPointer<QTcpSocket>> waiting;
         auto release = [&] { const auto sockets = waiting; waiting.clear(); for (const auto &socket : sockets) if (socket) { const auto start = socket->property("start").toLongLong(), end = socket->property("end").toLongLong(); HttpFixture::reply(socket, 206, payload(start, end - start + 1), HttpFixture::rangeHeader(start, end, size) + "ETag: \"fixture-v1\"\r\n"); } };

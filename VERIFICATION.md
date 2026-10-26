@@ -1,5 +1,13 @@
 # 验证范围与复现
 
+## 3.1.21 分区全选与直连（2026-10-26）
+
+分区窗口六主题亮暗测试使用 40 条分区，实际点击全选/取消全选，检查屏幕外条目、部分勾选、重复点击、当前行与滚动位置、480 像素窄窗口边界及图标。原提取完成测试增加取消全选再全选并真实点击 OK，检查输出内容和目录。截图为 `verification/native-payload-partitions-主题-模式.png`。
+
+Payload 网络专项设置本地拒绝代理，先用对照请求证实代理生效，再确认提取未访问代理且未修改全局代理。1024 个连续小操作在 4 MiB 样本中合并为 16 个数据请求，连同元数据共 19 次请求；损坏的操作 SHA256 仍拒绝发布。截断连接测试检查重试范围小于原分段且最终文件一致。直链下载检查分段、单连接与恢复均绕过应用代理。日志为 `build/payload-3.1.21-focused.txt` 和 `build/download-proxy-3.1.21.txt`。
+
+Windows Payload/批量选择专项 **31 passed / 0 failed / 0 skipped**，直链代理专项 **5 passed / 0 failed / 0 skipped**。已检查 miuix 亮暗窄窗口截图；跨预读边界仍逐操作校验。完整六组回归、Windows UI、便携启动及安装包由 `publish.ps1` 执行，以实际日志为准。不执行安装器，未下载用户完整外部 OTA，未将本机请求减少测试描述为公网带宽保证；NoProxy 不绕过系统 VPN/TUN 路由。
+
 ## 3.1.20 Payload 确认崩溃（2026-10-26）
 
 Windows 应用日志中 TwinFile 3.1.19 的三次崩溃均为 Qt6Core.dll 6.10.3、异常 0xc0000005、偏移 0x000c1f64。将原 `payloadOutputDirectoryAndInlineCompletion` 改为实际点击 OK 后，在 miuix 深色下用 GDB 复现相同位置：`qt_qFindChild_helper` → `UiMotion::eventFilter` → 输入法/焦点事件 → `QWidget`/`QPushButton` 析构 → `Window::payload`。复现日志为 `build/payload-click-before-gdb.txt`，未开始外网下载。
