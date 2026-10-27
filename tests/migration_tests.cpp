@@ -37,6 +37,7 @@
 #include <QRandomGenerator>
 #include <QSpinBox>
 #include <QScopeGuard>
+#include <QSet>
 #include <QTimer>
 #include <QTableView>
 #include "window.h"
@@ -198,6 +199,7 @@ public:
     QString dataFailure;
     bool failureUsed = false;
     bool stableValidator = true;
+    QSet<qint64> stalledRanges;
     QList<QPair<QPointer<QTcpSocket>, QByteArray>> pending;
     explicit PayloadHttpFixture(QByteArray data = {}, Mode behavior = Range) : bytes(std::move(data)), mode(behavior) {
         server.setMaxPendingConnections(1024); server.setListenBacklogSize(1024);
@@ -233,6 +235,14 @@ public:
                         if (dataFailure == QStringLiteral("range")) response.replace("Content-Range: bytes ", "Content-Range: bytes 999");
                         if (dataFailure == QStringLiteral("ignored")) response.replace("206 Partial Content", "200 OK");
                         if (dataFailure == QStringLiteral("retry") && !failureUsed) { response.chop(100); failureUsed = true; }
+                        if (dataFailure == QStringLiteral("429") || dataFailure == QStringLiteral("503") || (dataFailure == QStringLiteral("503-once") && !failureUsed)) {
+                            failureUsed = true;
+                            response = "HTTP/1.1 " + (dataFailure == QStringLiteral("429") ? QByteArray("429 Too Many Requests") : QByteArray("503 Service Unavailable"))
+                                + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        }
+                        if (dataFailure == QStringLiteral("many-stalls") && start < delayedFrom + (bytes.size() - delayedFrom) / 2 && !stalledRanges.contains(end)) {
+                            stalledRanges.insert(end); client->write(response.left(response.size() - body.size() / 2)); return;
+                        }
                         if (dataFailure == QStringLiteral("stall") && !failureUsed && start == delayedFrom) {
                             failureUsed = true; client->write(response.left(response.size() - body.size() / 2)); return;
                         }
@@ -614,6 +624,54 @@ private slots:
         PayloadHttpFixture fixture(encodePayload(QByteArray(4096, 'x')));
         for (int connections : {0, 513}) { PayloadOptions options; options.downloadConnections = connections; QVERIFY(!inspectPayload(fixture.url(), {}, options).ok); }
         QCOMPARE(fixture.requests, 0);
+    }
+    void payloadConcurrentDeadlinesDoNotCrash() {
+        for (int iteration = 0; iteration < 8; ++iteration) {
+            QTemporaryDir root; PayloadHttpFixture fixture(encodePayload(QByteArray(32 * 1024 * 1024, 'd')));
+            fixture.delayedFrom = 24 + qint64(qFromBigEndian<quint64>(fixture.bytes.constData() + 12));
+            PayloadOptions options; options.downloadConnections = 512;
+            options.requestTimeoutMs = 120; options.idleTimeoutMs = 5000;
+            auto task = qtAsync([&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 1, {}, {}, options); });
+            QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 10000);
+            const Result result = task.get();
+            if (result.ok) QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), QByteArray(32 * 1024 * 1024, 'd'));
+            else { QVERIFY2(result.error.contains(QStringLiteral("重试失败")), qPrintable(result.error)); QVERIFY(!QFileInfo::exists(root.filePath(QStringLiteral("system.img")))); }
+            QTRY_COMPARE(fixture.active, 0);
+        }
+    }
+    void payloadParallelHttpErrors_data() {
+        QTest::addColumn<QString>("failure");
+        for (const QString &failure : {QStringLiteral("429"), QStringLiteral("503"), QStringLiteral("503-once")})
+            QTest::newRow(qPrintable(failure)) << failure;
+    }
+    void payloadParallelHttpErrors() {
+        QFETCH(QString, failure); QTemporaryDir root; const QByteArray data(4 * 1024 * 1024, 'e');
+        PayloadHttpFixture fixture(encodePayload(data)); fixture.dataFailure = failure;
+        fixture.delayedFrom = 24 + qint64(qFromBigEndian<quint64>(fixture.bytes.constData() + 12));
+        PayloadOptions options; options.downloadConnections = 16;
+        auto task = qtAsync([&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 1, {}, {}, options); });
+        QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 10000);
+        const auto result = task.get(); QVERIFY(fixture.failureUsed);
+        if (failure.endsWith(QStringLiteral("-once"))) {
+            QVERIFY2(result.ok, qPrintable(result.error)); QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), data);
+        } else {
+            QVERIFY(!result.ok); QVERIFY2(result.error.contains(QStringLiteral("重试失败")), qPrintable(result.error));
+            QVERIFY(!QFileInfo::exists(root.filePath(QStringLiteral("system.img"))));
+        }
+        QTRY_COMPARE(fixture.active, 0);
+    }
+    void payloadManySilentRangesRecover() {
+        QTemporaryDir root; const QByteArray data(128 * 1024 * 1024, 's');
+        PayloadHttpFixture fixture(encodePayload(data)); fixture.dataFailure = QStringLiteral("many-stalls");
+        fixture.delayedFrom = 24 + qint64(qFromBigEndian<quint64>(fixture.bytes.constData() + 12));
+        PayloadOptions options; options.downloadConnections = 512; options.idleTimeoutMs = options.requestTimeoutMs = 20000;
+        auto cancel = std::make_shared<std::atomic_bool>(false);
+        QTimer::singleShot(18000, &fixture, [cancel] { cancel->store(true); });
+        auto task = qtAsync([&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 1, cancel, {}, options); });
+        QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 17000);
+        const auto result = task.get(); QVERIFY2(result.ok, qPrintable(result.error));
+        QVERIFY(fixture.stalledRanges.size() >= 256); QVERIFY(fixture.peak <= 512);
+        QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), data); QTRY_COMPARE(fixture.active, 0);
     }
     void payloadParallelRangeRetriesTruncatedPart() {
         QTemporaryDir root; const QByteArray data(4 * 1024 * 1024, 'r'); PayloadHttpFixture fixture(encodePayload(data));

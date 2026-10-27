@@ -158,7 +158,7 @@ public:
             nextOffset += part.size;
         }
         const auto receive = [&](Part &part) {
-            if (!part.validated || !part.reply->isOpen()) return;
+            if (!part.reply || !part.validated || !part.reply->isOpen()) return;
             const QByteArray block = part.reply->read(qint64(part.size - part.received + 1));
             if (quint64(block.size()) > part.size - part.received) { error = QStringLiteral("服务器忽略 Range 或响应超出范围"); return; }
             std::copy(block.cbegin(), block.cend(), buffer + part.start + part.received);
@@ -188,9 +188,11 @@ public:
                 part.managerSlot = int(std::min_element(managerLoads.cbegin(), managerLoads.cend()) - managerLoads.cbegin());
                 ++managerLoads[size_t(part.managerSlot)];
                 if (part.recovered) {
-                    recoveryManagers.emplace_back(std::make_unique<QNetworkAccessManager>());
-                    recoveryManagers.back()->setProxy(QNetworkProxy::NoProxy);
-                    part.manager = recoveryManagers.back().get();
+                    while (size_t(part.managerSlot) >= recoveryManagers.size()) {
+                        recoveryManagers.emplace_back(std::make_unique<QNetworkAccessManager>());
+                        recoveryManagers.back()->setProxy(QNetworkProxy::NoProxy);
+                    }
+                    part.manager = recoveryManagers[size_t(part.managerSlot)].get();
                 } else {
                     while (size_t(part.managerSlot) >= managers.size()) {
                         managers.emplace_back(std::make_unique<QNetworkAccessManager>());
@@ -208,9 +210,11 @@ public:
                 if (!etag.isEmpty()) request.setRawHeader("If-Match", etag);
                 else if (!modified.isEmpty()) request.setRawHeader("If-Unmodified-Since", modified);
                 request.setTransferTimeout(options.idleTimeoutMs);
-                part.reply = part.manager->get(request); part.reply->setReadBufferSize(64 * 1024);
-                QObject::connect(part.reply, &QNetworkReply::metaDataChanged, &loop, [&, item = &part] {
-                    auto *reply = item->reply;
+                auto *const reply = part.manager->get(request);
+                part.reply = reply; reply->setReadBufferSize(64 * 1024);
+                QObject::connect(reply, &QNetworkReply::metaDataChanged, &loop, [&, item = &part, reply] {
+                    // Qt can still deliver queued response metadata after abort() emitted finished().
+                    if (item->reply != reply) return;
                     const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
                     if (status >= 300 && status < 400) return;
                     if (status == 429 || status >= 500) { reply->abort(); return; }
@@ -234,9 +238,16 @@ public:
                     }
                     if (!error.isEmpty()) reply->abort();
                 });
-                QObject::connect(part.reply, &QNetworkReply::readyRead, &loop, [&, item = &part] { receive(*item); if (!error.isEmpty()) item->reply->abort(); });
-                QObject::connect(part.reply, &QNetworkReply::finished, &loop, [&, item = &part] {
-                    receive(*item); auto *reply = item->reply;
+                QObject::connect(reply, &QNetworkReply::readyRead, &loop, [&, item = &part, reply] {
+                    if (item->reply != reply) return;
+                    receive(*item);
+                    if (!error.isEmpty()) reply->abort();
+                });
+                QObject::connect(reply, &QNetworkReply::finished, &loop, [&, item = &part, reply] {
+                    if (item->reply != reply) return;
+                    QObject::disconnect(reply, nullptr, &loop, nullptr);
+                    receive(*item);
+                    item->reply = nullptr;
                     item->held = false; connections->fetch_sub(1);
                     --managerLoads[size_t(item->managerSlot)];
                     item->complete = error.isEmpty() && reply->error() == QNetworkReply::NoError && reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 206 && item->received == item->size;
@@ -253,7 +264,7 @@ public:
                     if (!item->complete && error.isEmpty() && item->attempts >= 3)
                         error = QStringLiteral("Range 请求重试失败：") + (item->timedOut || reply->error() == QNetworkReply::TimeoutError ? QStringLiteral("网络请求超时") : reply->errorString());
                     if (!item->complete && item->recovered) item->manager = nullptr;
-                    reply->deleteLater(); item->reply = nullptr;
+                    reply->deleteLater();
                 });
             }
             notify(received, count, QStringLiteral(" · %1/%2 连接").arg(connections->load()).arg(options.downloadConnections));
