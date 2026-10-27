@@ -26,6 +26,7 @@
 #include <zlib.h>
 #include <algorithm>
 #include <condition_variable>
+#include <deque>
 #include <future>
 #include <limits>
 #include <mutex>
@@ -130,7 +131,9 @@ public:
             quint64 start = 0, size = 0, received = 0, requestStart = 0;
             QNetworkAccessManager *manager = nullptr;
             QNetworkReply *reply = nullptr;
-            QElapsedTimer elapsed, lastData;
+            QElapsedTimer elapsed, lastData, rateTimer;
+            quint64 sampledBytes = 0;
+            double bytesPerSecond = -1;
             int attempts = 0, managerSlot = -1;
             bool complete = false, held = false, timedOut = false, validated = false, recovered = false;
         };
@@ -140,6 +143,8 @@ public:
         const int planned = int(qMin<quint64>(options.downloadConnections, qMax<quint64>(1, count / (256 * 1024))));
         const quint64 chunkSize = planned == 1 ? count : qMax<quint64>(256 * 1024, (count + quint64(planned) * 4 - 1) / (quint64(planned) * 4));
         quint64 nextOffset = 0, completedBytes = 0;
+        double completedRateSum = 0;
+        int completedRequests = 0;
         const int managerCount = (planned + 5) / 6;
         std::vector<int> managerLoads(size_t(managerCount), 0);
         parts.resize(size_t(planned));
@@ -173,8 +178,15 @@ public:
                 received += part.received; complete &= part.complete;
                 if (part.complete) continue;
                 if (part.reply) {
-                    // Rescue a silent batch tail once, without cutting off a connection that is still delivering bytes.
-                    if (!part.recovered && finished >= (planned + 1) / 2 && part.lastData.elapsed() >= 3000) {
+                    if (part.rateTimer.elapsed() >= 1000) {
+                        part.bytesPerSecond = double(part.received - part.sampledBytes) * 1000 / part.rateTimer.elapsed();
+                        part.sampledBytes = part.received; part.rateTimer.restart();
+                    }
+                    const double peerRate = completedRequests ? completedRateSum / completedRequests : 0;
+                    const bool trickling = part.elapsed.elapsed() >= 3000 && part.bytesPerSecond >= 0
+                        && part.bytesPerSecond * 8 < peerRate && double(part.size - part.received) > part.bytesPerSecond * 2;
+                    // A tail can keep the idle timer alive while delivering far less than its completed peers.
+                    if (!part.recovered && finished >= (planned + 1) / 2 && (part.lastData.elapsed() >= 3000 || trickling)) {
                         part.recovered = true; part.reply->abort();
                     }
                     else if (part.elapsed.elapsed() >= options.requestTimeoutMs) { part.timedOut = true; part.reply->abort(); }
@@ -184,6 +196,7 @@ public:
                 while (current < options.downloadConnections && !connections->compare_exchange_weak(current, current + 1)) {}
                 if (current >= options.downloadConnections) continue;
                 part.held = true; part.validated = false; part.timedOut = false; ++part.attempts; part.elapsed.start(); part.lastData.start();
+                part.rateTimer.start(); part.sampledBytes = part.received; part.bytesPerSecond = -1;
                 part.requestStart = offset + part.start + part.received;
                 part.managerSlot = int(std::min_element(managerLoads.cbegin(), managerLoads.cend()) - managerLoads.cbegin());
                 ++managerLoads[size_t(part.managerSlot)];
@@ -252,6 +265,8 @@ public:
                     --managerLoads[size_t(item->managerSlot)];
                     item->complete = error.isEmpty() && reply->error() == QNetworkReply::NoError && reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 206 && item->received == item->size;
                     if (item->complete) {
+                        completedRateSum += double(offset + item->start + item->size - item->requestStart) * 1000 / qMax<qint64>(1, item->elapsed.elapsed());
+                        ++completedRequests;
                         completedBytes += item->size; item->received = 0;
                         if (nextOffset < count) {
                             // Refill the freed slot immediately instead of waiting for the slowest range in a batch.
@@ -398,17 +413,17 @@ void extractPartition(RangeSource source, const PayloadPartition &partition, qui
     QByteArray inputCache; quint64 cacheOffset = 0;
     source.interrupt = std::make_shared<std::atomic_bool>(false);
     struct Window { quint64 offset; QByteArray bytes; };
-    std::future<Window> pending;
-    quint64 pendingOffset = 0;
-    // One bounded window overlaps network I/O with decoding. The shared connection cap still applies.
-    const auto fetchWindow = [&](RangeSource &reader, qsizetype operationIndex, quint64 offset) {
+    const auto windowSize = [&](qsizetype operationIndex, quint64 offset) {
         quint64 end = partition.operations[operationIndex].offset + partition.operations[operationIndex].length;
-        for (qsizetype index = operationIndex + 1; index < partition.operations.size() && end - offset < reader.inputSize; ++index) {
+        for (qsizetype index = operationIndex + 1; index < partition.operations.size() && end - offset < source.inputSize; ++index) {
             const auto &next = partition.operations[index];
             if (!next.length || next.offset != end) break;
-            ensure(fits(dataOffset, next.offset, reader.length) && fits(dataOffset + next.offset, next.length, reader.length), QStringLiteral("分区操作读取越界"));
+            ensure(fits(dataOffset, next.offset, source.length) && fits(dataOffset + next.offset, next.length, source.length), QStringLiteral("分区操作读取越界"));
             end += next.length;
         }
+        return qMin(source.inputSize, end - offset);
+    };
+    const auto fetchWindow = [&](RangeSource &reader, quint64 offset, quint64 size) {
         qint64 reported = 0;
         reader.progress = [&](qint64 received, qint64, const QString &) {
             const qint64 current = qMax(reported, received);
@@ -416,18 +431,45 @@ void extractPartition(RangeSource source, const PayloadPartition &partition, qui
             reported = current;
         };
         const auto reset = qScopeGuard([&] { reader.progress = {}; });
-        return Window{offset, reader.read(dataOffset + offset, qMin(reader.inputSize, end - offset), cancel)};
+        return Window{offset, reader.read(dataOffset + offset, size, cancel)};
     };
+    struct Request { quint64 offset, size; std::promise<Window> response; };
+    struct Pending { qsizetype index; quint64 offset, size; std::future<Window> response; };
+    std::deque<Request> queue; std::deque<Pending> pending;
     std::mutex queueMutex; std::condition_variable queueChanged;
-    bool stopping = false, queued = false; qsizetype queuedIndex = 0; quint64 queuedOffset = 0;
-    std::promise<Window> response; std::unique_ptr<QThread> producer;
+    bool stopping = false;
+    std::vector<std::unique_ptr<QThread>> producers;
     const auto stopProducer = qScopeGuard([&] {
         source.interrupt->store(true);
         { std::lock_guard<std::mutex> lock(queueMutex); stopping = true; }
-        queueChanged.notify_one(); if (producer) producer->wait();
+        queueChanged.notify_all(); for (auto &producer : producers) producer->wait();
     });
-    const auto scheduleNext = [&](qsizetype operationIndex) {
-        quint64 offset = cacheOffset + quint64(inputCache.size());
+    const auto enqueue = [&](qsizetype index, quint64 offset) {
+        const quint64 size = windowSize(index, offset);
+        if (producers.empty()) {
+            // Two persistent readers let free slots cross a window boundary before its slow tail finishes.
+            for (int worker = 0; worker < 2; ++worker) {
+                producers.emplace_back(QThread::create([&] {
+                    RangeSource reader(source);
+                    for (;;) {
+                        std::unique_lock<std::mutex> lock(queueMutex);
+                        queueChanged.wait(lock, [&] { return stopping || !queue.empty(); });
+                        if (stopping) return;
+                        auto request = std::move(queue.front()); queue.pop_front(); lock.unlock();
+                        try { request.response.set_value(fetchWindow(reader, request.offset, request.size)); }
+                        catch (...) { request.response.set_exception(std::current_exception()); }
+                    }
+                }));
+                producers.back()->start();
+            }
+        }
+        Request request{offset, size, {}};
+        pending.push_back(Pending{index, offset, size, request.response.get_future()});
+        { std::lock_guard<std::mutex> lock(queueMutex); queue.push_back(std::move(request)); }
+        queueChanged.notify_one();
+    };
+    const auto scheduleNext = [&](qsizetype operationIndex, quint64 start, quint64 size) {
+        quint64 offset = start + size;
         for (qsizetype index = operationIndex; index < partition.operations.size(); ++index) {
             const auto &operation = partition.operations[index];
             if (!operation.length) continue;
@@ -435,42 +477,26 @@ void extractPartition(RangeSource source, const PayloadPartition &partition, qui
             if (index == operationIndex) {
                 if (operation.offset + operation.length <= offset) continue;
             } else {
-                if (operation.offset >= cacheOffset && operation.offset + operation.length <= offset) continue;
-                offset = operation.offset >= cacheOffset && operation.offset < offset ? offset : operation.offset;
+                if (operation.offset >= start && operation.offset + operation.length <= offset) continue;
+                offset = operation.offset >= start && operation.offset < offset ? offset : operation.offset;
             }
-            pendingOffset = offset;
-            if (!producer) {
-                // Qt owns TLS initialization and teardown for workers using its network classes.
-                producer.reset(QThread::create([&] {
-                    RangeSource reader(source);
-                    for (;;) {
-                        std::unique_lock<std::mutex> lock(queueMutex);
-                        queueChanged.wait(lock, [&] { return stopping || queued; });
-                        if (stopping) return;
-                        const auto index = queuedIndex; const auto offset = queuedOffset;
-                        auto result = std::move(response); queued = false; lock.unlock();
-                        try { result.set_value(fetchWindow(reader, index, offset)); }
-                        catch (...) { result.set_exception(std::current_exception()); }
-                    }
-                }));
-                producer->start();
-            }
-            {
-                std::lock_guard<std::mutex> lock(queueMutex);
-                response = std::promise<Window>(); pending = response.get_future();
-                queuedIndex = index; queuedOffset = offset; queued = true;
-            }
-            queueChanged.notify_one();
+            enqueue(index, offset);
             break;
         }
     };
     const auto readInput = [&](qsizetype operationIndex, quint64 offset, quint64 count) {
         if (!source.remote()) return source.read(dataOffset + offset, count, cancel);
         if (offset < cacheOffset || offset - cacheOffset >= quint64(inputCache.size())) {
-            Window window = pending.valid() && pendingOffset == offset ? pending.get() : fetchWindow(source, operationIndex, offset);
-            if (pending.valid()) pending.get();
+            inputCache.clear();
+            if (pending.empty()) enqueue(operationIndex, offset);
+            ensure(pending.front().offset == offset, QStringLiteral("Payload 预读顺序错误"));
+            // Keep at most two windows resident, including the one currently being decoded.
+            if (pending.size() == 1) {
+                const auto &last = pending.back();
+                scheduleNext(last.index, last.offset, last.size);
+            }
+            Window window = pending.front().response.get(); pending.pop_front();
             cacheOffset = window.offset; inputCache = std::move(window.bytes);
-            scheduleNext(operationIndex);
         }
         return inputCache.mid(qsizetype(offset - cacheOffset), qsizetype(count));
     };

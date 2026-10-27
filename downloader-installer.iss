@@ -1,5 +1,5 @@
 #define MyAppName "TwinFile Downloader"
-#define MyAppVersion "3.1.23"
+#define MyAppVersion "3.1.24"
 #ifndef MyDistDir
   #define MyDistDir AddBackslash(SourcePath) + "dist\TwinFileDownloader"
 #endif
@@ -14,8 +14,8 @@ AppSupportURL=https://github.com/350624/TwinFile/issues
 DefaultDirName={localappdata}\Programs\TwinFile Downloader
 DefaultGroupName=TwinFile Downloader
 OutputDir=releases
-OutputBaseFilename=TwinFile-Downloader-3.1.23-Windows-x64-Setup
-VersionInfoVersion=3.1.23.0
+OutputBaseFilename=TwinFile-Downloader-3.1.24-Windows-x64-Setup
+VersionInfoVersion=3.1.24.0
 SetupIconFile=assets\app.ico
 UninstallDisplayIcon={app}\TwinFileDownloader.exe
 ArchitecturesAllowed=x64compatible
