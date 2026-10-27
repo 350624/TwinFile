@@ -282,9 +282,9 @@ public:
                             || (reply->error() == QNetworkReply::OperationCanceledError && item->lastData.elapsed() >= options.idleTimeoutMs);
                         const QString cause = timeout
                             ? QStringLiteral("网络请求超时") : reply->errorString();
-                        error = QStringLiteral("Range %1-%2 重试 %3 次失败（已接收 %4/%5 字节）：%6")
-                            .arg(offset + item->start).arg(offset + item->start + item->size - 1)
-                            .arg(item->attempts).arg(item->received).arg(item->size).arg(cause);
+                        error = QStringLiteral("Range 请求重试失败（%1 次，%2-%3，已接收 %4/%5 字节）：%6")
+                            .arg(item->attempts).arg(offset + item->start).arg(offset + item->start + item->size - 1)
+                            .arg(item->received).arg(item->size).arg(cause);
                     }
                     if (!item->complete && item->recovered) item->manager = nullptr;
                     reply->deleteLater();
