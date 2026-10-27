@@ -241,7 +241,8 @@ public:
                         if (dataFailure == QStringLiteral("range")) response.replace("Content-Range: bytes ", "Content-Range: bytes 999");
                         if (dataFailure == QStringLiteral("ignored")) response.replace("206 Partial Content", "200 OK");
                         if (dataFailure == QStringLiteral("retry") && !failureUsed) { response.chop(100); failureUsed = true; }
-                        if (dataFailure == QStringLiteral("429") || dataFailure == QStringLiteral("503") || (dataFailure == QStringLiteral("503-once") && !failureUsed)) {
+                        if (dataFailure == QStringLiteral("429") || dataFailure == QStringLiteral("503")
+                            || (dataFailure == QStringLiteral("503-once") && !failureUsed)) {
                             failureUsed = true;
                             response = "HTTP/1.1 " + (dataFailure == QStringLiteral("429") ? QByteArray("429 Too Many Requests") : QByteArray("503 Service Unavailable"))
                                 + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -546,7 +547,7 @@ private slots:
         QFETCH(int, mode); QFETCH(bool, idle); PayloadHttpFixture fixture({}, PayloadHttpFixture::Mode(mode)); PayloadOptions options; options.idleTimeoutMs = idle ? 140 : 250; options.requestTimeoutMs = idle ? 2000 : 140;
         auto task = qtAsync([&] { return inspectPayload(fixture.url(), {}, options); });
         QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 3000);
-        const Result result = task.get(); QVERIFY(!result.ok); QCOMPARE(fixture.requests, mode == PayloadHttpFixture::IgnoredRange ? 1 : 3);
+        const Result result = task.get(); QVERIFY(!result.ok); QCOMPARE(fixture.requests, mode == PayloadHttpFixture::IgnoredRange ? 1 : 8);
         QVERIFY2(result.error.contains(mode == PayloadHttpFixture::IgnoredRange ? QStringLiteral("Range") : QStringLiteral("超时")), qPrintable(result.error));
     }
     void payloadCancelDuringNetworkAndManifest() {

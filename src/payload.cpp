@@ -44,6 +44,7 @@ public:
 void ensure(bool value, const QString &message) { if (!value) throw PayloadError(message); }
 void checkCancel(const Cancellation &cancel) { ensure(!cancel || !cancel->load(), QStringLiteral("Payload 操作已取消")); }
 bool fits(quint64 offset, quint64 size, quint64 total) { return offset <= total && size <= total - offset; }
+constexpr int maxRangeAttempts = 8;
 quint16 little16(const QByteArray &bytes, qsizetype offset) { ensure(offset >= 0 && offset + 2 <= bytes.size(), QStringLiteral("ZIP 字段越界")); return qFromLittleEndian<quint16>(bytes.constData() + offset); }
 quint32 little32(const QByteArray &bytes, qsizetype offset) { ensure(offset >= 0 && offset + 4 <= bytes.size(), QStringLiteral("ZIP 字段越界")); return qFromLittleEndian<quint32>(bytes.constData() + offset); }
 quint64 little64(const QByteArray &bytes, qsizetype offset) { ensure(offset >= 0 && offset + 8 <= bytes.size(), QStringLiteral("ZIP64 字段越界")); return qFromLittleEndian<quint64>(bytes.constData() + offset); }
@@ -276,8 +277,15 @@ public:
                     }
                     // A retry can append only to data protected by a stable validator.
                     if (!item->complete && ((etag.isEmpty() && modified.isEmpty()) || item->received == item->size)) item->received = 0;
-                    if (!item->complete && error.isEmpty() && item->attempts >= 3)
-                        error = QStringLiteral("Range 请求重试失败：") + (item->timedOut || reply->error() == QNetworkReply::TimeoutError ? QStringLiteral("网络请求超时") : reply->errorString());
+                    if (!item->complete && error.isEmpty() && item->attempts >= maxRangeAttempts) {
+                        const bool timeout = item->timedOut || reply->error() == QNetworkReply::TimeoutError
+                            || (reply->error() == QNetworkReply::OperationCanceledError && item->lastData.elapsed() >= options.idleTimeoutMs);
+                        const QString cause = timeout
+                            ? QStringLiteral("网络请求超时") : reply->errorString();
+                        error = QStringLiteral("Range %1-%2 重试 %3 次失败（已接收 %4/%5 字节）：%6")
+                            .arg(offset + item->start).arg(offset + item->start + item->size - 1)
+                            .arg(item->attempts).arg(item->received).arg(item->size).arg(cause);
+                    }
                     if (!item->complete && item->recovered) item->manager = nullptr;
                     reply->deleteLater();
                 });
