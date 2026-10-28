@@ -30,6 +30,7 @@
 #include <deque>
 #include <future>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <stdexcept>
 #include <vector>
@@ -128,9 +129,26 @@ public:
             total = quint64(file.size()); ensure(fits(offset, count, total) && file.seek(qint64(offset)), QStringLiteral("读取超出源文件"));
             const QByteArray bytes = file.read(qint64(count)); ensure(quint64(bytes.size()) == count, QStringLiteral("源文件读取不完整")); notify(count, count); return bytes;
         }
+        QByteArray bytes(qsizetype(count), Qt::Uninitialized); char *const buffer = bytes.data();
+        transfer({{offset, count, 0}}, cancel,
+            [buffer](quint64 position, const QByteArray &block) { std::copy(block.cbegin(), block.cend(), buffer + position); });
+        return bytes;
+    }
+
+    struct Span { quint64 offset, size, destination; };
+    void transfer(const std::vector<Span> &spans, const Cancellation &cancel,
+                  const std::function<void(quint64, const QByteArray &)> &write,
+                  const std::function<void(quint64, quint64)> &committed = {}) {
+        quint64 count = 0, largest = 0;
+        for (const auto &span : spans) {
+            ensure(span.size > 0 && span.size <= 128 * 1024 * 1024
+                && fits(span.offset, span.size, quint64(std::numeric_limits<qint64>::max())), QStringLiteral("HTTP Range 长度无效"));
+            ensure(count <= quint64(std::numeric_limits<qint64>::max()) - span.size, QStringLiteral("HTTP Range 总长度溢出"));
+            count += span.size; largest = qMax(largest, span.size);
+        }
         ensure(count > 0, QStringLiteral("HTTP Range 长度为空"));
         struct Part {
-            quint64 start = 0, size = 0, received = 0, requestStart = 0;
+            quint64 start = 0, destination = 0, size = 0, received = 0, requestStart = 0;
             QNetworkAccessManager *manager = nullptr;
             QNetworkReply *reply = nullptr;
             QElapsedTimer elapsed, lastData;
@@ -141,16 +159,26 @@ public:
         QEventLoop loop; QTimer poll; poll.setInterval(50);
         std::vector<std::unique_ptr<QNetworkAccessManager>> recoveryManagers;
         std::vector<Part> parts;
-        const int planned = int(qMin<quint64>(options.downloadConnections, qMax<quint64>(1, count / (256 * 1024))));
-        const quint64 chunkSize = planned == 1 ? count : qMax<quint64>(256 * 1024, (count + quint64(planned) * 4 - 1) / (quint64(planned) * 4));
-        quint64 nextOffset = 0, completedBytes = 0;
+        const int planned = int(qMin<quint64>(options.downloadConnections, qMax<quint64>(1, largest / (256 * 1024))));
+        size_t nextSpan = 0; quint64 nextOffset = 0, completedBytes = 0;
+        const auto refill = [&](Part &part) {
+            if (nextSpan == spans.size()) return false;
+            const auto &span = spans[nextSpan];
+            const int spanSlots = int(qMin<quint64>(options.downloadConnections, qMax<quint64>(1, span.size / (256 * 1024))));
+            const quint64 chunkSize = spanSlots == 1 ? span.size : qMax<quint64>(256 * 1024,
+                (span.size + quint64(spanSlots) * 4 - 1) / (quint64(spanSlots) * 4));
+            part.start = span.offset + nextOffset; part.destination = span.destination + nextOffset;
+            part.size = qMin(chunkSize, span.size - nextOffset); nextOffset += part.size;
+            if (nextOffset == span.size) { ++nextSpan; nextOffset = 0; }
+            part.complete = false; part.received = 0; part.attempts = 0; part.recovered = false;
+            return true;
+        };
         double completedRateSum = 0;
         int completedRequests = 0;
         constexpr int connectionsPerManager = 255;
         const int managerCount = (planned + connectionsPerManager - 1) / connectionsPerManager;
         std::vector<int> managerLoads(size_t(managerCount), 0);
         parts.resize(size_t(planned));
-        QByteArray bytes(qsizetype(count), Qt::Uninitialized); char *const buffer = bytes.data();
         QString error;
         // Configure HTTP/1 pools explicitly instead of multiplying Qt network threads for the default six slots.
         const auto cleanup = qScopeGuard([&] {
@@ -161,14 +189,14 @@ public:
         });
         for (int index = 0; index < planned; ++index) {
             auto &part = parts[size_t(index)];
-            part.start = nextOffset; part.size = qMin(chunkSize, count - nextOffset);
-            nextOffset += part.size;
+            if (!refill(part)) part.complete = true;
         }
         const auto receive = [&](Part &part) {
             if (!part.reply || !part.validated || !part.reply->isOpen()) return;
             const QByteArray block = part.reply->read(qint64(part.size - part.received + 1));
             if (quint64(block.size()) > part.size - part.received) { error = QStringLiteral("服务器忽略 Range 或响应超出范围"); return; }
-            std::copy(block.cbegin(), block.cend(), buffer + part.start + part.received);
+            try { write(part.destination + part.received, block); }
+            catch (const std::exception &exception) { error = QString::fromUtf8(exception.what()); return; }
             part.received += quint64(block.size());
             if (!block.isEmpty()) part.lastData.restart();
         };
@@ -191,9 +219,12 @@ public:
                         / qMax<qint64>(1, now - part.rateSamples.front().first);
                     const bool trickling = part.elapsed.elapsed() >= 3000 && recentRate >= 0
                         && recentRate * 8 < peerRate && double(part.size - part.received) > recentRate * 2;
-                    const bool retryStarting = part.attempts > 1 && part.received == part.requestStart - offset - part.start;
-                    // A tail can keep the idle timer alive while delivering far less than its completed peers.
-                    if (part.elapsed.elapsed() >= (retryStarting ? 10000 : 3000) && finished >= (planned + 1) / 2 && (part.lastData.elapsed() >= 3000 || trickling)) {
+                    const bool slowTrickle = trickling && recentRate > 0 && recentRate < 16 * 1024;
+                    const bool retryStarting = part.attempts > 1 && part.received == part.requestStart - part.start;
+                    // Recover tails only after the queue drains. Completed requests from earlier
+                    // chunks must not turn normal gaps in a full connection pool into retries.
+                    if (part.elapsed.elapsed() >= (retryStarting ? 10000 : 3000)
+                        && ((finished >= (planned + 1) / 2 && part.lastData.elapsed() >= 3000) || slowTrickle)) {
                         if (qEnvironmentVariableIsSet("TWINFILE_PAYLOAD_TRACE"))
                             qInfo("Payload tail start=%llu attempt=%d received=%llu/%llu elapsed=%lld idle=%lld rate=%.0f peers=%.0f",
                                 part.requestStart, part.attempts, part.received, part.size, part.elapsed.elapsed(),
@@ -208,7 +239,7 @@ public:
                 if (current >= options.downloadConnections) continue;
                 part.held = true; part.validated = false; part.timedOut = false; ++part.attempts; part.elapsed.start(); part.lastData.start();
                 part.rateSamples.clear(); part.rateSamples.emplace_back(0, part.received);
-                part.requestStart = offset + part.start + part.received;
+                part.requestStart = part.start + part.received;
                 part.managerSlot = int(std::min_element(managerLoads.cbegin(), managerLoads.cend()) - managerLoads.cbegin());
                 ++managerLoads[size_t(part.managerSlot)];
                 if (part.recovered) {
@@ -232,7 +263,7 @@ public:
                 request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
                 request.setMaximumRedirectsAllowed(5);
                 request.setRawHeader("Accept-Encoding", "identity");
-                request.setRawHeader("Range", "bytes=" + QByteArray::number(part.requestStart) + '-' + QByteArray::number(offset + part.start + part.size - 1));
+                request.setRawHeader("Range", "bytes=" + QByteArray::number(part.requestStart) + '-' + QByteArray::number(part.start + part.size - 1));
                 request.setRawHeader("User-Agent", userAgent);
                 if (!etag.isEmpty()) request.setRawHeader("If-Match", etag);
                 else if (!modified.isEmpty()) request.setRawHeader("If-Unmodified-Since", modified);
@@ -248,7 +279,7 @@ public:
                     if (status != 206) error = QStringLiteral("HTTP 服务必须支持严格的 206 Range（状态 %1）").arg(status);
                     else {
                         const auto match = QRegularExpression(QStringLiteral("^bytes (\\d+)-(\\d+)/(\\d+)$")).match(QString::fromLatin1(reply->rawHeader("Content-Range")));
-                        const quint64 first = item->requestStart, last = offset + item->start + item->size - 1, size = match.captured(3).toULongLong();
+                        const quint64 first = item->requestStart, last = item->start + item->size - 1, size = match.captured(3).toULongLong();
                         const QByteArray encoding = reply->rawHeader("Content-Encoding").toLower();
                         if (!match.hasMatch() || match.captured(1).toULongLong() != first || match.captured(2).toULongLong() != last || size <= last || (total && total != size))
                             error = QStringLiteral("服务器返回了错误的 Content-Range 或文件长度变化");
@@ -279,14 +310,13 @@ public:
                     --managerLoads[size_t(item->managerSlot)];
                     item->complete = error.isEmpty() && reply->error() == QNetworkReply::NoError && reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 206 && item->received == item->size;
                     if (item->complete) {
-                        completedRateSum += double(offset + item->start + item->size - item->requestStart) * 1000 / qMax<qint64>(1, item->elapsed.elapsed());
+                        completedRateSum += double(item->start + item->size - item->requestStart) * 1000 / qMax<qint64>(1, item->elapsed.elapsed());
                         ++completedRequests;
+                        try { if (committed) committed(item->destination, item->size); }
+                        catch (const std::exception &exception) { error = QString::fromUtf8(exception.what()); }
                         completedBytes += item->size; item->received = 0;
-                        if (nextOffset < count) {
-                            // Refill the freed slot immediately instead of waiting for the slowest range in a batch.
-                            item->start = nextOffset; item->size = qMin(chunkSize, count - nextOffset); nextOffset += item->size;
-                            item->complete = false; item->attempts = 0; item->recovered = false;
-                        }
+                        // One queue crosses every input window; completed slots never wait for a batch barrier.
+                        if (error.isEmpty()) refill(*item);
                     }
                     // A retry can append only to data protected by a stable validator.
                     if (!item->complete && ((etag.isEmpty() && modified.isEmpty()) || item->received == item->size)) item->received = 0;
@@ -296,7 +326,7 @@ public:
                         const QString cause = timeout
                             ? QStringLiteral("网络请求超时") : reply->errorString();
                         error = QStringLiteral("Range 请求重试失败（%1 次，%2-%3，已接收 %4/%5 字节）：%6")
-                            .arg(item->attempts).arg(offset + item->start).arg(offset + item->start + item->size - 1)
+                            .arg(item->attempts).arg(item->start).arg(item->start + item->size - 1)
                             .arg(item->received).arg(item->size).arg(cause);
                     }
                     if (!item->complete && item->recovered) item->manager = nullptr;
@@ -308,7 +338,7 @@ public:
         };
         QObject::connect(&poll, &QTimer::timeout, &loop, pump);
         notify(0, count); pump(); poll.start(); loop.exec();
-        checkCancel(interrupt); checkCancel(cancel); ensure(error.isEmpty(), error); notify(count, count); return bytes;
+        checkCancel(interrupt); checkCancel(cancel); ensure(error.isEmpty(), error); notify(count, count);
     }
     QByteArray read(quint64 offset, quint64 count, const Cancellation &cancel) {
         ensure(fits(offset, count, length), QStringLiteral("Payload 读取越界")); return count ? raw(base + offset, count, cancel) : QByteArray();
@@ -431,95 +461,94 @@ void extractPartition(RangeSource source, const PayloadPartition &partition, qui
                       const QString &path, const Cancellation &cancel, const Progress &progress, const std::function<void(qint64)> &downloaded) {
     QFile output(path); ensure(output.open(QIODevice::ReadWrite | QIODevice::NewOnly) && output.resize(qint64(partition.size)), output.errorString());
     quint64 done = 0;
-    QByteArray inputCache; quint64 cacheOffset = 0;
     source.interrupt = std::make_shared<std::atomic_bool>(false);
-    struct Window { quint64 offset; QByteArray bytes; };
-    const auto windowSize = [&](qsizetype operationIndex, quint64 offset) {
-        quint64 end = partition.operations[operationIndex].offset + partition.operations[operationIndex].length;
-        for (qsizetype index = operationIndex + 1; index < partition.operations.size() && end - offset < source.inputSize; ++index) {
-            const auto &next = partition.operations[index];
-            if (!next.length || next.offset != end) break;
-            ensure(fits(dataOffset, next.offset, source.length) && fits(dataOffset + next.offset, next.length, source.length), QStringLiteral("分区操作读取越界"));
-            end += next.length;
+    std::vector<RangeSource::Span> spans;
+    std::vector<quint64> operationCache(size_t(partition.operations.size()), 0);
+    quint64 cacheSize = 0;
+    if (source.remote()) for (qsizetype index = 0; index < partition.operations.size(); ++index) {
+        const auto &operation = partition.operations[index];
+        checkCancel(cancel);
+        ensure(fits(dataOffset, operation.offset, source.length) && fits(dataOffset + operation.offset, operation.length, source.length), QStringLiteral("分区操作读取越界"));
+        ensure(fits(cacheSize, operation.length, quint64(std::numeric_limits<qint64>::max())), QStringLiteral("下载缓存大小溢出"));
+        operationCache[size_t(index)] = cacheSize;
+        for (quint64 offset = 0; offset < operation.length;) {
+            if (!spans.empty() && spans.back().offset + spans.back().size == source.base + dataOffset + operation.offset + offset
+                && spans.back().size < source.inputSize) {
+                const quint64 size = qMin(source.inputSize - spans.back().size, operation.length - offset);
+                spans.back().size += size; cacheSize += size; offset += size;
+            } else {
+                const quint64 size = qMin(source.inputSize, operation.length - offset);
+                spans.push_back({source.base + dataOffset + operation.offset + offset, size, cacheSize});
+                cacheSize += size; offset += size;
+            }
         }
-        return qMin(source.inputSize, end - offset);
-    };
-    const auto fetchWindow = [&](RangeSource &reader, quint64 offset, quint64 size) {
-        qint64 reported = 0;
-        reader.progress = [&](qint64 received, qint64, const QString &) {
-            const qint64 current = qMax(reported, received);
-            if (downloaded && current > reported) downloaded(current - reported);
-            reported = current;
-        };
-        const auto reset = qScopeGuard([&] { reader.progress = {}; });
-        return Window{offset, reader.read(dataOffset + offset, size, cancel)};
-    };
-    struct Request { quint64 offset, size; std::promise<Window> response; };
-    struct Pending { qsizetype index; quint64 offset, size; std::future<Window> response; };
-    std::deque<Request> queue; std::deque<Pending> pending;
-    std::mutex queueMutex; std::condition_variable queueChanged;
-    bool stopping = false;
-    std::vector<std::unique_ptr<QThread>> producers;
+    }
+    QTemporaryFile cache(path + QStringLiteral(".ranges-XXXXXX"));
+    if (!spans.empty()) ensure(cache.open() && cache.resize(qint64(cacheSize)), QStringLiteral("无法创建下载缓存：") + cache.errorString());
+    QFile cacheInput(cache.fileName());
+    if (!spans.empty()) ensure(cacheInput.open(QIODevice::ReadOnly | QIODevice::Unbuffered), cacheInput.errorString());
+    std::mutex cacheMutex; std::condition_variable cacheChanged;
+    std::map<quint64, quint64> available;
+    std::exception_ptr downloadError;
+    bool downloadFinished = false;
+    std::unique_ptr<QThread> producer;
     const auto stopProducer = qScopeGuard([&] {
         source.interrupt->store(true);
-        { std::lock_guard<std::mutex> lock(queueMutex); stopping = true; }
-        queueChanged.notify_all(); for (auto &producer : producers) producer->wait();
+        if (producer) producer->wait();
     });
-    const auto enqueue = [&](qsizetype index, quint64 offset) {
-        const quint64 size = windowSize(index, offset);
-        if (producers.empty()) {
-            // Two persistent readers let free slots cross a window boundary before its slow tail finishes.
-            for (int worker = 0; worker < 2; ++worker) {
-                producers.emplace_back(QThread::create([&] {
-                    RangeSource reader(source);
-                    for (;;) {
-                        std::unique_lock<std::mutex> lock(queueMutex);
-                        queueChanged.wait(lock, [&] { return stopping || !queue.empty(); });
-                        if (stopping) return;
-                        auto request = std::move(queue.front()); queue.pop_front(); lock.unlock();
-                        try { request.response.set_value(fetchWindow(reader, request.offset, request.size)); }
-                        catch (...) { request.response.set_exception(std::current_exception()); }
+    if (!spans.empty()) {
+        const QString cachePath = cache.fileName();
+        producer.reset(QThread::create([&, cachePath] {
+            try {
+                QFile writer(cachePath); ensure(writer.open(QIODevice::ReadWrite | QIODevice::Unbuffered), writer.errorString());
+                RangeSource reader(source); qint64 reported = 0;
+                reader.progress = [&](qint64 received, qint64, const QString &) {
+                    const qint64 current = qMax(reported, received);
+                    if (downloaded && current > reported) downloaded(current - reported);
+                    reported = current;
+                };
+                reader.transfer(spans, cancel, [&](quint64 position, const QByteArray &block) {
+                    ensure(writer.seek(qint64(position)) && writer.write(block) == block.size(), QStringLiteral("下载缓存写入失败：") + writer.errorString());
+                }, [&](quint64 position, quint64 size) {
+                    // Publish only validated, completed ranges. Adjacent ranges collapse into one interval.
+                    std::lock_guard<std::mutex> lock(cacheMutex);
+                    quint64 start = position, end = position + size;
+                    auto next = available.lower_bound(start);
+                    if (next != available.begin()) {
+                        const auto previous = std::prev(next);
+                        if (previous->second == start) { start = previous->first; available.erase(previous); }
                     }
-                }));
-                producers.back()->start();
-            }
-        }
-        Request request{offset, size, {}};
-        pending.push_back(Pending{index, offset, size, request.response.get_future()});
-        { std::lock_guard<std::mutex> lock(queueMutex); queue.push_back(std::move(request)); }
-        queueChanged.notify_one();
-    };
-    const auto scheduleNext = [&](qsizetype operationIndex, quint64 start, quint64 size) {
-        quint64 offset = start + size;
-        for (qsizetype index = operationIndex; index < partition.operations.size(); ++index) {
-            const auto &operation = partition.operations[index];
-            if (!operation.length) continue;
-            ensure(fits(dataOffset, operation.offset, source.length) && fits(dataOffset + operation.offset, operation.length, source.length), QStringLiteral("分区操作读取越界"));
-            if (index == operationIndex) {
-                if (operation.offset + operation.length <= offset) continue;
-            } else {
-                if (operation.offset >= start && operation.offset + operation.length <= offset) continue;
-                offset = operation.offset >= start && operation.offset < offset ? offset : operation.offset;
-            }
-            enqueue(index, offset);
-            break;
-        }
-    };
+                    if (next != available.end() && next->first == end) { end = next->second; available.erase(next); }
+                    available.emplace(start, end); cacheChanged.notify_all();
+                });
+            } catch (...) { std::lock_guard<std::mutex> lock(cacheMutex); downloadError = std::current_exception(); }
+            { std::lock_guard<std::mutex> lock(cacheMutex); downloadFinished = true; }
+            cacheChanged.notify_all();
+        }));
+        producer->start();
+    }
     const auto readInput = [&](qsizetype operationIndex, quint64 offset, quint64 count) {
         if (!source.remote()) return source.read(dataOffset + offset, count, cancel);
-        if (offset < cacheOffset || offset - cacheOffset >= quint64(inputCache.size())) {
-            inputCache.clear();
-            if (pending.empty()) enqueue(operationIndex, offset);
-            ensure(pending.front().offset == offset, QStringLiteral("Payload 预读顺序错误"));
-            // Keep at most two windows resident, including the one currently being decoded.
-            if (pending.size() == 1) {
-                const auto &last = pending.back();
-                scheduleNext(last.index, last.offset, last.size);
+        const quint64 position = operationCache[size_t(operationIndex)] + offset - partition.operations[operationIndex].offset;
+        std::unique_lock<std::mutex> lock(cacheMutex);
+        for (;;) {
+            checkCancel(cancel);
+            if (downloadError) std::rethrow_exception(downloadError);
+            auto next = available.upper_bound(position);
+            if (next != available.begin()) {
+                const auto range = std::prev(next);
+                if (range->first <= position && range->second > position) {
+                    count = qMin(count, range->second - position); break;
+                }
             }
-            Window window = pending.front().response.get(); pending.pop_front();
-            cacheOffset = window.offset; inputCache = std::move(window.bytes);
+            ensure(!downloadFinished, QStringLiteral("下载缓存缺少分区数据"));
+            cacheChanged.wait_for(lock, std::chrono::milliseconds(50));
         }
-        return inputCache.mid(qsizetype(offset - cacheOffset), qsizetype(count));
+        lock.unlock();
+        ensure(cacheInput.seek(qint64(position)), cacheInput.errorString());
+        const QByteArray bytes = cacheInput.read(qint64(count));
+        ensure(quint64(bytes.size()) == count, QStringLiteral("下载缓存读取不完整"));
+        return bytes;
     };
     for (qsizetype operationIndex = 0; operationIndex < partition.operations.size(); ++operationIndex) {
         const PayloadOperation &operation = partition.operations[operationIndex];
@@ -578,6 +607,10 @@ void extractPartition(RangeSource source, const PayloadPartition &partition, qui
             if (bzReady) BZ2_bzDecompressEnd(&bz); if (xzReady) lzma_end(&xz); if (zstd) ZSTD_freeDStream(zstd);
         }
         ensure(produced == expected, QStringLiteral("操作解压大小不足")); done += produced; if (progress) progress(qint64(done), qint64(partition.size), partition.name);
+    }
+    if (producer) {
+        producer->wait();
+        if (downloadError) std::rethrow_exception(downloadError);
     }
     ensure(output.flush(), output.errorString());
     if (!partition.hash.isEmpty()) {
@@ -661,7 +694,15 @@ Result extractPayload(const QString &source, const QStringList &partitions, cons
             total += partition.size; selected.append(partition); selectedNames.insert(partition.name);
         }
         ensure(selectedNames.size() == QSet<QString>(partitions.cbegin(), partitions.cend()).size(), QStringLiteral("未知分区名称"));
-        const QStorageInfo storage(destination); ensure(!storage.isValid() || storage.bytesAvailable() < 0 || quint64(storage.bytesAvailable()) >= total, QStringLiteral("磁盘空间不足"));
+        quint64 cacheBytes = 0;
+        if (payload.source.remote()) for (const auto &partition : selected)
+            for (const auto &operation : partition.operations) {
+                ensure(fits(cacheBytes, operation.length, quint64(std::numeric_limits<qint64>::max()) - total), QStringLiteral("下载缓存大小溢出"));
+                cacheBytes += operation.length;
+            }
+        const QStorageInfo storage(destination);
+        ensure(!storage.isValid() || storage.bytesAvailable() < 0 || quint64(storage.bytesAvailable()) >= total + cacheBytes,
+            QStringLiteral("磁盘空间不足（需要容纳分区镜像及远程下载缓存）"));
         QTemporaryDir staging(QDir(destination).filePath(QStringLiteral(".twinfile-payload-XXXXXX"))); ensure(staging.isValid(), QStringLiteral("无法创建分区暂存目录"));
         std::atomic<qsizetype> next{0}; const int concurrency = qBound(1, qMin(workers, int(selected.size())), 8);
         std::vector<std::future<void>> tasks; std::vector<std::unique_ptr<QThread>> threads;

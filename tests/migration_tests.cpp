@@ -182,6 +182,22 @@ static QByteArray encodePayload(const QByteArray &data, int type = 0, bool badHa
     }
     return QByteArray("CrAU") + network<quint64>(2) + network<quint64>(quint64(manifest.size())) + network<quint32>(0) + manifest + compressed;
 }
+static QByteArray encodePayloadWindowOperations(const QByteArray &data, quint64 window) {
+    const QByteArray info = integer(1, quint64(data.size())) + message(2, QCryptographicHash::hash(data, QCryptographicHash::Sha256));
+    QByteArray partition = message(1, "system") + message(7, info);
+    for (quint64 offset = 0; offset < quint64(data.size());) {
+        const quint64 size = qMin(window, quint64(data.size()) - offset);
+        const QByteArray block = data.mid(qsizetype(offset), qsizetype(size));
+        const QByteArray extent = integer(1, offset / 4096) + integer(2, size / 4096);
+        const QByteArray operation = integer(1, 0) + integer(2, offset) + integer(3, size)
+            + message(6, extent) + message(8, QCryptographicHash::hash(block, QCryptographicHash::Sha256));
+        partition += message(8, operation);
+        offset += size;
+    }
+    const QByteArray manifest = integer(3, 4096) + message(13, partition);
+    return QByteArray("CrAU") + network<quint64>(2) + network<quint64>(quint64(manifest.size()))
+        + network<quint32>(0) + manifest + data;
+}
 
 class PayloadHttpFixture : public QObject {
 public:
@@ -209,6 +225,8 @@ public:
     int burstTailRequests = 0;
     int responseDelayMs = 100;
     QList<QPair<QPointer<QTcpSocket>, QByteArray>> pending;
+    QList<QPair<QPointer<QTcpSocket>, QByteArray>> blockedTails;
+    bool thirdWindowBeforeTail = false;
     explicit PayloadHttpFixture(QByteArray data = {}, Mode behavior = Range) : bytes(std::move(data)), mode(behavior) {
         server.setMaxPendingConnections(1024); server.setListenBacklogSize(1024);
         server.listen(QHostAddress::LocalHost);
@@ -229,6 +247,11 @@ public:
                     const auto range = QRegularExpression(QStringLiteral("Range: bytes=(\\d+)-(\\d+)"), QRegularExpression::CaseInsensitiveOption).match(QString::fromLatin1(*request));
                     const qint64 start = range.captured(1).toLongLong(), end = range.captured(2).toLongLong();
                     ranges.append({start, end});
+                    if (dataFailure == QStringLiteral("continuous-refill") && start >= delayedFrom + 2 * tailWindowSize) {
+                        thirdWindowBeforeTail = true;
+                        for (const auto &item : blockedTails) if (item.first) { item.first->write(item.second); item.first->disconnectFromHost(); }
+                        blockedTails.clear();
+                    }
                     if (dataFailure == QStringLiteral("trickle-tail"))
                         for (qint64 tail : tricklingTails) if (start >= tail + tailWindowSize) nextWindowBeforeTail = true;
                     if (silentFrom >= 0 && start >= silentFrom) return;
@@ -241,6 +264,10 @@ public:
                     if (delayedFrom >= 0 && start >= delayedFrom && body.size() >= delayedMinimumSize) {
                         ++active; peak = qMax(peak, active);
                         connect(client, &QTcpSocket::disconnected, client, [this] { --active; });
+                        if (dataFailure == QStringLiteral("continuous-refill") && !thirdWindowBeforeTail
+                            && (start - delayedFrom) % tailWindowSize == 0 && start < delayedFrom + 2 * tailWindowSize) {
+                            blockedTails.append({client, response}); return;
+                        }
                         if (dataFailure == QStringLiteral("version")) response.replace("\"payload-fixture\"", "\"changed\"");
                         if (dataFailure == QStringLiteral("range")) response.replace("Content-Range: bytes ", "Content-Range: bytes 999");
                         if (dataFailure == QStringLiteral("ignored")) response.replace("206 Partial Content", "200 OK");
@@ -256,6 +283,15 @@ public:
                         }
                         if (dataFailure == QStringLiteral("stall") && !failureUsed && start == delayedFrom) {
                             failureUsed = true; client->write(response.left(response.size() - body.size() / 2)); return;
+                        }
+                        if (dataFailure == QStringLiteral("busy-pool-gap")
+                            && start >= delayedFrom + 1024 * 1024 && start < delayedFrom + 2 * 1024 * 1024) {
+                            const qsizetype prefix = response.size() - body.size() / 2;
+                            client->write(response.left(prefix));
+                            QTimer::singleShot(3700, client, [client, response, prefix] {
+                                client->write(response.mid(prefix)); client->disconnectFromHost();
+                            });
+                            return;
                         }
                         if (dataFailure == QStringLiteral("repeated-tail") && end == delayedFrom + 262144 - 1
                             && ++repeatedTailRequests <= 4) {
@@ -818,6 +854,21 @@ private slots:
         QCOMPARE(fixture.burstTailRequests, 1);
         QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), data); QTRY_COMPARE(fixture.active, 0);
     }
+    void payloadBusyPoolGapsDoNotCauseRetries() {
+        QTemporaryDir root; const QByteArray data(4 * 1024 * 1024, 'g');
+        PayloadHttpFixture fixture(encodePayload(data)); fixture.dataFailure = QStringLiteral("busy-pool-gap");
+        fixture.delayedFrom = 24 + qint64(qFromBigEndian<quint64>(fixture.bytes.constData() + 12));
+        PayloadOptions options; options.downloadConnections = 4;
+        auto task = qtAsync([&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 1, {}, {}, options); });
+        QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 30000);
+        const auto result = task.get(); QVERIFY2(result.ok, qPrintable(result.error));
+        const auto gapRequests = std::count_if(fixture.ranges.cbegin(), fixture.ranges.cend(), [&](const auto &range) {
+            return range.second >= fixture.delayedFrom + 1024 * 1024
+                && range.second < fixture.delayedFrom + 2 * 1024 * 1024;
+        });
+        QCOMPARE(gapRequests, 4); QVERIFY(fixture.peak <= 4);
+        QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), data); QTRY_COMPARE(fixture.active, 0);
+    }
     void payloadRepeatedSlowTailRecovers() {
         QFETCH(bool, validator); QFETCH(bool, trickle);
         QTemporaryDir root; const QByteArray data(4 * 1024 * 1024, 'r');
@@ -834,6 +885,37 @@ private slots:
         const auto result = task.get(); QVERIFY2(result.ok, qPrintable(result.error));
         QCOMPARE(fixture.repeatedTailRequests, 5); QVERIFY(fixture.peak <= 4);
         QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), data); QTRY_COMPARE(fixture.active, 0);
+    }
+    void payloadContinuousQueueCrossesTwoBlockedWindows_data() {
+        QTest::addColumn<int>("connections");
+        QTest::newRow("four") << 4;
+        QTest::newRow("sixteen") << 16;
+        QTest::newRow("512") << 512;
+    }
+    void payloadContinuousQueueCrossesTwoBlockedWindows() {
+        QFETCH(int, connections); QTemporaryDir root;
+        // Keep the 512-slot fixture bounded so the local TCP stress test remains
+        // deterministic on Windows while still crossing three logical windows.
+        const int window = connections == 512 ? 32 * 1024 * 1024 : qMin(connections, 128) * 1024 * 1024;
+        const QByteArray data(connections == 512 ? 2 * window + 4096 : 3 * window, 'c');
+        const QByteArray payload = connections == 512 ? encodePayloadWindowOperations(data, quint64(window)) : encodePayload(data);
+        PayloadHttpFixture fixture(payload); fixture.dataFailure = QStringLiteral("continuous-refill");
+        fixture.responseDelayMs = 10; fixture.tailWindowSize = window;
+        fixture.delayedFrom = 24 + qint64(qFromBigEndian<quint64>(fixture.bytes.constData() + 12));
+        PayloadOptions options; options.downloadConnections = connections;
+        auto cancel = std::make_shared<std::atomic_bool>(false);
+        const int deadline = connections == 512 ? 30000 : 12000;
+        QTimer::singleShot(deadline, &fixture, [cancel] { cancel->store(true); });
+        QElapsedTimer elapsed; elapsed.start();
+        auto task = qtAsync([&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 1, cancel, {}, options); });
+        QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, deadline + 3000);
+        const auto result = task.get(); QVERIFY2(result.ok, qPrintable(result.error));
+        qInfo("Continuous queue: %d connections, %lld ms, third window before blocked tails: %d", connections, elapsed.elapsed(), fixture.thirdWindowBeforeTail);
+        QVERIFY(fixture.thirdWindowBeforeTail); QVERIFY(fixture.peak <= connections);
+        QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), data);
+        QTRY_COMPARE(fixture.active, 0);
+        const auto leftovers = QDir(root.path()).entryList(QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot);
+        QVERIFY(leftovers.isEmpty());
     }
     void payloadTricklingTailsDoNotBlockNextWindow_data() {
         QTest::addColumn<int>("connections"); QTest::addColumn<bool>("validator");
