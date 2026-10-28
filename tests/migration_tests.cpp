@@ -204,6 +204,10 @@ public:
     qint64 tailWindowSize = 4 * 1024 * 1024;
     QSet<qint64> tricklingTails;
     int recoveredTails = 0;
+    int repeatedTailRequests = 0;
+    bool repeatedTailTrickles = false;
+    int burstTailRequests = 0;
+    int responseDelayMs = 100;
     QList<QPair<QPointer<QTcpSocket>, QByteArray>> pending;
     explicit PayloadHttpFixture(QByteArray data = {}, Mode behavior = Range) : bytes(std::move(data)), mode(behavior) {
         server.setMaxPendingConnections(1024); server.setListenBacklogSize(1024);
@@ -253,6 +257,35 @@ public:
                         if (dataFailure == QStringLiteral("stall") && !failureUsed && start == delayedFrom) {
                             failureUsed = true; client->write(response.left(response.size() - body.size() / 2)); return;
                         }
+                        if (dataFailure == QStringLiteral("repeated-tail") && end == delayedFrom + 262144 - 1
+                            && ++repeatedTailRequests <= 4) {
+                            const qsizetype prefix = response.size() - body.size() / 2;
+                            client->write(response.left(prefix));
+                            if (repeatedTailTrickles) {
+                                auto remaining = std::make_shared<QByteArray>(response.mid(prefix));
+                                auto *timer = new QTimer(client); timer->setInterval(50);
+                                connect(timer, &QTimer::timeout, client, [client, timer, remaining] {
+                                    if (client->state() != QAbstractSocket::ConnectedState) { timer->stop(); return; }
+                                    client->write(remaining->left(1)); remaining->remove(0, 1);
+                                    if (remaining->isEmpty()) { timer->stop(); client->disconnectFromHost(); }
+                                });
+                                timer->start();
+                            }
+                            return;
+                        }
+                        if (dataFailure == QStringLiteral("burst-tail") && end == delayedFrom + 262144 - 1) {
+                            ++burstTailRequests;
+                            const qsizetype header = response.size() - body.size();
+                            client->write(response.left(header));
+                            auto remaining = std::make_shared<QByteArray>(body);
+                            auto *timer = new QTimer(client); timer->setInterval(1600);
+                            connect(timer, &QTimer::timeout, client, [client, timer, remaining] {
+                                if (client->state() != QAbstractSocket::ConnectedState) { timer->stop(); return; }
+                                client->write(remaining->left(65536)); remaining->remove(0, 65536);
+                                if (remaining->isEmpty()) { timer->stop(); client->disconnectFromHost(); }
+                            });
+                            timer->start(); return;
+                        }
                         if (dataFailure == QStringLiteral("trickle-tail") && (start - delayedFrom) % tailWindowSize == 0 && !stalledRanges.contains(start)) {
                             stalledRanges.insert(start); tricklingTails.insert(start);
                             connect(client, &QTcpSocket::disconnected, client, [this, start] { tricklingTails.remove(start); });
@@ -274,7 +307,7 @@ public:
                                 for (const auto &item : pending) if (item.first) { item.first->write(item.second); item.first->disconnectFromHost(); }
                                 pending.clear(); releaseAt = 0;
                             }
-                        } else QTimer::singleShot(100, client, [client, response] { client->write(response); client->disconnectFromHost(); });
+                        } else QTimer::singleShot(responseDelayMs, client, [client, response] { client->write(response); client->disconnectFromHost(); });
                     } else { client->write(response); client->disconnectFromHost(); }
                 });
             }
@@ -590,12 +623,14 @@ private slots:
         QTest::addColumn<int>("connections"); QTest::addColumn<bool>("zip");
         QTest::newRow("one-connection") << 1 << false;
         QTest::newRow("16-connections") << 16 << false;
+        QTest::newRow("255-connections") << 255 << false;
+        QTest::newRow("256-connections") << 256 << false;
         QTest::newRow("512-connections") << 512 << false;
         QTest::newRow("compressed-ota-16-connections") << 16 << true;
     }
     void payloadDownloadConnections() {
         QFETCH(int, connections); QFETCH(bool, zip); QTemporaryDir root;
-        QByteArray data((connections == 512 ? 128 : 4) * 1024 * 1024, 'p');
+        QByteArray data(qMax(connections, 16) * 256 * 1024, 'p');
         if (zip) {
             QRandomGenerator random(512);
             for (qsizetype index = 0; index < data.size(); index += 4) qToLittleEndian<quint32>(random.generate(), data.data() + index);
@@ -762,6 +797,43 @@ private slots:
         const auto result = task.get(); QVERIFY2(result.ok, qPrintable(result.error)); QCOMPARE(hits, proxyRequests);
         QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), QByteArray(4 * 1024 * 1024, 'p'));
         QCOMPARE(QNetworkProxy::applicationProxy().type(), QNetworkProxy::HttpProxy);
+    }
+    void payloadRepeatedSlowTailRecovers_data() {
+        QTest::addColumn<bool>("validator");
+        QTest::addColumn<bool>("trickle");
+        QTest::newRow("resume-silent") << true << false;
+        QTest::newRow("restart-silent") << false << false;
+        QTest::newRow("resume-trickle") << true << true;
+        QTest::newRow("restart-trickle") << false << true;
+    }
+    void payloadBurstsDoNotCauseTailRetries() {
+        QTemporaryDir root; const QByteArray data(4 * 1024 * 1024, 'b');
+        PayloadHttpFixture fixture(encodePayload(data)); fixture.dataFailure = QStringLiteral("burst-tail");
+        fixture.responseDelayMs = 1000;
+        fixture.delayedFrom = 24 + qint64(qFromBigEndian<quint64>(fixture.bytes.constData() + 12));
+        PayloadOptions options; options.downloadConnections = 4;
+        auto task = qtAsync([&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 1, {}, {}, options); });
+        QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 10000);
+        const auto result = task.get(); QVERIFY2(result.ok, qPrintable(result.error));
+        QCOMPARE(fixture.burstTailRequests, 1);
+        QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), data); QTRY_COMPARE(fixture.active, 0);
+    }
+    void payloadRepeatedSlowTailRecovers() {
+        QFETCH(bool, validator); QFETCH(bool, trickle);
+        QTemporaryDir root; const QByteArray data(4 * 1024 * 1024, 'r');
+        PayloadHttpFixture fixture(encodePayload(data)); fixture.stableValidator = validator;
+        fixture.repeatedTailTrickles = trickle;
+        fixture.dataFailure = QStringLiteral("repeated-tail");
+        fixture.delayedFrom = 24 + qint64(qFromBigEndian<quint64>(fixture.bytes.constData() + 12));
+        PayloadOptions options; options.downloadConnections = 4;
+        options.idleTimeoutMs = options.requestTimeoutMs = 60000;
+        auto cancel = std::make_shared<std::atomic_bool>(false);
+        QTimer::singleShot(18000, &fixture, [cancel] { cancel->store(true); });
+        auto task = qtAsync([&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 1, cancel, {}, options); });
+        QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 20000);
+        const auto result = task.get(); QVERIFY2(result.ok, qPrintable(result.error));
+        QCOMPARE(fixture.repeatedTailRequests, 5); QVERIFY(fixture.peak <= 4);
+        QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), data); QTRY_COMPARE(fixture.active, 0);
     }
     void payloadTricklingTailsDoNotBlockNextWindow_data() {
         QTest::addColumn<int>("connections"); QTest::addColumn<bool>("validator");

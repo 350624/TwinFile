@@ -6,6 +6,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QHttp1Configuration>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkProxy>
@@ -132,9 +133,8 @@ public:
             quint64 start = 0, size = 0, received = 0, requestStart = 0;
             QNetworkAccessManager *manager = nullptr;
             QNetworkReply *reply = nullptr;
-            QElapsedTimer elapsed, lastData, rateTimer;
-            quint64 sampledBytes = 0;
-            double bytesPerSecond = -1;
+            QElapsedTimer elapsed, lastData;
+            std::deque<std::pair<qint64, quint64>> rateSamples;
             int attempts = 0, managerSlot = -1;
             bool complete = false, held = false, timedOut = false, validated = false, recovered = false;
         };
@@ -146,12 +146,13 @@ public:
         quint64 nextOffset = 0, completedBytes = 0;
         double completedRateSum = 0;
         int completedRequests = 0;
-        const int managerCount = (planned + 5) / 6;
+        constexpr int connectionsPerManager = 255;
+        const int managerCount = (planned + connectionsPerManager - 1) / connectionsPerManager;
         std::vector<int> managerLoads(size_t(managerCount), 0);
         parts.resize(size_t(planned));
         QByteArray bytes(qsizetype(count), Qt::Uninitialized); char *const buffer = bytes.data();
         QString error;
-        // Each manager supplies at most six HTTP/1 connections; all partition readers share the same budget.
+        // Configure HTTP/1 pools explicitly instead of multiplying Qt network threads for the default six slots.
         const auto cleanup = qScopeGuard([&] {
             for (auto &part : parts) {
                 if (part.reply) { QObject::disconnect(part.reply, nullptr, &loop, nullptr); part.reply->abort(); }
@@ -179,15 +180,24 @@ public:
                 received += part.received; complete &= part.complete;
                 if (part.complete) continue;
                 if (part.reply) {
-                    if (part.rateTimer.elapsed() >= 1000) {
-                        part.bytesPerSecond = double(part.received - part.sampledBytes) * 1000 / part.rateTimer.elapsed();
-                        part.sampledBytes = part.received; part.rateTimer.restart();
-                    }
+                    const qint64 now = part.elapsed.elapsed();
+                    if (part.rateSamples.empty() || now - part.rateSamples.back().first >= 500)
+                        part.rateSamples.emplace_back(now, part.received);
+                    while (part.rateSamples.size() > 1 && part.rateSamples[1].first <= now - 3000)
+                        part.rateSamples.pop_front();
                     const double peerRate = completedRequests ? completedRateSum / completedRequests : 0;
-                    const bool trickling = part.elapsed.elapsed() >= 3000 && part.bytesPerSecond >= 0
-                        && part.bytesPerSecond * 8 < peerRate && double(part.size - part.received) > part.bytesPerSecond * 2;
+                    // A full rolling window includes fresh bursts and does not confuse a gap between packets with a slow tail.
+                    const double recentRate = double(part.received - part.rateSamples.front().second) * 1000
+                        / qMax<qint64>(1, now - part.rateSamples.front().first);
+                    const bool trickling = part.elapsed.elapsed() >= 3000 && recentRate >= 0
+                        && recentRate * 8 < peerRate && double(part.size - part.received) > recentRate * 2;
+                    const bool retryStarting = part.attempts > 1 && part.received == part.requestStart - offset - part.start;
                     // A tail can keep the idle timer alive while delivering far less than its completed peers.
-                    if (!part.recovered && finished >= (planned + 1) / 2 && (part.lastData.elapsed() >= 3000 || trickling)) {
+                    if (part.elapsed.elapsed() >= (retryStarting ? 10000 : 3000) && finished >= (planned + 1) / 2 && (part.lastData.elapsed() >= 3000 || trickling)) {
+                        if (qEnvironmentVariableIsSet("TWINFILE_PAYLOAD_TRACE"))
+                            qInfo("Payload tail start=%llu attempt=%d received=%llu/%llu elapsed=%lld idle=%lld rate=%.0f peers=%.0f",
+                                part.requestStart, part.attempts, part.received, part.size, part.elapsed.elapsed(),
+                                part.lastData.elapsed(), recentRate, peerRate);
                         part.recovered = true; part.reply->abort();
                     }
                     else if (part.elapsed.elapsed() >= options.requestTimeoutMs) { part.timedOut = true; part.reply->abort(); }
@@ -197,7 +207,7 @@ public:
                 while (current < options.downloadConnections && !connections->compare_exchange_weak(current, current + 1)) {}
                 if (current >= options.downloadConnections) continue;
                 part.held = true; part.validated = false; part.timedOut = false; ++part.attempts; part.elapsed.start(); part.lastData.start();
-                part.rateTimer.start(); part.sampledBytes = part.received; part.bytesPerSecond = -1;
+                part.rateSamples.clear(); part.rateSamples.emplace_back(0, part.received);
                 part.requestStart = offset + part.start + part.received;
                 part.managerSlot = int(std::min_element(managerLoads.cbegin(), managerLoads.cend()) - managerLoads.cbegin());
                 ++managerLoads[size_t(part.managerSlot)];
@@ -215,6 +225,9 @@ public:
                     part.manager = managers[size_t(part.managerSlot)].get();
                 }
                 QNetworkRequest request{QUrl(source)};
+                QHttp1Configuration http1;
+                http1.setNumberOfConnectionsPerHost(connectionsPerManager);
+                request.setHttp1Configuration(http1);
                 request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
                 request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
                 request.setMaximumRedirectsAllowed(5);
