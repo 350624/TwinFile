@@ -623,6 +623,9 @@ private slots:
     }
     void payloadNetworkDeadlines() {
         QFETCH(int, mode); QFETCH(bool, idle); PayloadHttpFixture fixture({}, PayloadHttpFixture::Mode(mode)); PayloadOptions options; options.idleTimeoutMs = idle ? 140 : 250; options.requestTimeoutMs = idle ? 2000 : 140;
+        // Protocol rejection is not a short-deadline test; allow headers to arrive
+        // before requiring a single, non-retried rejection on a loaded host.
+        if (mode == PayloadHttpFixture::IgnoredRange) options.idleTimeoutMs = options.requestTimeoutMs = 2000;
         auto task = qtAsync([&] { return inspectPayload(fixture.url(), {}, options); });
         QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 3000);
         const Result result = task.get(); QVERIFY(!result.ok); QCOMPARE(fixture.requests, mode == PayloadHttpFixture::IgnoredRange ? 1 : 8);

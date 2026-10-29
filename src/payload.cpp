@@ -158,7 +158,7 @@ public:
             QElapsedTimer elapsed, lastData;
             std::deque<std::pair<qint64, quint64>> rateSamples;
             int attempts = 0, managerSlot = -1;
-            bool complete = false, held = false, timedOut = false, validated = false, recovered = false;
+            bool complete = false, held = false, timedOut = false, validated = false;
         };
         QEventLoop loop; QTimer poll; poll.setInterval(50);
         std::vector<std::unique_ptr<QNetworkAccessManager>> recoveryManagers;
@@ -178,7 +178,7 @@ public:
             part.start = span.offset + nextOffset; part.destination = span.destination + nextOffset;
             part.size = qMin(chunkSize, span.size - nextOffset); nextOffset += part.size;
             if (nextOffset == span.size) { ++nextSpan; nextOffset = 0; }
-            part.complete = false; part.received = 0; part.attempts = 0; part.recovered = false;
+            part.complete = false; part.received = 0; part.attempts = 0;
             return true;
         };
         double completedRateSum = 0;
@@ -236,7 +236,7 @@ public:
                             qInfo("Payload tail start=%llu attempt=%d received=%llu/%llu elapsed=%lld idle=%lld rate=%.0f peers=%.0f",
                                 part.requestStart, part.attempts, part.received, part.size, part.elapsed.elapsed(),
                                 part.lastData.elapsed(), recentRate, peerRate);
-                        part.recovered = true; part.reply->abort();
+                        part.reply->abort();
                     }
                     else if (part.elapsed.elapsed() >= options.requestTimeoutMs) { part.timedOut = true; part.reply->abort(); }
                     continue;
@@ -249,12 +249,15 @@ public:
                 part.requestStart = part.start + part.received;
                 part.managerSlot = int(std::min_element(managerLoads.cbegin(), managerLoads.cend()) - managerLoads.cbegin());
                 ++managerLoads[size_t(part.managerSlot)];
-                if (part.recovered) {
-                    while (size_t(part.managerSlot) >= recoveryManagers.size()) {
+                if (part.attempts > 1) {
+                    // Failed transports must not poison subsequent attempts. Keep each retry
+                    // generation in a separate bounded pool, including ordinary timeouts.
+                    const size_t recoverySlot = size_t((part.attempts - 2) * managerCount + part.managerSlot);
+                    while (recoverySlot >= recoveryManagers.size()) {
                         recoveryManagers.emplace_back(std::make_unique<QNetworkAccessManager>());
                         recoveryManagers.back()->setProxy(QNetworkProxy::NoProxy);
                     }
-                    part.manager = recoveryManagers[size_t(part.managerSlot)].get();
+                    part.manager = recoveryManagers[recoverySlot].get();
                 } else {
                     while (size_t(part.managerSlot) >= managers.size()) {
                         managers.emplace_back(std::make_unique<QNetworkAccessManager>());
@@ -336,7 +339,6 @@ public:
                             .arg(item->attempts).arg(item->start).arg(item->start + item->size - 1)
                             .arg(item->received).arg(item->size).arg(cause);
                     }
-                    if (!item->complete && item->recovered) item->manager = nullptr;
                     reply->deleteLater();
                 });
             }
