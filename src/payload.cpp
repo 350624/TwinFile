@@ -210,7 +210,6 @@ public:
         };
         const auto pump = [&] {
             if (!error.isEmpty() || (cancel && cancel->load()) || (interrupt && interrupt->load())) { loop.quit(); return; }
-            const auto finished = std::count_if(parts.cbegin(), parts.cend(), [](const Part &part) { return part.complete; });
             bool complete = true; quint64 received = completedBytes;
             for (auto &part : parts) {
                 received += part.received; complete &= part.complete;
@@ -229,9 +228,9 @@ public:
                         && recentRate * 8 < peerRate && double(part.size - part.received) > recentRate * 2;
                     const bool slowTrickle = trickling && recentRate > 0 && recentRate < 16 * 1024;
                     const bool retryStarting = part.attempts > 1 && part.received == part.requestStart - part.start;
-                    // Recover tails only after the queue drains. Completed requests from earlier
-                    // chunks must not turn normal gaps in a full connection pool into retries.
-                    if (finished >= (planned + 1) / 2 && part.elapsed.elapsed() >= (retryStarting ? 10000 : 3000)
+                    // Recover only after all queued ranges have been assigned. Slow tails can
+                    // occupy most slots, so completed-slot counts cannot detect this boundary.
+                    if (nextSpan == spans.size() && part.elapsed.elapsed() >= (retryStarting ? 10000 : 3000)
                         && (part.lastData.elapsed() >= 3000 || slowTrickle)) {
                         if (qEnvironmentVariableIsSet("TWINFILE_PAYLOAD_TRACE"))
                             qInfo("Payload tail start=%llu attempt=%d received=%llu/%llu elapsed=%lld idle=%lld rate=%.0f peers=%.0f",
