@@ -901,7 +901,7 @@ private slots:
             auto *enter = popup->findChild<QVariantAnimation *>(QStringLiteral("mtMenuAnimation")); QVERIFY(enter);
             QCOMPARE(enter->state(), QAbstractAnimation::Running); enter->pause(); enter->setCurrentTime(60);
             QVERIFY(popup->windowOpacity() > 0); QVERIFY(popup->windowOpacity() < 1); enter->resume();
-            QTest::qWait(200); QCOMPARE(popup->windowOpacity(), 1.0);
+            QTRY_COMPARE_WITH_TIMEOUT(popup->windowOpacity(), 1.0, 3000); QCOMPARE(enter->state(), QAbstractAnimation::Stopped);
             QMenu *tools = nullptr; for (auto *action : popup->actions()) if (action->text() == QStringLiteral("更多工具")) tools = action->menu();
             QVERIFY(tools); tools->popup(popup->mapToGlobal(QPoint(popup->width(), 0)));
             auto *submenuMotion = tools->findChild<QVariantAnimation *>(QStringLiteral("mtMenuAnimation")); QVERIFY(submenuMotion);
@@ -932,7 +932,7 @@ private slots:
                 else {
                     QCOMPARE(enter->state(), QAbstractAnimation::Running); enter->pause(); enter->setCurrentTime(60);
                     QVERIFY(dialog->windowOpacity() > 0); QVERIFY(dialog->windowOpacity() < 1);
-                    enter->resume(); QTest::qWait(200); QVERIFY(dialog->windowOpacity() > 0.98);
+                    enter->resume(); QTRY_COMPARE_WITH_TIMEOUT(dialog->windowOpacity(), 1.0, 3000); QCOMPARE(enter->state(), QAbstractAnimation::Stopped);
                 }
                 dialog->reject();
                 if (!reduced) {

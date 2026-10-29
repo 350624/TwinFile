@@ -139,14 +139,18 @@ public:
     void transfer(const std::vector<Span> &spans, const Cancellation &cancel,
                   const std::function<void(quint64, const QByteArray &)> &write,
                   const std::function<void(quint64, quint64)> &committed = {}) {
-        quint64 count = 0, largest = 0;
+        quint64 count = 0;
         for (const auto &span : spans) {
             ensure(span.size > 0 && span.size <= 128 * 1024 * 1024
                 && fits(span.offset, span.size, quint64(std::numeric_limits<qint64>::max())), QStringLiteral("HTTP Range 长度无效"));
             ensure(count <= quint64(std::numeric_limits<qint64>::max()) - span.size, QStringLiteral("HTTP Range 总长度溢出"));
-            count += span.size; largest = qMax(largest, span.size);
+            count += span.size;
         }
         ensure(count > 0, QStringLiteral("HTTP Range 长度为空"));
+        constexpr quint64 minimumRangeSize = 256 * 1024;
+        const auto spanSlots = [&](const Span &span) {
+            return int(qMin<quint64>(options.downloadConnections, qMax<quint64>(1, span.size / minimumRangeSize)));
+        };
         struct Part {
             quint64 start = 0, destination = 0, size = 0, received = 0, requestStart = 0;
             QNetworkAccessManager *manager = nullptr;
@@ -159,14 +163,18 @@ public:
         QEventLoop loop; QTimer poll; poll.setInterval(50);
         std::vector<std::unique_ptr<QNetworkAccessManager>> recoveryManagers;
         std::vector<Part> parts;
-        const int planned = int(qMin<quint64>(options.downloadConnections, qMax<quint64>(1, largest / (256 * 1024))));
+        int planned = 0;
+        for (const auto &span : spans) {
+            planned = qMin(options.downloadConnections, planned + spanSlots(span));
+            if (planned == options.downloadConnections) break;
+        }
         size_t nextSpan = 0; quint64 nextOffset = 0, completedBytes = 0;
         const auto refill = [&](Part &part) {
             if (nextSpan == spans.size()) return false;
             const auto &span = spans[nextSpan];
-            const int spanSlots = int(qMin<quint64>(options.downloadConnections, qMax<quint64>(1, span.size / (256 * 1024))));
-            const quint64 chunkSize = spanSlots == 1 ? span.size : qMax<quint64>(256 * 1024,
-                (span.size + quint64(spanSlots) * 4 - 1) / (quint64(spanSlots) * 4));
+            const int rangeSlots = spanSlots(span);
+            const quint64 chunkSize = rangeSlots == 1 ? span.size : qMax<quint64>(minimumRangeSize,
+                (span.size + quint64(rangeSlots) * 4 - 1) / (quint64(rangeSlots) * 4));
             part.start = span.offset + nextOffset; part.destination = span.destination + nextOffset;
             part.size = qMin(chunkSize, span.size - nextOffset); nextOffset += part.size;
             if (nextOffset == span.size) { ++nextSpan; nextOffset = 0; }
@@ -223,8 +231,8 @@ public:
                     const bool retryStarting = part.attempts > 1 && part.received == part.requestStart - part.start;
                     // Recover tails only after the queue drains. Completed requests from earlier
                     // chunks must not turn normal gaps in a full connection pool into retries.
-                    if (part.elapsed.elapsed() >= (retryStarting ? 10000 : 3000)
-                        && ((finished >= (planned + 1) / 2 && part.lastData.elapsed() >= 3000) || slowTrickle)) {
+                    if (finished >= (planned + 1) / 2 && part.elapsed.elapsed() >= (retryStarting ? 10000 : 3000)
+                        && (part.lastData.elapsed() >= 3000 || slowTrickle)) {
                         if (qEnvironmentVariableIsSet("TWINFILE_PAYLOAD_TRACE"))
                             qInfo("Payload tail start=%llu attempt=%d received=%llu/%llu elapsed=%lld idle=%lld rate=%.0f peers=%.0f",
                                 part.requestStart, part.attempts, part.received, part.size, part.elapsed.elapsed(),

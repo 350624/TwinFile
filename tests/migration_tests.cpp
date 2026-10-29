@@ -284,12 +284,21 @@ public:
                         if (dataFailure == QStringLiteral("stall") && !failureUsed && start == delayedFrom) {
                             failureUsed = true; client->write(response.left(response.size() - body.size() / 2)); return;
                         }
-                        if (dataFailure == QStringLiteral("busy-pool-gap")
+                        if ((dataFailure == QStringLiteral("busy-pool-gap") || dataFailure == QStringLiteral("busy-pool-trickle"))
                             && start >= delayedFrom + 1024 * 1024 && start < delayedFrom + 2 * 1024 * 1024) {
                             const qsizetype prefix = response.size() - body.size() / 2;
                             client->write(response.left(prefix));
-                            QTimer::singleShot(3700, client, [client, response, prefix] {
-                                client->write(response.mid(prefix)); client->disconnectFromHost();
+                            auto remaining = std::make_shared<QByteArray>(response.mid(prefix));
+                            if (dataFailure == QStringLiteral("busy-pool-trickle")) {
+                                auto *timer = new QTimer(client); timer->setInterval(50);
+                                connect(timer, &QTimer::timeout, client, [client, timer, remaining] {
+                                    if (client->state() != QAbstractSocket::ConnectedState || remaining->isEmpty()) { timer->stop(); return; }
+                                    client->write(remaining->left(1)); remaining->remove(0, 1);
+                                });
+                                timer->start();
+                            }
+                            QTimer::singleShot(3700, client, [client, remaining] {
+                                client->write(*remaining); remaining->clear(); client->disconnectFromHost();
                             });
                             return;
                         }
@@ -854,9 +863,15 @@ private slots:
         QCOMPARE(fixture.burstTailRequests, 1);
         QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), data); QTRY_COMPARE(fixture.active, 0);
     }
+    void payloadBusyPoolGapsDoNotCauseRetries_data() {
+        QTest::addColumn<QString>("failure");
+        QTest::newRow("no-data") << QStringLiteral("busy-pool-gap");
+        QTest::newRow("slow-data") << QStringLiteral("busy-pool-trickle");
+    }
     void payloadBusyPoolGapsDoNotCauseRetries() {
+        QFETCH(QString, failure);
         QTemporaryDir root; const QByteArray data(4 * 1024 * 1024, 'g');
-        PayloadHttpFixture fixture(encodePayload(data)); fixture.dataFailure = QStringLiteral("busy-pool-gap");
+        PayloadHttpFixture fixture(encodePayload(data)); fixture.dataFailure = failure;
         fixture.delayedFrom = 24 + qint64(qFromBigEndian<quint64>(fixture.bytes.constData() + 12));
         PayloadOptions options; options.downloadConnections = 4;
         auto task = qtAsync([&] { return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 1, {}, {}, options); });
@@ -971,6 +986,32 @@ private slots:
         const auto result = task.get(); QCOMPARE(result.ok, !corrupt); QCOMPARE(fixture.peak, connections); QCOMPARE(fixture.requests, connections == 1 ? 8 : 19);
         if (corrupt) { QVERIFY(result.error.contains(QStringLiteral("SHA256"))); QVERIFY(!QFileInfo::exists(root.filePath(QStringLiteral("system.img")))); }
         else QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), data);
+    }
+    void payloadGappedOperationsFillConnectionBudget() {
+        QTemporaryDir root; constexpr int block = 256 * 1024, count = 8;
+        QByteArray blobs, expected, partition = message(1, "system") + message(7, integer(1, block * count));
+        for (int index = 0; index < count; ++index) {
+            const QByteArray bytes(block, char('a' + index));
+            const quint64 offset = quint64(blobs.size());
+            blobs += bytes; expected += bytes;
+            if (index + 1 < count) blobs += QByteArray(block, 'g');
+            const QByteArray operation = integer(1, 0) + integer(2, offset) + integer(3, block)
+                + message(6, integer(1, index * (block / 4096)) + integer(2, block / 4096))
+                + message(8, QCryptographicHash::hash(bytes, QCryptographicHash::Sha256));
+            partition += message(8, operation);
+        }
+        const QByteArray manifest = integer(3, 4096) + message(13, partition);
+        PayloadHttpFixture fixture(QByteArray("CrAU") + network<quint64>(2) + network<quint64>(manifest.size())
+            + network<quint32>(0) + manifest + blobs);
+        fixture.delayedFrom = 24 + manifest.size(); fixture.releaseAt = count;
+        PayloadOptions options; options.downloadConnections = count;
+        auto task = qtAsync([&] {
+            return extractPayload(fixture.url(), {QStringLiteral("system")}, root.path(), 1, {}, {}, options);
+        });
+        QTRY_VERIFY_WITH_TIMEOUT(task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready, 5000);
+        const auto result = task.get(); QVERIFY2(result.ok, qPrintable(result.error));
+        QCOMPARE(fixture.peak, count);
+        QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), expected);
     }
     void payloadHttpStrictRange_data() { QTest::addColumn<bool>("valid"); QTest::newRow("range") << true; QTest::newRow("ignored-range") << false; }
     void payloadPrefetchOverlapsOutputAndReusesConnections_data() {
