@@ -25,7 +25,7 @@ namespace {
 constexpr qint64 MaximumSize = 1024LL * 1024 * 1024 * 1024;
 constexpr qint64 MinimumPart = 256 * 1024;
 constexpr int MaximumPartRetries = 4;
-constexpr qint64 MaximumPartSize = 8 * 1024 * 1024;
+constexpr qint64 MaximumPartSize = 1024 * 1024;
 
 QNetworkRequest requestFor(const QUrl &url) {
     QNetworkRequest request(url);
@@ -57,7 +57,7 @@ struct DirectDownload::Part {
     QNetworkAccessManager *network = nullptr;
     QPointer<QNetworkReply> reply;
     qint64 start = 0, end = 0, received = 0, requestStart = 0;
-    qint64 lastDataAt = 0, windowAt = 0, windowBytes = 0;
+    qint64 lastDataAt = 0, windowAt = 0, windowBytes = 0, requestedAt = 0;
     int retries = 0;
     bool validated = false, done = false, waiting = false, queued = false;
 };
@@ -185,6 +185,7 @@ void DirectDownload::requestPart(const std::shared_ptr<Part> &part) {
     part->network->setProperty("downloadSlots", part->network->property("downloadSlots").toInt() + 1);
     part->validated = false; part->requestStart = part->start + part->received;
     part->lastDataAt = part->windowAt = elapsed_.elapsed(); part->windowBytes = part->received;
+    part->requestedAt = part->lastDataAt;
     auto request = requestFor(url_);
     request.setRawHeader("Range", "bytes=" + QByteArray::number(part->requestStart) + '-' + QByteArray::number(part->end));
     request.setRawHeader("If-Range", validator_);
@@ -290,6 +291,48 @@ void DirectDownload::watchTransfers() {
             if (tail && part->received - part->windowBytes < 32 * 1024) retryPart(part, QStringLiteral("尾段长时间低速"), true);
             else { part->windowAt = now; part->windowBytes = part->received; }
         }
+    }
+    if (active_) rebalanceTail();
+}
+
+void DirectDownload::rebalanceTail() {
+    int active = 0;
+    QList<std::shared_ptr<Part>> candidates;
+    const qint64 now = elapsed_.elapsed();
+    for (const auto &part : parts_) {
+        if (part->done) continue;
+        if (part->queued) return;
+        if (part->reply || part->waiting) ++active;
+        if (part->reply && part->validated && now - part->requestedAt >= tailSplitAfterMs_
+            && part->end - part->start + 1 - part->received >= 2 * MinimumPart)
+            candidates.append(part);
+    }
+    std::sort(candidates.begin(), candidates.end(), [](const auto &left, const auto &right) {
+        return left->end - left->start - left->received > right->end - right->start - right->received;
+    });
+    int children = 0;
+    for (const auto &part : candidates) {
+        if (active >= requested_) break;
+        const qint64 start = part->start + part->received;
+        const auto planned = ranges(part->end - start + 1, qMin(4, requested_ - active + 1));
+        if (planned.size() < 2) continue;
+        // Keep the written prefix; only idle slots take over the remaining bytes.
+        part->network->setProperty("downloadSlots", part->network->property("downloadSlots").toInt() - 1);
+        disconnect(part->reply, nullptr, this, nullptr);
+        part->reply->abort(); part->reply->deleteLater(); part->reply = nullptr;
+        const int retries = start - part->requestStart >= 64 * 1024 ? 0 : part->retries;
+        for (const auto &range : planned) {
+            auto child = std::make_shared<Part>();
+            child->start = start + range.first; child->end = start + range.second;
+            child->retries = retries; child->queued = true;
+            parts_.append(child);
+        }
+        part->end = start - 1; part->done = true;
+        active += planned.size() - 1; children += planned.size();
+    }
+    if (children) {
+        emit status(QStringLiteral("正在分配尾段数据 · %1 个新分段").arg(children));
+        dispatchParts();
     }
 }
 

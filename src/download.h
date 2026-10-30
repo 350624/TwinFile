@@ -38,6 +38,7 @@ private:
     void dispatchParts();
     void retryPart(const std::shared_ptr<Part> &part, const QString &reason, bool redistribute = false);
     void watchTransfers();
+    void rebalanceTail();
     void partData(const std::shared_ptr<Part> &part);
     void partFinished(const std::shared_ptr<Part> &part);
     void single();
@@ -66,6 +67,7 @@ private:
     quint64 generation_ = 0;
     int requested_ = 16, connections_ = 1;
     int stallTimeoutMs_ = 15000, slowWindowMs_ = 30000, handshakeTimeoutMs_ = 30000;
+    int tailSplitAfterMs_ = 3000;
     bool active_ = false, singleResponse_ = false, singleValidated_ = false;
 };
 

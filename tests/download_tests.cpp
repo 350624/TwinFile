@@ -41,6 +41,7 @@ public:
     }
     static void sample(DirectDownload &download) { download.notify(); }
     static void enableWatchdog(DirectDownload &download, bool enabled) { if (enabled) download.watchdog_.start(); else download.watchdog_.stop(); }
+    static void fastTailSplit(DirectDownload &download) { download.tailSplitAfterMs_ = 150; download.watchdog_.setInterval(25); }
 };
 }
 
@@ -394,9 +395,64 @@ private slots:
         DirectDownload download; QSignalSpy done(&download, &DirectDownload::completed), failed(&download, &DirectDownload::failed), progress(&download, &DirectDownload::progress); QString error;
         const auto path = root.filePath("queued.bin"); QVERIFY(download.start(server.url(), path, 2, &error));
         QTRY_VERIFY_WITH_TIMEOUT(done.size() + failed.size() > 0, 12000);
-        QVERIFY(failed.isEmpty()); QCOMPARE(done.size(), 1); QCOMPARE(segments, 6); QVERIFY(largest <= 8 * 1048576);
+        QVERIFY(failed.isEmpty()); QCOMPARE(done.size(), 1); QCOMPARE(segments, 40); QVERIFY(largest <= 1048576);
         for (const auto &item : progress) QVERIFY(item[3].toInt() <= 2);
         QCOMPARE(contents(path), payload(0, size)); QVERIFY(partials(root).isEmpty());
+    }
+    void productiveTailUsesIdleConnections_data() {
+        QTest::addColumn<QString>("mode");
+        for (const auto &mode : {"complete", "changed-version", "cancel"}) QTest::newRow(mode) << QString(mode);
+    }
+    void productiveTailUsesIdleConnections() {
+        QFETCH(QString, mode); QTemporaryDir root; HttpFixture server;
+        const qint64 size = 4 * 1048576, tail = 3 * 1048576, prefix = 65536;
+        int children = 0; qint64 firstChildStart = 0;
+        server.respond = [&](QTcpSocket *socket, const HttpFixture::Request &request) {
+            if (request.range == "bytes=0-0") { HttpFixture::rangeReply(socket, request, size); return; }
+            const auto range = HttpFixture::bounds(request);
+            if (range.first < tail) { HttpFixture::rangeReply(socket, request, size); return; }
+            if (range.first == tail) {
+                socket->write("HTTP/1.1 206 Test\r\nContent-Length: " + QByteArray::number(range.second - range.first + 1)
+                    + "\r\n" + HttpFixture::rangeHeader(range.first, range.second, size) + "ETag: \"fixture-v1\"\r\n\r\n"
+                    + payload(range.first, prefix));
+                auto offset = std::make_shared<qint64>(range.first + prefix);
+                auto *timer = new QTimer(socket); timer->setInterval(25);
+                connect(timer, &QTimer::timeout, socket, [=] {
+                    const qint64 count = qMin<qint64>(8192, range.second - *offset + 1);
+                    socket->write(payload(*offset, count)); *offset += count;
+                    if (*offset > range.second) { timer->stop(); socket->disconnectFromHost(); }
+                }); timer->start();
+                return;
+            }
+            if (!children++) firstChildStart = range.first;
+            QCOMPARE(request.ifRange, QByteArray("\"fixture-v1\""));
+            if (mode != "cancel") HttpFixture::rangeReply(socket, request, size,
+                mode == "changed-version" ? QByteArray("ETag: \"changed\"\r\n") : QByteArray("ETag: \"fixture-v1\"\r\n"));
+        };
+        DirectDownload download; DownloadTestAccess::fastTailSplit(download);
+        QSignalSpy done(&download, &DirectDownload::completed), failed(&download, &DirectDownload::failed),
+            progress(&download, &DirectDownload::progress), status(&download, &DirectDownload::status);
+        QString error; const auto path = root.filePath("balanced.bin");
+        QVERIFY(download.start(server.url(), path, 4, &error));
+        QTRY_VERIFY_WITH_TIMEOUT(children > 0, 2000);
+        QVERIFY(firstChildStart >= tail + prefix);
+        if (mode == "cancel") download.cancel();
+        QTRY_VERIFY_WITH_TIMEOUT(done.size() + failed.size() > 0, 3000);
+        if (mode == "complete") {
+            QVERIFY(failed.isEmpty()); QCOMPARE(done.size(), 1); QVERIFY(children >= 2);
+            QCOMPARE(contents(path), payload(0, size));
+        } else {
+            QVERIFY(done.isEmpty()); QCOMPARE(failed.size(), 1); QVERIFY(!QFile::exists(path));
+            if (mode == "changed-version") QVERIFY(failed.first()[0].toString().contains(QStringLiteral("版本")));
+        }
+        bool balanced = false;
+        for (const auto &item : status) {
+            balanced = balanced || item[0].toString().contains(QStringLiteral("分配尾段"));
+            QVERIFY(!item[0].toString().contains(QStringLiteral("重试")));
+        }
+        QVERIFY(balanced);
+        for (const auto &item : progress) QVERIFY(item[3].toInt() <= 4);
+        QTRY_COMPARE(server.connected, 0); QVERIFY(partials(root).isEmpty());
     }
     void cancellingQueuedRangesDoesNotRefill() {
         QTemporaryDir root; HttpFixture server; int segments = 0;
