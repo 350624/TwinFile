@@ -35,6 +35,7 @@ private:
     void probeData();
     void probeFinished();
     void requestPart(const std::shared_ptr<Part> &part);
+    void dispatchParts();
     void retryPart(const std::shared_ptr<Part> &part, const QString &reason, bool redistribute = false);
     void watchTransfers();
     void partData(const std::shared_ptr<Part> &part);
@@ -55,16 +56,15 @@ private:
     QElapsedTimer elapsed_;
     QList<std::shared_ptr<Part>> parts_;
     QList<QNetworkAccessManager *> networks_;
-    QPointer<QNetworkAccessManager> recoveryNetwork_;
     QUrl url_;
     QString destination_;
     QByteArray validator_, probeBytes_;
     QByteArray etag_, modified_;
     qint64 total_ = -1, received_ = 0;
     qint64 lastProgressBytes_ = 0, lastProgressAt_ = 0;
+    qint64 lastDataAt_ = 0;
     quint64 generation_ = 0;
     int requested_ = 16, connections_ = 1;
-    int recoverySlots_ = 0;
     int stallTimeoutMs_ = 15000, slowWindowMs_ = 30000, handshakeTimeoutMs_ = 30000;
     bool active_ = false, singleResponse_ = false, singleValidated_ = false;
 };

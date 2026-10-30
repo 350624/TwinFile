@@ -567,6 +567,22 @@ private slots:
         QFETCH(int, type); QTemporaryDir root; const QByteArray data(4096 * 30, 'a'); const QString source = root.filePath(QStringLiteral("payload.bin")); QVERIFY(writeFile(source, encodePayload(data, type))); const Result info = inspectPayload(source); QVERIFY2(info.ok, qPrintable(info.error)); QCOMPARE(info.paths, QStringList{QStringLiteral("system")});
         const Result extracted = extractPayload(source, info.paths, root.path()); QVERIFY2(extracted.ok, qPrintable(extracted.error)); QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), type == 6 || type == 7 ? QByteArray(data.size(), '\0') : data); QVERIFY(!extractPayload(source, info.paths, root.path()).ok);
     }
+    void payloadStagingInheritsDestinationAndCleansUp_data() {
+        QTest::addColumn<bool>("longPath"); QTest::newRow("native-unicode") << false; QTest::newRow("long-path") << true;
+    }
+    void payloadStagingInheritsDestinationAndCleansUp() {
+        QFETCH(bool, longPath);
+        QTemporaryDir root; const QByteArray data(4096, 's');
+        const QString source = root.filePath(QStringLiteral("payload.bin")); QVERIFY(writeFile(source, encodePayload(data)));
+        QString destination = root.filePath(QStringLiteral("目标目录"));
+        if (longPath) for (int i = 0; i < 4; ++i) destination += QChar('/') + QString(70, QChar('a'));
+        QVERIFY(QDir().mkpath(destination));
+        const Result result = extractPayload(source, {QStringLiteral("system")}, QDir::toNativeSeparators(destination) + QDir::separator());
+        QVERIFY2(result.ok, qPrintable(result.error)); QCOMPARE(readFile(QDir(destination).filePath(QStringLiteral("system.img"))), data);
+        QCOMPARE(QDir(destination).entryList(QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot).size(), 0);
+        const auto second = extractPayload(source, {QStringLiteral("system")}, destination); QVERIFY(!second.ok);
+        QCOMPARE(readFile(QDir(destination).filePath(QStringLiteral("system.img"))), data);
+    }
     void payloadRejectsDeltaAndCorruption() {
         QTemporaryDir root; const QString source = root.filePath(QStringLiteral("payload.bin")); QVERIFY(writeFile(source, encodePayload(QByteArray(4096, 'a'), 2))); QVERIFY(!inspectPayload(source).ok);
         QVERIFY(writeFile(source, encodePayload(QByteArray(4096, 'a'), 0, true))); QVERIFY(!extractPayload(source, {QStringLiteral("system")}, root.path()).ok); QVERIFY(!QFileInfo::exists(root.filePath(QStringLiteral("system.img"))));

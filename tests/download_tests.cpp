@@ -198,7 +198,7 @@ private slots:
         QVERIFY(download.start(server.url(), path, 4, &error)); QTRY_VERIFY_WITH_TIMEOUT(done.size() + failed.size() > 0, 12000);
         if (mode == "exhausted") {
             QCOMPARE(failed.size(), 1); QVERIFY(!QFile::exists(path)); bool exhausted = false;
-            for (const auto count : attempts) { QVERIFY(count >= 1 && count <= 3); exhausted = exhausted || count == 3; }
+            for (const auto count : attempts) { QVERIFY(count >= 1 && count <= 5); exhausted = exhausted || count == 5; }
             QVERIFY(exhausted);
         } else { QCOMPARE(done.size(), 1); QCOMPARE(contents(path), payload(0, size)); if (mode == "interrupted") QVERIFY(resumed); }
         QVERIFY(partials(root).isEmpty());
@@ -269,7 +269,7 @@ private slots:
         if (cancel) { QTRY_VERIFY(status.size() > 2); download.cancel(); QTest::qWait(1200); QCOMPARE(segments, 4); }
         QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 10000);
         QVERIFY(done.isEmpty()); QVERIFY(!download.busy()); QVERIFY(!QFile::exists(path)); QVERIFY(partials(root).isEmpty());
-        QVERIFY(segments <= 12); QTRY_COMPARE(server.connected, 0);
+        QVERIFY(segments <= 20); QTRY_COMPARE(server.connected, 0);
         auto *watchdog = download.findChild<QTimer *>("downloadWatchdog"); QVERIFY(watchdog); QVERIFY(!watchdog->isActive());
     }
     void inactivitySpeedAndTimeoutCancellation() {
@@ -318,7 +318,7 @@ private slots:
         QSignalSpy failed(&download, &DirectDownload::failed), done(&download, &DirectDownload::completed), progress(&download, &DirectDownload::progress); QString error;
         const auto path = root.filePath("tail-exhausted.bin"); QVERIFY(download.start(server.url(), path, 32, &error));
         QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 10000); QVERIFY(done.isEmpty());
-        QVERIFY(tailRequests > 1); QVERIFY(tailRequests <= 7);
+        QVERIFY(tailRequests > 1); QVERIFY(tailRequests <= 13);
         for (const auto &sample : progress) QVERIFY(sample[3].toInt() <= 32);
         QVERIFY(!QFile::exists(path)); QVERIFY(partials(root).isEmpty()); QTRY_COMPARE(server.connected, 0);
     }
@@ -335,6 +335,80 @@ private slots:
         const auto path = root.filePath("handshake.bin"); QVERIFY(download.start(server.url(), path, 4, &error));
         QTRY_VERIFY_WITH_TIMEOUT(done.size() + failed.size() > 0, 6000); QVERIFY(failed.isEmpty()); QCOMPARE(done.size(), 1); QCOMPARE(retries, 4);
         QCOMPARE(contents(path), payload(0, 1048576)); QVERIFY(partials(root).isEmpty()); QTRY_COMPARE(server.connected, 0);
+    }
+    void productiveResumesDoNotExhaustRetries() {
+        QTemporaryDir root; HttpFixture server; const qint64 size = 4 * 1048576; int resumes = 0;
+        server.respond = [&](QTcpSocket *socket, const HttpFixture::Request &request) {
+            if (request.range == "bytes=0-0") { HttpFixture::rangeReply(socket, request, size); return; }
+            const auto range = HttpFixture::bounds(request); const qint64 length = range.second - range.first + 1;
+            ++resumes;
+            HttpFixture::reply(socket, 206, payload(range.first, qMin<qint64>(262144, length)),
+                HttpFixture::rangeHeader(range.first, range.second, size) + "ETag: \"fixture-v1\"\r\n", length);
+        };
+        DirectDownload download; QSignalSpy done(&download, &DirectDownload::completed), failed(&download, &DirectDownload::failed); QString error;
+        int maximumPools = 0;
+        connect(&download, &DirectDownload::progress, &download, [&] { maximumPools = qMax(maximumPools, int(download.findChildren<QNetworkAccessManager *>().size())); });
+        const auto path = root.filePath("resumes.bin"); QVERIFY(download.start(server.url(), path, 2, &error));
+        QTRY_VERIFY_WITH_TIMEOUT(done.size() + failed.size() > 0, 12000);
+        QVERIFY2(failed.isEmpty(), failed.isEmpty() ? "" : qPrintable(failed.first()[0].toString()));
+        QCOMPARE(done.size(), 1); QVERIFY(resumes > 10); QCOMPARE(contents(path), payload(0, size));
+        QVERIFY(maximumPools <= 2);
+        QVERIFY(partials(root).isEmpty());
+    }
+    void busyTransfersTolerateShortSilentRanges() {
+        QTemporaryDir root; HttpFixture server; const qint64 size = 1048576; int segments = 0;
+        server.respond = [&](QTcpSocket *socket, const HttpFixture::Request &request) {
+            if (request.range == "bytes=0-0") { HttpFixture::rangeReply(socket, request, size); return; }
+            ++segments; const auto range = HttpFixture::bounds(request);
+            if (range.first == 0) {
+                QTimer::singleShot(450, socket, [=] { HttpFixture::rangeReply(socket, request, size); });
+                return;
+            }
+            socket->write("HTTP/1.1 206 Test\r\nContent-Length: " + QByteArray::number(range.second - range.first + 1) + "\r\n"
+                + HttpFixture::rangeHeader(range.first, range.second, size) + "ETag: \"fixture-v1\"\r\n\r\n");
+            auto offset = std::make_shared<qint64>(range.first); auto *timer = new QTimer(socket); timer->setInterval(25);
+            connect(timer, &QTimer::timeout, socket, [=] {
+                const qint64 count = qMin<qint64>(32768, range.second - *offset + 1);
+                socket->write(payload(*offset, count)); *offset += count;
+                if (*offset > range.second) { timer->stop(); socket->disconnectFromHost(); }
+            }); timer->start();
+        };
+        DirectDownload download; DownloadTestAccess::fastWatchdog(download, 150, 1500);
+        QSignalSpy done(&download, &DirectDownload::completed), failed(&download, &DirectDownload::failed), status(&download, &DirectDownload::status); QString error;
+        const auto path = root.filePath("busy.bin"); QVERIFY(download.start(server.url(), path, 2, &error));
+        QTRY_VERIFY_WITH_TIMEOUT(done.size() + failed.size() > 0, 5000);
+        QVERIFY(failed.isEmpty()); QCOMPARE(done.size(), 1); QCOMPARE(segments, 2);
+        for (const auto &item : status) QVERIFY(!item[0].toString().contains(QStringLiteral("恢复")));
+        QCOMPARE(contents(path), payload(0, size));
+    }
+    void largeDownloadsRefillBoundedRanges() {
+        QTemporaryDir root; HttpFixture server; const qint64 size = 40 * 1048576; qint64 largest = 0; int segments = 0;
+        QPointer<QTcpSocket> held; HttpFixture::Request heldRequest;
+        server.respond = [&](QTcpSocket *socket, const HttpFixture::Request &request) {
+            if (request.range == "bytes=0-0") { HttpFixture::rangeReply(socket, request, size); return; }
+            ++segments; const auto range = HttpFixture::bounds(request); largest = qMax(largest, range.second - range.first + 1);
+            if (!range.first) { held = socket; heldRequest = request; return; }
+            HttpFixture::rangeReply(socket, request, size);
+            if (segments == 6 && held) HttpFixture::rangeReply(held, heldRequest, size);
+        };
+        DirectDownload download; QSignalSpy done(&download, &DirectDownload::completed), failed(&download, &DirectDownload::failed), progress(&download, &DirectDownload::progress); QString error;
+        const auto path = root.filePath("queued.bin"); QVERIFY(download.start(server.url(), path, 2, &error));
+        QTRY_VERIFY_WITH_TIMEOUT(done.size() + failed.size() > 0, 12000);
+        QVERIFY(failed.isEmpty()); QCOMPARE(done.size(), 1); QCOMPARE(segments, 6); QVERIFY(largest <= 8 * 1048576);
+        for (const auto &item : progress) QVERIFY(item[3].toInt() <= 2);
+        QCOMPARE(contents(path), payload(0, size)); QVERIFY(partials(root).isEmpty());
+    }
+    void cancellingQueuedRangesDoesNotRefill() {
+        QTemporaryDir root; HttpFixture server; int segments = 0;
+        server.respond = [&](QTcpSocket *socket, const HttpFixture::Request &request) {
+            if (request.range == "bytes=0-0") HttpFixture::rangeReply(socket, request, 40 * 1048576);
+            else ++segments;
+        };
+        DirectDownload download; QSignalSpy done(&download, &DirectDownload::completed), failed(&download, &DirectDownload::failed); QString error;
+        const auto path = root.filePath("cancel-queue.bin"); QVERIFY(download.start(server.url(), path, 2, &error));
+        QTRY_COMPARE(segments, 2); download.cancel(); QTest::qWait(600);
+        QCOMPARE(segments, 2); QCOMPARE(failed.size(), 1); QVERIFY(done.isEmpty());
+        QVERIFY(!QFile::exists(path)); QVERIFY(partials(root).isEmpty()); QTRY_COMPARE(server.connected, 0);
     }
     void recoveryStatusSurvivesProgressUpdates() {
         QTemporaryDir root; DownloadDialog dialog(root.path());

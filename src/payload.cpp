@@ -15,11 +15,14 @@
 #include <QScopeGuard>
 #include <QStorageInfo>
 #include <QSet>
-#include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QThread>
 #include <QTimer>
 #include <QUrl>
+#include <QUuid>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 #include <QtEndian>
 #include <bzlib.h>
 #include <lzma.h>
@@ -47,6 +50,29 @@ void ensure(bool value, const QString &message) { if (!value) throw PayloadError
 void checkCancel(const Cancellation &cancel) { ensure(!cancel || !cancel->load(), QStringLiteral("Payload 操作已取消")); }
 bool fits(quint64 offset, quint64 size, quint64 total) { return offset <= total && size <= total - offset; }
 constexpr int maxRangeAttempts = 8;
+
+QString createStagingDirectory(const QString &destination) {
+    const QDir parent(QFileInfo(destination).absoluteFilePath());
+    const QString path = parent.filePath(QStringLiteral(".twinfile-payload-") + QUuid::createUuid().toString(QUuid::WithoutBraces));
+#ifdef Q_OS_WIN
+    // Inherit the target ACL instead of rewriting permissions on external/shared volumes.
+    QString native = QDir::toNativeSeparators(path);
+    if (!native.startsWith(QStringLiteral("\\\\?\\"))) {
+        if (native.startsWith(QStringLiteral("\\\\"))) native = QStringLiteral("\\\\?\\UNC\\") + native.mid(2);
+        else native.prepend(QStringLiteral("\\\\?\\"));
+    }
+    if (!CreateDirectoryW(reinterpret_cast<LPCWSTR>(native.utf16()), nullptr)) {
+        const DWORD code = GetLastError(); LPWSTR message = nullptr;
+        FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, code, 0, reinterpret_cast<LPWSTR>(&message), 0, nullptr);
+        const QString reason = message ? QString::fromWCharArray(message).trimmed() : QString::number(code);
+        if (message) LocalFree(message);
+        throw PayloadError(QStringLiteral("无法创建分区暂存目录：%1（%2，系统错误 %3）").arg(QDir::toNativeSeparators(path), reason).arg(code));
+    }
+#else
+    ensure(QDir().mkdir(path), QStringLiteral("无法创建分区暂存目录：") + path);
+#endif
+    return path;
+}
 quint16 little16(const QByteArray &bytes, qsizetype offset) { ensure(offset >= 0 && offset + 2 <= bytes.size(), QStringLiteral("ZIP 字段越界")); return qFromLittleEndian<quint16>(bytes.constData() + offset); }
 quint32 little32(const QByteArray &bytes, qsizetype offset) { ensure(offset >= 0 && offset + 4 <= bytes.size(), QStringLiteral("ZIP 字段越界")); return qFromLittleEndian<quint32>(bytes.constData() + offset); }
 quint64 little64(const QByteArray &bytes, qsizetype offset) { ensure(offset >= 0 && offset + 8 <= bytes.size(), QStringLiteral("ZIP64 字段越界")); return qFromLittleEndian<quint64>(bytes.constData() + offset); }
@@ -712,7 +738,8 @@ Result extractPayload(const QString &source, const QStringList &partitions, cons
         const QStorageInfo storage(destination);
         ensure(!storage.isValid() || storage.bytesAvailable() < 0 || quint64(storage.bytesAvailable()) >= total + cacheBytes,
             QStringLiteral("磁盘空间不足（需要容纳分区镜像及远程下载缓存）"));
-        QTemporaryDir staging(QDir(destination).filePath(QStringLiteral(".twinfile-payload-XXXXXX"))); ensure(staging.isValid(), QStringLiteral("无法创建分区暂存目录"));
+        const QDir staging(createStagingDirectory(destination));
+        const auto removeStaging = qScopeGuard([&] { QDir(staging.absolutePath()).removeRecursively(); });
         std::atomic<qsizetype> next{0}; const int concurrency = qBound(1, qMin(workers, int(selected.size())), 8);
         std::vector<std::future<void>> tasks; std::vector<std::unique_ptr<QThread>> threads;
         payload.source.inputSize = qMax<quint64>(256 * 1024, payload.source.inputSize / quint64(concurrency));

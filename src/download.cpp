@@ -24,6 +24,8 @@ namespace twinfile {
 namespace {
 constexpr qint64 MaximumSize = 1024LL * 1024 * 1024 * 1024;
 constexpr qint64 MinimumPart = 256 * 1024;
+constexpr int MaximumPartRetries = 4;
+constexpr qint64 MaximumPartSize = 8 * 1024 * 1024;
 
 QNetworkRequest requestFor(const QUrl &url) {
     QNetworkRequest request(url);
@@ -57,7 +59,7 @@ struct DirectDownload::Part {
     qint64 start = 0, end = 0, received = 0, requestStart = 0;
     qint64 lastDataAt = 0, windowAt = 0, windowBytes = 0;
     int retries = 0;
-    bool validated = false, done = false, waiting = false;
+    bool validated = false, done = false, waiting = false, queued = false;
 };
 
 DirectDownload::DirectDownload(QObject *parent) : QObject(parent), network_(this), watchdog_(this), deadline_(this) {
@@ -102,6 +104,7 @@ bool DirectDownload::start(const QUrl &url, const QString &destination, int conn
     total_ = -1; received_ = 0; connections_ = 1; validator_.clear(); etag_.clear(); modified_.clear(); probeBytes_.clear();
     singleResponse_ = false; singleValidated_ = false; active_ = true; ++generation_;
     lastProgressBytes_ = 0; lastProgressAt_ = 0;
+    lastDataAt_ = 0;
     elapsed_.start(); progressTimer_.start(); deadline_.start(); watchdog_.start();
     emit status(QStringLiteral("正在检测分段支持…"));
     const auto generation = generation_;
@@ -147,24 +150,46 @@ void DirectDownload::probeFinished() {
     const auto planned = ranges(total_, requested_); connections_ = planned.size();
     emit status(QStringLiteral("分段下载中"));
     for (const auto &range : planned) {
-        auto part = std::make_shared<Part>(); part->start = range.first; part->end = range.second;
-        if (parts_.size() % 6 == 0) {
-            networks_.append(new QNetworkAccessManager(this));
-            networks_.last()->setProxy(QNetworkProxy::NoProxy);
+        for (qint64 start = range.first; start <= range.second; start += MaximumPartSize) {
+            auto part = std::make_shared<Part>(); part->start = start; part->end = qMin(range.second, start + MaximumPartSize - 1);
+            part->queued = true; parts_.append(part);
         }
-        part->network = networks_.last(); parts_.append(part);
     }
-    for (const auto &part : parts_) requestPart(part);
+    dispatchParts();
+}
+
+void DirectDownload::dispatchParts() {
+    int active = 0;
+    for (const auto &part : parts_) if (!part->done && (part->reply || part->waiting)) ++active;
+    const auto snapshot = parts_;
+    for (const auto &part : snapshot) {
+        if (!active_ || active >= requested_) return;
+        if (part->queued && !part->done) { requestPart(part); ++active; }
+    }
 }
 
 void DirectDownload::requestPart(const std::shared_ptr<Part> &part) {
     if (!active_) return;
+    part->queued = false;
+    part->network = nullptr;
+    for (auto *network : networks_) {
+        const int used = network->property("downloadSlots").toInt();
+        if (used < 6) { part->network = network; break; }
+    }
+    if (!part->network) {
+        part->network = new QNetworkAccessManager(this);
+        part->network->setProxy(QNetworkProxy::NoProxy);
+        networks_.append(part->network);
+    }
     part->waiting = false;
+    part->network->setProperty("downloadSlots", part->network->property("downloadSlots").toInt() + 1);
     part->validated = false; part->requestStart = part->start + part->received;
     part->lastDataAt = part->windowAt = elapsed_.elapsed(); part->windowBytes = part->received;
     auto request = requestFor(url_);
     request.setRawHeader("Range", "bytes=" + QByteArray::number(part->requestStart) + '-' + QByteArray::number(part->end));
     request.setRawHeader("If-Range", validator_);
+    if (part->retries) request.setRawHeader("Connection", "close");
+    request.setTransferTimeout(0);
     part->reply = part->network->get(request); part->reply->setReadBufferSize(64 * 1024);
     connect(part->reply, &QNetworkReply::readyRead, this, [this, part] { partData(part); });
     connect(part->reply, &QNetworkReply::finished, this, [this, part] { partFinished(part); });
@@ -186,6 +211,7 @@ void DirectDownload::partData(const std::shared_ptr<Part> &part) {
         if (!write(part->start + part->received, bytes)) return;
         part->received += bytes.size(); received_ += bytes.size();
         part->lastDataAt = elapsed_.elapsed();
+        lastDataAt_ = part->lastDataAt;
     }
 }
 
@@ -194,10 +220,12 @@ void DirectDownload::partFinished(const std::shared_ptr<Part> &part) {
     partData(part); if (!active_ || !part->reply) return;
     const auto error = part->reply->error();
     const int code = part->reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    part->network->setProperty("downloadSlots", part->network->property("downloadSlots").toInt() - 1);
     part->reply->deleteLater(); part->reply = nullptr;
     if (part->validated && error == QNetworkReply::NoError && part->received == part->end - part->start + 1) {
         part->done = true;
         if (std::all_of(parts_.cbegin(), parts_.cend(), [](const auto &item) { return item->done; })) finish();
+        else dispatchParts();
         return;
     }
     if ((code == 429 || code >= 500 || error == QNetworkReply::RemoteHostClosedError || error == QNetworkReply::TimeoutError || error == QNetworkReply::OperationCanceledError || error == QNetworkReply::TemporaryNetworkFailureError) && part->start + part->received <= part->end) {
@@ -208,16 +236,22 @@ void DirectDownload::partFinished(const std::shared_ptr<Part> &part) {
 void DirectDownload::retryPart(const std::shared_ptr<Part> &part, const QString &reason, bool redistribute) {
     if (!active_ || part->done || part->waiting) return;
     if (part->received >= part->end - part->start + 1) { finish(QStringLiteral("服务器分段响应未正常结束，请重新开始")); return; }
-    if (++part->retries > 2) { finish(QStringLiteral("%1，分段重试已用尽，可尝试降低并发").arg(reason)); return; }
+    // Productive resumes get a fresh consecutive-failure budget.
+    if (part->start + part->received - part->requestStart >= 64 * 1024) part->retries = 0;
+    if (++part->retries > MaximumPartRetries) { finish(QStringLiteral("%1，连续 %2 次恢复无有效进展，已停止").arg(reason).arg(MaximumPartRetries)); return; }
     if (part->reply) {
+        part->network->setProperty("downloadSlots", part->network->property("downloadSlots").toInt() - 1);
         disconnect(part->reply, nullptr, this, nullptr);
         part->reply->abort(); part->reply->deleteLater(); part->reply = nullptr;
     }
     QList<std::shared_ptr<Part>> pending{part};
     if (redistribute) {
-        int unfinished = 0;
-        for (const auto &item : parts_) if (!item->done && item != part) ++unfinished;
-        const auto planned = ranges(part->end - part->start + 1 - part->received, qMin(4, requested_ - unfinished));
+        int active = 0;
+        for (const auto &item : parts_) {
+            if (!item->done && item != part && (item->reply || item->waiting || item->queued)) ++active;
+        }
+        const auto available = qMax(1, requested_ - active);
+        const auto planned = ranges(part->end - part->start + 1 - part->received, qMin(4, available));
         if (planned.size() > 1) {
             pending.clear();
             const qint64 start = part->start + part->received;
@@ -233,15 +267,11 @@ void DirectDownload::retryPart(const std::shared_ptr<Part> &part, const QString 
     const auto generation = generation_;
     for (const auto &item : pending) {
         item->waiting = true;
-        if (!recoveryNetwork_ || recoverySlots_ == 6) {
-            recoveryNetwork_ = new QNetworkAccessManager(this);
-            recoveryNetwork_->setProxy(QNetworkProxy::NoProxy);
-            networks_.append(recoveryNetwork_); recoverySlots_ = 0;
-        }
-        item->network = recoveryNetwork_; ++recoverySlots_;
-        QTimer::singleShot(item->retries * 1000, this, [this, item, generation] { if (active_ && generation == generation_) requestPart(item); });
+        item->network = nullptr;
+        const auto delay = qMin(3000, item->retries * 500);
+        QTimer::singleShot(delay, this, [this, item, generation] { if (active_ && generation == generation_) requestPart(item); });
     }
-    emit status(QStringLiteral("%1，正在恢复 %2 个未完成分段（%3/2）…").arg(reason).arg(pending.size()).arg(part->retries));
+    emit status(QStringLiteral("%1，正在恢复 %2 个未完成分段（重试 %3/%4）…").arg(reason).arg(pending.size()).arg(part->retries).arg(MaximumPartRetries));
 }
 
 void DirectDownload::watchTransfers() {
@@ -252,8 +282,10 @@ void DirectDownload::watchTransfers() {
         if (!active_) return;
         if (part->done || part->waiting || !part->reply) continue;
         const bool tail = total_ > 0 && received_ >= total_ * 9 / 10;
-        const int idleLimit = part->validated ? stallTimeoutMs_ : handshakeTimeoutMs_;
-        if (now - part->lastDataAt >= idleLimit) { retryPart(part, QStringLiteral("分段长时间无数据"), tail); continue; }
+        int idleLimit = part->validated ? stallTimeoutMs_ : handshakeTimeoutMs_;
+        // Quiet ranges can wait for shared server bandwidth while other ranges are productive.
+        if (now - lastDataAt_ < stallTimeoutMs_) idleLimit *= 4;
+        if (now - part->lastDataAt >= idleLimit) { retryPart(part, QStringLiteral("分段长时间无数据"), true); continue; }
         if (now - part->windowAt >= slowWindowMs_) {
             if (tail && part->received - part->windowBytes < 32 * 1024) retryPart(part, QStringLiteral("尾段长时间低速"), true);
             else { part->windowAt = now; part->windowBytes = part->received; }
@@ -324,7 +356,6 @@ void DirectDownload::cleanup() {
     parts_.clear();
     for (auto *network : networks_) network->deleteLater();
     networks_.clear();
-    recoveryNetwork_ = nullptr; recoverySlots_ = 0;
     output_.reset();
 }
 
