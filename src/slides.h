@@ -21,6 +21,7 @@ private:
     void requestPage();
     void fail(const QString &message);
     void fit();
+    void updateIcons();
     std::shared_ptr<QTemporaryDir> temporary_;
     QTemporaryDir workspace_;
     QProcess process_;
@@ -35,6 +36,7 @@ private:
     int pages_ = 0, rendering_ = -1;
     bool failed_ = false, fitting_ = true;
 protected:
+    void changeEvent(QEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
 };
 }

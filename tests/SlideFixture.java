@@ -16,8 +16,10 @@ public final class SlideFixture {
                 XSLFSlide slide = deck.createSlide();
                 slide.getBackground().setFillColor(index == 0 ? Color.WHITE : new Color(235, 245, 240));
                 XSLFTextBox box = slide.createTextBox(); box.setAnchor(new Rectangle2D.Double(50, 40, 850, 160));
-                XSLFTextRun run = box.setText(index == 0 ? "陪伴式聊天机器人 · 设计参考" : "第二页 · 中文内容");
-                run.setFontFamily("Microsoft YaHei"); run.setFontSize(32.0); run.setFontColor(Color.BLACK);
+                XSLFTextRun run = box.setText(index == 0 ? "陪伴式聊天机器人设计参考" : "第二页中文内容");
+                String family = args.length > 1 && args[1].equals("reference") ? "Microsoft YaHei" : index == 0 ? "Arial" : "TwinFile Missing Font";
+                run.setFontFamily(family); run.setFontFamily(family, org.apache.poi.common.usermodel.fonts.FontGroup.EAST_ASIAN);
+                run.setFontSize(32.0); run.setFontColor(Color.BLACK);
                 BufferedImage image = new BufferedImage(80, 60, BufferedImage.TYPE_INT_RGB);
                 var painter = image.createGraphics(); painter.setColor(Color.RED); painter.fillRect(0, 0, 80, 60); painter.dispose();
                 ByteArrayOutputStream bytes = new ByteArrayOutputStream(); ImageIO.write(image, "png", bytes);

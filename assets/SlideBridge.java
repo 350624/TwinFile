@@ -1,5 +1,7 @@
 import java.awt.Color;
 import java.awt.Dimension;
+import java.awt.Font;
+import java.awt.GraphicsEnvironment;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
@@ -17,8 +19,41 @@ import org.apache.poi.xslf.usermodel.*;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipEntry;
 import java.util.Enumeration;
+import java.util.Collections;
+import org.apache.poi.sl.draw.Drawable;
 
 public final class SlideBridge {
+    private static String fallbackFont() {
+        String sample = "中文演示文稿陪伴式聊天机器人设计参考";
+        String[] available = GraphicsEnvironment.getLocalGraphicsEnvironment().getAvailableFontFamilyNames(java.util.Locale.ROOT);
+        for (String preferred : new String[]{"Microsoft YaHei", "Microsoft YaHei UI", "SimSun", "Noto Sans CJK SC", "DengXian"}) {
+            for (String family : available) if (preferred.equalsIgnoreCase(family) && new Font(family, Font.PLAIN, 12).canDisplayUpTo(sample) == -1) return family;
+        }
+        for (String family : available) if (new Font(family, Font.PLAIN, 12).canDisplayUpTo(sample) == -1) return family;
+        return Font.DIALOG;
+    }
+    private static void prepareFonts(Iterable<XSLFShape> shapes, String fallback) {
+        for (XSLFShape shape : shapes) {
+            if (shape instanceof XSLFGroupShape) prepareFonts(((XSLFGroupShape)shape).getShapes(), fallback);
+            if (shape instanceof XSLFTextShape) prepareTextFonts((XSLFTextShape)shape, fallback);
+            if (shape instanceof XSLFTable) for (XSLFTableRow row : ((XSLFTable)shape).getRows()) for (XSLFTableCell cell : row.getCells()) prepareTextFonts(cell, fallback);
+        }
+    }
+    private static void prepareTextFonts(XSLFTextShape shape, String fallback) {
+        for (XSLFTextParagraph paragraph : shape.getTextParagraphs()) for (XSLFTextRun run : paragraph.getTextRuns()) {
+            String text = run.getRawText();
+            if (text == null || text.isEmpty()) continue;
+            String family = run.getFontFamily();
+            if (family == null) family = paragraph.getDefaultFontFamily();
+            Font font = new Font(family == null ? Font.DIALOG : family, Font.PLAIN, 12);
+            // POI 5.5.1's explicit TextAttribute.FONT overrides its per-glyph FAMILY fallback.
+            // Adjust only the in-memory run when its effective font cannot render the text.
+            if (family == null || font.canDisplayUpTo(text) != -1 || Font.DIALOG.equals(font.getFamily()) && !Font.DIALOG.equalsIgnoreCase(family)) {
+                run.setFontFamily(fallback);
+                run.setFontFamily(fallback, org.apache.poi.common.usermodel.fonts.FontGroup.EAST_ASIAN);
+            }
+        }
+    }
     private static void fail(String message) {
         System.out.println("ERROR\t" + Base64.getEncoder().encodeToString(message.getBytes(StandardCharsets.UTF_8)));
         System.out.flush();
@@ -69,6 +104,12 @@ public final class SlideBridge {
                     Dimension size = deck.getPageSize(); int count = deck.getSlides().size();
                     if (count < 1 || count > 500 || size.width < 16 || size.height < 16 || size.width > 20000 || size.height > 20000) throw new Exception("Invalid slide count or dimensions (maximum 500 slides)");
                     double scale = Math.min(1600.0 / size.width, 1200.0 / size.height);
+                    String fallback = fallbackFont();
+                    for (XSLFSlide slide : deck.getSlides()) {
+                        prepareFonts(slide.getShapes(), fallback);
+                        if (slide.getSlideLayout() != null) prepareFonts(slide.getSlideLayout().getShapes(), fallback);
+                        if (slide.getSlideMaster() != null) prepareFonts(slide.getSlideMaster().getShapes(), fallback);
+                    }
                     int width = Math.max(1, (int)Math.round(size.width * scale)), height = Math.max(1, (int)Math.round(size.height * scale));
                     System.out.println("READY\t" + count); System.out.flush();
                     String command;
@@ -85,6 +126,8 @@ public final class SlideBridge {
                             graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
                             graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
                             graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+                            // POI otherwise reuses the unsupported run font as its own fallback.
+                            graphics.setRenderingHint(Drawable.FONT_FALLBACK, Collections.singletonMap("*", fallback));
                             graphics.scale(scale, scale); slide.draw(graphics);
                         } finally { graphics.dispose(); }
                         if (!ImageIO.write(image, "png", workspace.resolve("page.png").toFile())) throw new Exception("PNG encoder unavailable");

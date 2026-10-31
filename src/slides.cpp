@@ -1,4 +1,5 @@
 #include "slides.h"
+#include "appearance.h"
 #include <QApplication>
 #include <QDir>
 #include <QFile>
@@ -28,19 +29,21 @@ SlidesDialog::SlidesDialog(const QString &path, QWidget *parent, std::shared_ptr
     setAttribute(Qt::WA_DeleteOnClose); setObjectName(QStringLiteral("slidesDialog"));
     setWindowTitle(QFileInfo(path).fileName()); resize(1120, 760);
     auto *layout = new QVBoxLayout(this); auto *bar = new QHBoxLayout; bar->setSpacing(4); layout->addLayout(bar);
-    auto button = [&](const QString &name, const QString &tip, QStyle::StandardPixmap icon) {
-        auto *control = new QToolButton; control->setObjectName(name); control->setToolTip(tip); control->setAccessibleName(tip); control->setIcon(style()->standardIcon(icon)); control->setFixedSize(34, 34); bar->addWidget(control); return control;
+    auto button = [&](const QString &name, const QString &tip, const QString &symbol) {
+        auto *control = new QToolButton; control->setObjectName(name); control->setToolTip(tip); control->setAccessibleName(tip); control->setProperty("slideSymbol", symbol); control->setIconSize(QSize(20, 20)); control->setToolButtonStyle(Qt::ToolButtonIconOnly); control->setFixedSize(34, 34);
+        control->setStyleSheet(QStringLiteral("QToolButton { padding: 0px; border-radius: 6px; }"));
+        bar->addWidget(control); return control;
     };
-    previous_ = button(QStringLiteral("slidePrevious"), QStringLiteral("上一页"), QStyle::SP_ArrowLeft);
+    previous_ = button(QStringLiteral("slidePrevious"), QStringLiteral("上一页"), QStringLiteral("back"));
     page_ = new QSpinBox; page_->setObjectName(QStringLiteral("slidePage")); page_->setRange(1, 1); page_->setEnabled(false); page_->setFixedWidth(76); page_->setAccessibleName(QStringLiteral("页码")); bar->addWidget(page_);
     count_ = new QLabel(QStringLiteral("/ —")); bar->addWidget(count_);
-    next_ = button(QStringLiteral("slideNext"), QStringLiteral("下一页"), QStyle::SP_ArrowRight);
+    next_ = button(QStringLiteral("slideNext"), QStringLiteral("下一页"), QStringLiteral("forward"));
     bar->addStretch();
-    auto *zoomOut = button(QStringLiteral("slideZoomOut"), QStringLiteral("缩小"), QStyle::SP_ArrowDown);
-    auto *zoomIn = button(QStringLiteral("slideZoomIn"), QStringLiteral("放大"), QStyle::SP_ArrowUp);
-    zoomOut->setIcon(QIcon()); zoomOut->setText(QStringLiteral("−")); zoomIn->setIcon(QIcon()); zoomIn->setText(QStringLiteral("+"));
-    auto *fitButton = button(QStringLiteral("slideFit"), QStringLiteral("适应窗口"), QStyle::SP_TitleBarMaxButton);
-    auto *showText = button(QStringLiteral("slideShowText"), QStringLiteral("幻灯片文字"), QStyle::SP_FileDialogDetailedView); showText->setCheckable(true);
+    auto *zoomOut = button(QStringLiteral("slideZoomOut"), QStringLiteral("缩小"), QStringLiteral("zoom-out"));
+    auto *zoomIn = button(QStringLiteral("slideZoomIn"), QStringLiteral("放大"), QStringLiteral("zoom-in"));
+    auto *fitButton = button(QStringLiteral("slideFit"), QStringLiteral("适应窗口"), QStringLiteral("fit"));
+    auto *showText = button(QStringLiteral("slideShowText"), QStringLiteral("幻灯片文字"), QStringLiteral("text")); showText->setCheckable(true);
+    updateIcons();
     auto *split = new QSplitter(Qt::Vertical); layout->addWidget(split, 1);
     view_ = new QGraphicsView; view_->setObjectName(QStringLiteral("slideCanvas")); view_->setRenderHint(QPainter::SmoothPixmapTransform); view_->setDragMode(QGraphicsView::ScrollHandDrag); view_->setMinimumSize(120, 100);
     auto *scene = new QGraphicsScene(view_); view_->setScene(scene); image_ = scene->addPixmap(QPixmap()); split->addWidget(view_);
@@ -121,5 +124,19 @@ void SlidesDialog::requestPage() {
     process_.write("RENDER\t" + QByteArray::number(rendering_) + '\n'); timeout_.start();
 }
 void SlidesDialog::fit() { if (!image_->pixmap().isNull()) view_->fitInView(image_->boundingRect(), Qt::KeepAspectRatio); }
+void SlidesDialog::updateIcons() {
+    for (auto *button : findChildren<QToolButton *>()) {
+        const QString symbol = button->property("slideSymbol").toString();
+        if (symbol.isEmpty()) continue;
+        QIcon icon = actionSymbol(symbol, palette().color(QPalette::ButtonText));
+        icon.addPixmap(actionSymbol(symbol, palette().color(QPalette::Disabled, QPalette::ButtonText)).pixmap(20, 20), QIcon::Disabled);
+        icon.addPixmap(actionSymbol(symbol, palette().color(QPalette::HighlightedText)).pixmap(20, 20), QIcon::Normal, QIcon::On);
+        button->setIcon(icon);
+    }
+}
+void SlidesDialog::changeEvent(QEvent *event) {
+    QDialog::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) updateIcons();
+}
 void SlidesDialog::resizeEvent(QResizeEvent *event) { QDialog::resizeEvent(event); if (fitting_) fit(); }
 }

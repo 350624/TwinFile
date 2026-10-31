@@ -32,6 +32,17 @@ QIcon actionSymbol(const QString &name, const QColor &color) {
         painter.drawLine(QPointF(10, 16), QPointF(10, 4)); painter.drawLine(QPointF(5, 9), QPointF(10, 4)); painter.drawLine(QPointF(10, 4), QPointF(15, 9));
     } else if (name == QStringLiteral("add")) {
         painter.drawLine(QPointF(4, 10), QPointF(16, 10)); painter.drawLine(QPointF(10, 4), QPointF(10, 16));
+    } else if (name == QStringLiteral("zoom-in") || name == QStringLiteral("zoom-out")) {
+        painter.drawEllipse(QRectF(2, 2, 11, 11)); painter.drawLine(QPointF(12, 12), QPointF(18, 18));
+        painter.drawLine(QPointF(4.5, 7.5), QPointF(10.5, 7.5));
+        if (name == QStringLiteral("zoom-in")) painter.drawLine(QPointF(7.5, 4.5), QPointF(7.5, 10.5));
+    } else if (name == QStringLiteral("fit")) {
+        for (int x : {0, 1}) for (int y : {0, 1}) {
+            painter.save(); painter.translate(x ? 20 : 0, y ? 20 : 0); painter.scale(x ? -1 : 1, y ? -1 : 1);
+            painter.drawPolyline(QPolygonF{QPointF(3, 8), QPointF(3, 3), QPointF(8, 3)}); painter.restore();
+        }
+    } else if (name == QStringLiteral("text")) {
+        painter.drawLine(QPointF(3, 3), QPointF(17, 3)); painter.drawLine(QPointF(10, 3), QPointF(10, 17)); painter.drawLine(QPointF(6, 17), QPointF(14, 17));
     } else if (name == QStringLiteral("search")) {
         painter.drawEllipse(QRectF(3, 3, 10, 10)); painter.drawLine(QPointF(12, 12), QPointF(17, 17));
     } else if (name == QStringLiteral("copy")) {

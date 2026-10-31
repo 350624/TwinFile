@@ -37,7 +37,7 @@ try {
     Get-Content -LiteralPath $IconResults
     if ($Process.ExitCode -ne 0) { throw 'Native icon UI check failed' }
     $SlideResults = Join-Path $Evidence 'slides-ui-test-results.txt'
-    $Process = Start-Process -FilePath $AnimationExecutable -ArgumentList @('-platform','windows','slidesRenderNavigateAndStayReadOnly','slidesRejectBrokenAndExternalResources','windowOpensPresentationInternally','-o',('"' + $SlideResults + ',txt"')) -WindowStyle Hidden -PassThru
+    $Process = Start-Process -FilePath $AnimationExecutable -ArgumentList @('-platform','windows','slidesRenderNavigateAndStayReadOnly','slidesToolbarIconsRespectThemes','slidesRejectBrokenAndExternalResources','windowOpensPresentationInternally','-o',('"' + $SlideResults + ',txt"')) -WindowStyle Hidden -PassThru
     if (-not $Process.WaitForExit(120000)) { $Process.Kill(); throw 'PPTX UI check timed out' }
     Get-Content -LiteralPath $SlideResults
     if ($Process.ExitCode -ne 0) { throw 'PPTX UI check failed' }

@@ -103,11 +103,32 @@ private slots:
         auto *canvas = dialog->findChild<QGraphicsView *>(QStringLiteral("slideCanvas")); QVERIFY(canvas); QVERIFY(!canvas->scene()->items().isEmpty());
         auto *image = qgraphicsitem_cast<QGraphicsPixmapItem *>(canvas->scene()->items().first()); QVERIFY(image); QVERIFY(!image->pixmap().isNull());
         const QImage pixels = image->pixmap().toImage(); QVERIFY(pixels.width() > 500); QVERIFY(pixels.pixelColor(250, 450).red() > 200); QVERIFY(pixels.pixelColor(250, 450).green() < 100);
+        const QString referencePath = root.filePath(QStringLiteral("reference.pptx"));
+        const Result referenceGenerated = runProcess(toolPath(QStringLiteral("runtime/bin/java.exe")), {QStringLiteral("-Djava.awt.headless=true"), QStringLiteral("-cp"), helper + QChar(';') + jars + QStringLiteral("/*"), QStringLiteral("SlideFixture"), referencePath, QStringLiteral("reference")}, 30000);
+        QVERIFY2(referenceGenerated.ok, qPrintable(referenceGenerated.error + referenceGenerated.output));
+        auto *reference = new SlidesDialog(referencePath, nullptr); reference->setAttribute(Qt::WA_DeleteOnClose, false); reference->show();
+        auto *referenceStatus = reference->findChild<QLabel *>(QStringLiteral("slideStatus"));
+        QTRY_VERIFY_WITH_TIMEOUT(referenceStatus->text().contains(QStringLiteral("只读")), 30000);
+        auto *referenceCanvas = reference->findChild<QGraphicsView *>(QStringLiteral("slideCanvas"));
+        auto *referenceImage = qgraphicsitem_cast<QGraphicsPixmapItem *>(referenceCanvas->scene()->items().first()); QVERIFY(referenceImage);
+        const QRect titleRegion(70, 60, 1400, 260);
+        auto glyphs = [&](const QImage &source) {
+            const QImage crop = source.copy(titleRegion); QRect ink;
+            for (int y = 0; y < crop.height(); ++y) for (int x = 0; x < crop.width(); ++x) if (crop.pixelColor(x, y).lightness() < 100) ink = ink.united(QRect(x, y, 1, 1));
+            return crop.copy(ink).convertToFormat(QImage::Format_RGB32);
+        };
+        const QString fontEvidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT");
+        if (!fontEvidence.isEmpty()) { pixels.save(QDir(fontEvidence).filePath(QStringLiteral("slide-fallback-test.png"))); referenceImage->pixmap().save(QDir(fontEvidence).filePath(QStringLiteral("slide-reference-test.png"))); }
+        QVERIFY2(glyphs(pixels) == glyphs(referenceImage->pixmap().toImage()), "Chinese in an installed Latin-only font must render like the CJK reference, not tofu boxes");
         int leftTextPixels = 0; for (int y = 60; y < 180; ++y) for (int x = 80; x < 450; ++x) if (pixels.pixelColor(x, y).lightness() < 100) ++leftTextPixels;
         QVERIFY2(leftTextPixels > 100, "Slide title must render upright in the expected top-left region");
         auto *text = dialog->findChild<QPlainTextEdit *>(QStringLiteral("slideText")); QVERIFY(text); QVERIFY(text->isReadOnly()); QVERIFY(text->toPlainText().contains(QStringLiteral("陪伴式聊天机器人")));
         dialog->findChild<QToolButton *>(QStringLiteral("slideNext"))->click();
         QTRY_VERIFY_WITH_TIMEOUT(status->text().contains(QStringLiteral("第 2 / 2 页")), 30000); QVERIFY(text->toPlainText().contains(QStringLiteral("第二页")));
+        reference->findChild<QToolButton *>(QStringLiteral("slideNext"))->click();
+        QTRY_VERIFY_WITH_TIMEOUT(referenceStatus->text().contains(QStringLiteral("第 2 / 2 页")), 30000);
+        QVERIFY2(glyphs(image->pixmap().toImage()) == glyphs(referenceImage->pixmap().toImage()), "Chinese in a missing font must fall back to real CJK glyphs");
+        delete reference;
         dialog->findChild<QToolButton *>(QStringLiteral("slidePrevious"))->click();
         QTRY_VERIFY_WITH_TIMEOUT(status->text().contains(QStringLiteral("第 1 / 2 页")), 30000);
         dialog->resize(460, 560); QTest::qWait(50);
@@ -115,6 +136,55 @@ private slots:
         const QString evidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT"); if (!evidence.isEmpty()) QVERIFY(dialog->grab().save(QDir(evidence).filePath(QStringLiteral("native-slides-narrow.png"))));
         dialog->resize(1120, 760); QTest::qWait(50); if (!evidence.isEmpty()) QVERIFY(dialog->grab().save(QDir(evidence).filePath(QStringLiteral("native-slides.png"))));
         QCOMPARE(contents(path), before); delete dialog; QVERIFY(QFile::remove(path));
+        const QString localDocument = qEnvironmentVariable("TWINFILE_SLIDE_VERIFY_FILE");
+        if (!localDocument.isEmpty()) {
+            const QByteArray sourceBefore = contents(localDocument); QVERIFY(!sourceBefore.isEmpty());
+            const QPalette oldPalette = qApp->palette(); const QString oldStyle = qApp->styleSheet();
+            const auto restore = qScopeGuard([&] { qApp->setPalette(oldPalette); qApp->setStyleSheet(oldStyle); });
+            const QPalette palette = appearancePalette(QStringLiteral("miuix"), true, QStringLiteral("#3b82f6"));
+            qApp->setPalette(palette); qApp->setStyleSheet(appearanceStyleSheet(QStringLiteral("miuix"), true, palette));
+            auto *actual = new SlidesDialog(localDocument, nullptr); actual->setAttribute(Qt::WA_DeleteOnClose, false); actual->show();
+            auto *actualStatus = actual->findChild<QLabel *>(QStringLiteral("slideStatus"));
+            QTRY_VERIFY_WITH_TIMEOUT(actualStatus->text().contains(QStringLiteral("只读")), 30000);
+            auto *actualPage = actual->findChild<QSpinBox *>(QStringLiteral("slidePage"));
+            const int count = actualPage->maximum(); QVERIFY(count > 1);
+            for (int number = 1; number <= count; ++number) {
+                actualPage->setValue(number);
+                QTRY_VERIFY_WITH_TIMEOUT(actualStatus->text().contains(QStringLiteral("第 %1 / %2 页").arg(number).arg(count)), 30000);
+                QVERIFY(!actual->findChild<QPlainTextEdit *>(QStringLiteral("slideText"))->toPlainText().isEmpty());
+                if (!evidence.isEmpty()) QVERIFY(actual->grab().save(QDir(evidence).filePath(QStringLiteral("native-slides-local-%1.png").arg(number))));
+            }
+            actualPage->setValue(1); QTRY_VERIFY_WITH_TIMEOUT(actualStatus->text().contains(QStringLiteral("第 1 /")), 30000);
+            actual->resize(460, 560); QTest::qWait(50);
+            if (!evidence.isEmpty()) QVERIFY(actual->grab().save(QDir(evidence).filePath(QStringLiteral("native-slides-local-narrow.png"))));
+            delete actual; QCOMPARE(contents(localDocument), sourceBefore);
+        }
+    }
+    void slidesToolbarIconsRespectThemes_data() {
+        QTest::addColumn<QString>("theme"); QTest::addColumn<bool>("dark");
+        for (const QString &theme : themeIds()) for (bool dark : {false, true}) QTest::newRow(qPrintable(theme + (dark ? QStringLiteral("-dark") : QStringLiteral("-light")))) << theme << dark;
+    }
+    void slidesToolbarIconsRespectThemes() {
+        QFETCH(QString, theme); QFETCH(bool, dark);
+        const QPalette previousPalette = qApp->palette(); const QString previousStyle = qApp->styleSheet();
+        const auto restore = qScopeGuard([&] { qApp->setPalette(previousPalette); qApp->setStyleSheet(previousStyle); });
+        const QPalette palette = appearancePalette(theme, dark, QStringLiteral("#3b82f6"));
+        qApp->setPalette(palette); qApp->setStyleSheet(appearanceStyleSheet(theme, dark, palette));
+        auto *dialog = new SlidesDialog(QStringLiteral("not-present.pptx"), nullptr); dialog->setAttribute(Qt::WA_DeleteOnClose, false); dialog->resize(460, 560); dialog->show(); QTest::qWait(30);
+        for (auto *button : dialog->findChildren<QToolButton *>()) {
+            QVERIFY(!button->icon().isNull()); QCOMPARE(button->iconSize(), QSize(20, 20));
+            QVERIFY(button->geometry().right() < dialog->width());
+            for (bool enabled : {false, true}) {
+                button->setEnabled(enabled); button->clearFocus(); QTest::qWait(1);
+                const QIcon icon = button->icon(); const QImage withIcon = button->grab().toImage();
+                button->setIcon(QIcon()); const QImage withoutIcon = button->grab().toImage(); button->setIcon(icon);
+                int changed = 0; for (int y = 6; y < 28; ++y) for (int x = 6; x < 28; ++x) if (withIcon.pixelColor(x, y) != withoutIcon.pixelColor(x, y)) ++changed;
+                QVERIFY2(changed > 24, qPrintable(button->objectName() + QStringLiteral(" icon clipped by theme: ") + theme));
+            }
+        }
+        const QString evidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT");
+        if (!evidence.isEmpty()) QVERIFY(dialog->grab().save(QDir(evidence).filePath(QStringLiteral("native-slides-toolbar-%1-%2.png").arg(theme, dark ? QStringLiteral("dark") : QStringLiteral("light")))));
+        delete dialog;
     }
     void slidesRejectBrokenAndExternalResources() {
         QTemporaryDir root; QVERIFY(root.isValid());
