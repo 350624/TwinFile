@@ -43,6 +43,8 @@ HFX 上游提交为 `c4981456aa240212b282929a69658189aa89574c`，源码 ZIP 与 
 
 ## 测试与发布范围
 
+完整 PPTX 预览另需执行 `pwsh -File tools/prepare-slides.ps1`，将 Apache POI 5.5.1 和固定依赖下载到 `tools/slides`；脚本只从 Maven Central 获取，并核对仓库锁定的 SHA256。完整构建重新验证这些文件，桥接源码为 `assets/SlideBridge.java`，复用 Java 17 和 ECJ。依赖版本、哈希和源码坐标见 `tools/slides-dependencies.json`；运行包保留原 JAR 内 LICENSE/NOTICE 及 `licenses/SLIDES.md`。
+
 - 没有工具时使用 `build.ps1 -SkipTests` 编译，或直接 CMake `-DBUILD_TESTING=OFF`。
 - 完整测试需要上述布局，其中若干测试检查历史 HFX 样本具体结构；仅放任意同名 APK 不能保证全通过。自建版本的差异应单独说明，不要为得到“全通过”而删除断言。
 - `build.ps1 -Package` 要求完整工具目录，即使同时指定 `-SkipTests` 也会预检。

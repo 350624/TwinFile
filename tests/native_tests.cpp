@@ -10,6 +10,11 @@
 #include "shell.h"
 #include "appearance.h"
 #include "dex.h"
+#include "slides.h"
+#include <QGraphicsView>
+#include <QGraphicsScene>
+#include <QGraphicsPixmapItem>
+#include <QSpinBox>
 #include "properties.h"
 #include <QComboBox>
 #include <QLabel>
@@ -81,6 +86,59 @@ public:
 class NativeTests : public QObject {
     Q_OBJECT
 private slots:
+    void slidesRenderNavigateAndStayReadOnly() {
+        QTemporaryDir root; QVERIFY(root.isValid());
+        const QString path = root.filePath(QStringLiteral("设计参考.pptx"));
+        const QString helper = QCoreApplication::applicationDirPath() + QStringLiteral("/../slide-helper");
+        const QString jars = QFileInfo(toolPath(QStringLiteral("slides/poi-ooxml-5.5.1.jar"))).absolutePath();
+        const Result generated = runProcess(toolPath(QStringLiteral("runtime/bin/java.exe")), {QStringLiteral("-Djava.awt.headless=true"), QStringLiteral("-cp"), helper + QChar(';') + jars + QStringLiteral("/*"), QStringLiteral("SlideFixture"), path}, 30000);
+        QVERIFY2(generated.ok, qPrintable(generated.error + generated.output));
+        const QByteArray before = contents(path); QVERIFY(!before.isEmpty());
+        QVERIFY(isPresentation(path)); QVERIFY(isPresentation(QStringLiteral("FILE.PPTX"))); QVERIFY(!isPresentation(QStringLiteral("file.pptx.zip"))); QVERIFY(!isText(path));
+        auto *dialog = new SlidesDialog(path, nullptr); dialog->setAttribute(Qt::WA_DeleteOnClose, false); dialog->show();
+        auto *status = dialog->findChild<QLabel *>(QStringLiteral("slideStatus")); QVERIFY(status);
+        QTRY_VERIFY_WITH_TIMEOUT(status->text().contains(QStringLiteral("只读")) || status->text().startsWith(QStringLiteral("无法预览")), 30000);
+        QVERIFY2(status->text().contains(QStringLiteral("只读")), qPrintable(status->text()));
+        auto *page = dialog->findChild<QSpinBox *>(QStringLiteral("slidePage")); QVERIFY(page); QCOMPARE(page->maximum(), 2);
+        auto *canvas = dialog->findChild<QGraphicsView *>(QStringLiteral("slideCanvas")); QVERIFY(canvas); QVERIFY(!canvas->scene()->items().isEmpty());
+        auto *image = qgraphicsitem_cast<QGraphicsPixmapItem *>(canvas->scene()->items().first()); QVERIFY(image); QVERIFY(!image->pixmap().isNull());
+        const QImage pixels = image->pixmap().toImage(); QVERIFY(pixels.width() > 500); QVERIFY(pixels.pixelColor(250, 450).red() > 200); QVERIFY(pixels.pixelColor(250, 450).green() < 100);
+        int leftTextPixels = 0; for (int y = 60; y < 180; ++y) for (int x = 80; x < 450; ++x) if (pixels.pixelColor(x, y).lightness() < 100) ++leftTextPixels;
+        QVERIFY2(leftTextPixels > 100, "Slide title must render upright in the expected top-left region");
+        auto *text = dialog->findChild<QPlainTextEdit *>(QStringLiteral("slideText")); QVERIFY(text); QVERIFY(text->isReadOnly()); QVERIFY(text->toPlainText().contains(QStringLiteral("陪伴式聊天机器人")));
+        dialog->findChild<QToolButton *>(QStringLiteral("slideNext"))->click();
+        QTRY_VERIFY_WITH_TIMEOUT(status->text().contains(QStringLiteral("第 2 / 2 页")), 30000); QVERIFY(text->toPlainText().contains(QStringLiteral("第二页")));
+        dialog->findChild<QToolButton *>(QStringLiteral("slidePrevious"))->click();
+        QTRY_VERIFY_WITH_TIMEOUT(status->text().contains(QStringLiteral("第 1 / 2 页")), 30000);
+        dialog->resize(460, 560); QTest::qWait(50);
+        for (auto *control : dialog->findChildren<QToolButton *>()) QVERIFY2(control->geometry().right() <= dialog->width(), qPrintable(control->objectName()));
+        const QString evidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT"); if (!evidence.isEmpty()) QVERIFY(dialog->grab().save(QDir(evidence).filePath(QStringLiteral("native-slides-narrow.png"))));
+        dialog->resize(1120, 760); QTest::qWait(50); if (!evidence.isEmpty()) QVERIFY(dialog->grab().save(QDir(evidence).filePath(QStringLiteral("native-slides.png"))));
+        QCOMPARE(contents(path), before); delete dialog; QVERIFY(QFile::remove(path));
+    }
+    void slidesRejectBrokenAndExternalResources() {
+        QTemporaryDir root; QVERIFY(root.isValid());
+        const QString path = root.filePath(QStringLiteral("broken.pptx")); QVERIFY(writeFixture(path, QByteArray("not a pptx")));
+        for (int external = 0; external < 2; ++external) {
+            if (external) {
+                const QString helper = QCoreApplication::applicationDirPath() + QStringLiteral("/../slide-helper");
+                const QString jars = QFileInfo(toolPath(QStringLiteral("slides/poi-ooxml-5.5.1.jar"))).absolutePath();
+                const Result generated = runProcess(toolPath(QStringLiteral("runtime/bin/java.exe")), {QStringLiteral("-cp"), helper + QChar(';') + jars + QStringLiteral("/*"), QStringLiteral("SlideFixture"), path, QStringLiteral("external")}, 30000); QVERIFY2(generated.ok, qPrintable(generated.error));
+            }
+            auto *dialog = new SlidesDialog(path, nullptr); dialog->setAttribute(Qt::WA_DeleteOnClose, false); dialog->show();
+            auto *status = dialog->findChild<QLabel *>(QStringLiteral("slideStatus"));
+            QTRY_VERIFY_WITH_TIMEOUT(status->text().startsWith(QStringLiteral("无法预览")), 30000);
+            if (external) QVERIFY2(status->text().contains(QStringLiteral("External relationships")), qPrintable(status->text()));
+            QVERIFY(!dialog->findChild<QSpinBox *>(QStringLiteral("slidePage"))->isEnabled()); delete dialog;
+        }
+        auto temporary = std::make_shared<QTemporaryDir>(); const QString temporaryPath = temporary->path();
+        auto *closing = new SlidesDialog(path, nullptr, temporary); temporary.reset(); closing->setAttribute(Qt::WA_DeleteOnClose, false); closing->show(); QTest::qWait(10); delete closing; QVERIFY(!QFileInfo::exists(temporaryPath));
+    }
+    void windowOpensPresentationInternally() {
+        QTemporaryDir root; QVERIFY(root.isValid()); const QString path = root.filePath(QStringLiteral("file.pptx")); QVERIFY(writeFixture(path));
+        Window window; Entry entry; entry.name = QStringLiteral("file.pptx"); entry.path = path; entry.source = Source::Local;
+        window.leftPane()->openRequested(entry); QTRY_VERIFY(window.findChild<QDialog *>(QStringLiteral("slidesDialog")));
+    }
     void propertiesCountLocalContentsAndSkipJunctions() {
         QTemporaryDir root, outside; QVERIFY(root.isValid()); QVERIFY(outside.isValid());
         QVERIFY(QDir().mkpath(root.filePath(QStringLiteral("nested/empty"))));

@@ -3,6 +3,8 @@
 TwinFile 原创部分按 GPL-3.0-only 发布，见 `LICENSE`、`NOTICE.md`。本文件不改变第三方原作者许可，也不是二进制再发行合规审计结论。Git 仓库仅包含原生源码、资源、文档及保留通知的 vendor / HFX 上游源码，不包含 Qt/FFmpeg/Java/Android 工具二进制、个人配置或历史安装包。以下涉及“包内”的内容描述完整本地构建的部署行为，不表示仓库已提供这些文件。
 
 - **Qt 6.10.3**：动态链接 Core/Gui/Widgets/Concurrent/Network/Xml/Svg/Multimedia/MultimediaWidgets，测试另用 Test。各模块以实际许可为准，通常 LGPLv3/GPLv3 或商业许可。标准文本在 `licenses/LGPL-3.0-only.txt`、`GPL-3.0-only.txt`；<https://www.qt.io/licensing/>、<https://download.qt.io/official_releases/qt/6.10/6.10.3/>。
+
+- **Apache POI 5.5.1 / XMLBeans / Commons / Log4j API / CurvesAPI / SparseBitSet**：PPTX 只读查看器复用成熟的 OOXML 渲染组件，通过 Java 17 子进程离线渲染。完整版本、来源和许可见 `licenses/SLIDES.md`，固定依赖哈希见 `tools/slides-dependencies.json`；包内保留未经修改的 JAR 及其中 LICENSE/NOTICE。
 - **FFmpeg 7.1.3 动态库**：随 Qt 部署的解码后端，运行库 `av_version_info` 与 Qt Multimedia SBOM 一致，自报 LGPL-2.1-or-later；实际配置不启用 GPL / nonfree。配置、源码和版本证据见 `licenses/SOURCES.md`；<https://ffmpeg.org/legal.html>。格式支持不代表获得相关专利或商标授权。
 - **zlib 1.3.2 / MiniZip**：保留 `vendor/zlib` 原通知；包内 `licenses/zlib.txt`、`Info-Zip.txt`。源码 <https://zlib.net/zlib-1.3.2.tar.gz>，SHA256 `bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16`。
 - **bzip2 1.0.8**：Payload BZ2。原许可 `vendor/bzip2/LICENSE`，包内 `licenses/bzip2.txt`；<https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz>，归档 SHA256 `ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269`。

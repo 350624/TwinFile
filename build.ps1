@@ -22,6 +22,10 @@ $ToolRoot = [IO.Path]::GetFullPath($ToolRoot)
 $CMakeCommand = Get-Command $CMake -CommandType Application -ErrorAction Stop
 $CMake = $CMakeCommand.Source
 if (-not $SkipTests -or $Package) {
+    foreach ($Dependency in (Get-Content -LiteralPath "$Root\tools\slides-dependencies.json" -Raw | ConvertFrom-Json)) {
+        $SlideFile = Join-Path $ToolRoot "slides/$($Dependency.artifact)-$($Dependency.version).jar"
+        if (-not (Test-Path -LiteralPath $SlideFile) -or (Get-FileHash -LiteralPath $SlideFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Dependency.sha256) { throw "Missing or changed slide dependency: $SlideFile. Run tools/prepare-slides.ps1 first." }
+    }
     foreach ($Relative in @('adb/adb.exe','adb/AdbWinApi.dll','adb/AdbWinUsbApi.dll','adb/fastboot.exe','apktool.jar','ecj.jar','apksigner.jar','runtime/bin/java.exe','runtime/bin/keytool.exe','hfx/HybridFileXfer-phone.apk')) {
         if (-not (Test-Path -LiteralPath (Join-Path $ToolRoot $Relative) -PathType Leaf)) {
             throw "Missing external tool: $Relative. See tools/README.md; use -SkipTests for a desktop-only build without deployment."
@@ -104,6 +108,11 @@ if ($Package) {
     }
     foreach ($Name in @('apktool.jar','apksigner.jar')) {
         Copy-Item -LiteralPath "$ToolSource\$Name" -Destination $ToolDestination -Force
+    }
+    New-Item -ItemType Directory -Path "$ToolDestination\slides" -Force | Out-Null
+    foreach ($Dependency in (Get-Content -LiteralPath "$Root\tools\slides-dependencies.json" -Raw | ConvertFrom-Json)) {
+        $SlideName = "$($Dependency.artifact)-$($Dependency.version).jar"
+        Copy-Item -LiteralPath "$ToolSource\slides\$SlideName" -Destination "$ToolDestination\slides" -Force
     }
     New-Item -ItemType Directory -Path "$ToolDestination\hfx" -Force | Out-Null
     Copy-Item -LiteralPath "$ToolSource\hfx\HybridFileXfer-phone.apk" -Destination "$ToolDestination\hfx" -Force

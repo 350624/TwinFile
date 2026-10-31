@@ -70,6 +70,7 @@ bool isArchive(const QString &name) {
     return isApk(name) || extensions.contains(QFileInfo(name).suffix().toLower());
 }
 bool isText(const QString &name) {
+    if (name.endsWith(QStringLiteral(".pptx"), Qt::CaseInsensitive)) return false;
     static const QStringList extensions{QStringLiteral("txt"), QStringLiteral("md"), QStringLiteral("log"), QStringLiteral("ini"), QStringLiteral("cfg"), QStringLiteral("conf"), QStringLiteral("json"), QStringLiteral("xml"), QStringLiteral("yml"), QStringLiteral("yaml"), QStringLiteral("toml"), QStringLiteral("py"), QStringLiteral("js"), QStringLiteral("ts"), QStringLiteral("java"), QStringLiteral("kt"), QStringLiteral("c"), QStringLiteral("cpp"), QStringLiteral("h"), QStringLiteral("hpp"), QStringLiteral("cs"), QStringLiteral("go"), QStringLiteral("rs"), QStringLiteral("smali"), QStringLiteral("html"), QStringLiteral("css"), QStringLiteral("sh"), QStringLiteral("bat"), QStringLiteral("properties"), QStringLiteral("gradle"), QStringLiteral("pro"), QStringLiteral("sql"), QStringLiteral("proto"), QStringLiteral("gitignore"), QStringLiteral("lock"), QStringLiteral("ps1")};
     return extensions.contains(name.section(QChar('.'), -1).toLower());
 }

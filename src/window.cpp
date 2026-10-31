@@ -4,6 +4,7 @@
 #include "payload.h"
 #include "editor.h"
 #include "dex.h"
+#include "slides.h"
 #include "media.h"
 #include "inspection.h"
 #include "adbsync.h"
@@ -737,6 +738,7 @@ void Window::showText(const QString &title, const QString &text) {
 void Window::edit(const QString &path) {
     auto changed = [this] { left_->refresh(); right_->refresh(); };
     if (isDex(path)) (new DexDialog(path, this, {}, {}, changed))->show();
+    else if (isPresentation(path)) (new SlidesDialog(path, this))->show();
     else (new EditorDialog(path, this, {}, {}, changed))->show();
 }
 
@@ -766,6 +768,7 @@ void Window::open(const Entry &entry) {
             } else {
                 auto changed = [this] { runJob(QStringLiteral("同步嵌套容器"), [](const Cancellation &) { return Result{}; }, {}, {}, true); };
                 if (isDex(entry.name)) (new DexDialog(path, this, entry, temporary, changed))->show();
+                else if (isPresentation(entry.name)) (new SlidesDialog(path, this, temporary))->show();
                 else (new EditorDialog(path, this, entry, temporary, changed))->show();
             }
         });
@@ -774,7 +777,7 @@ void Window::open(const Entry &entry) {
     if (isArchive(entry.name)) { active_->navigate({Source::Archive, entry.path, {}, {}}); return; }
     if (isImage(entry.name)) { image(entry.path); return; }
     if (isMedia(entry.name)) { media(entry.path); return; }
-    if (isDex(entry.name) || isText(entry.name)) edit(entry.path);
+    if (isDex(entry.name) || isText(entry.name) || isPresentation(entry.name)) edit(entry.path);
     else QDesktopServices::openUrl(QUrl::fromLocalFile(entry.path));
 }
 

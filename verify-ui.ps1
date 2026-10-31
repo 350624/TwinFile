@@ -36,6 +36,11 @@ try {
     if (-not $Process.WaitForExit(90000)) { $Process.Kill(); throw 'Native icon and DEX UI check timed out' }
     Get-Content -LiteralPath $IconResults
     if ($Process.ExitCode -ne 0) { throw 'Native icon UI check failed' }
+    $SlideResults = Join-Path $Evidence 'slides-ui-test-results.txt'
+    $Process = Start-Process -FilePath $AnimationExecutable -ArgumentList @('-platform','windows','slidesRenderNavigateAndStayReadOnly','slidesRejectBrokenAndExternalResources','windowOpensPresentationInternally','-o',('"' + $SlideResults + ',txt"')) -WindowStyle Hidden -PassThru
+    if (-not $Process.WaitForExit(120000)) { $Process.Kill(); throw 'PPTX UI check timed out' }
+    Get-Content -LiteralPath $SlideResults
+    if ($Process.ExitCode -ne 0) { throw 'PPTX UI check failed' }
     $ExtensionExecutable = Join-Path $PSScriptRoot 'build\bin\twinfile_extension_tests.exe'
     $ExtensionResults = Join-Path $Evidence 'extension-ui-test-results.txt'
     $ExtensionTests = @('sidebarRendersAndDoesNotStealFileShortcuts','appearanceMigrationAndPalette','appearanceRendersAllModesAndRestores','propertiesRenderAndSpaceOpensProperties','contextMenusMatchSelectedEntryTypes','toolbarSelectionAndDirection','toolbarTransfersFollowActivePane','workspaceRedesignLayoutAndNavigation','workspaceNavigationScrollsWithoutGrowingWindow','storageLocationsAndTestModeIsolation','deviceAndDriveShortcuts','modelsEndpointAndExplicitGet','modelsFailures','modelsCancelAndRestart','modelSettingsDialogFetchAndManualFallback','codexComposerRendersAllModes','codexComposerMenusKeyboardAndStop','updateReleaseValidation','updateCheckIsAsyncBoundedAndShowsReleaseNotes','applicationChecksUpdatesAtStartupAndFromSettings','updateCheckFailureCancelAndStartupOnce')

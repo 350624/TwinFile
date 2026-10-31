@@ -8,6 +8,7 @@ foreach ($Name in @('src','sdk','assets','tests','vendor','licenses','docs','CMa
 }
 New-Item -ItemType Directory -Path (Join-Path $Destination 'tools') | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'tools\README.md') -Destination (Join-Path $Destination 'tools')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'tools\prepare-slides.ps1'),(Join-Path $PSScriptRoot 'tools\slides-dependencies.json') -Destination (Join-Path $Destination 'tools')
 if ($IncludeLocalArtifacts) {
 foreach ($Name in @('tools','releases','verification','dist')) {
     $Source = Join-Path $PSScriptRoot $Name
