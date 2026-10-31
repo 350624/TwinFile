@@ -26,6 +26,8 @@ CMake 必须在 PATH，或传入 `-CMake 'C:\Program Files\CMake\bin\cmake.exe'`
 
 ## B. 完整构建、测试和部署
 
+AXML / ARSC 内置编辑器还需执行 `pwsh -File tools/prepare-android-editor.ps1`，外部工具目录传 `-Destination 'C:\TwinFileTools'`；该脚本及完整构建锁定 ARSCLib 1.4.0 的 SHA256。
+
 按 [tools/README.md](../tools/README.md) 准备工具根目录，包含 ADB、Java、Apktool / apksigner / ECJ 三个 JAR、HFX 测试 APK 等，再运行：
 
 PPTX 查看器还需先执行 `pwsh -File tools/prepare-slides.ps1` 下载并校验固定依赖；外部工具根目录可加 `-Destination 'C:\TwinFileTools\slides'`。完整测试和打包会核对所有 JAR 的 SHA256，桌面精简构建缺失组件时不能预览 PPTX。

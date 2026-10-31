@@ -1,5 +1,7 @@
 # 第三方组件、来源与发布边界
 
+ARSCLib 1.4.0 用于 Android 二进制 XML / 资源表编辑，使用未修改的 Apache-2.0 JAR；来源、固定哈希及通知见 `licenses/ANDROID-EDITOR.md`，原创桥为 `assets/AndroidBinaryBridge.java`。
+
 TwinFile 原创部分按 GPL-3.0-only 发布，见 `LICENSE`、`NOTICE.md`。本文件不改变第三方原作者许可，也不是二进制再发行合规审计结论。Git 仓库仅包含原生源码、资源、文档及保留通知的 vendor / HFX 上游源码，不包含 Qt/FFmpeg/Java/Android 工具二进制、个人配置或历史安装包。以下涉及“包内”的内容描述完整本地构建的部署行为，不表示仓库已提供这些文件。
 
 - **Qt 6.10.3**：动态链接 Core/Gui/Widgets/Concurrent/Network/Xml/Svg/Multimedia/MultimediaWidgets，测试另用 Test。各模块以实际许可为准，通常 LGPLv3/GPLv3 或商业许可。标准文本在 `licenses/LGPL-3.0-only.txt`、`GPL-3.0-only.txt`；<https://www.qt.io/licensing/>、<https://download.qt.io/official_releases/qt/6.10/6.10.3/>。

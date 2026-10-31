@@ -6,6 +6,7 @@
 !/tools/README.md
 !/tools/prepare-slides.ps1
 !/tools/slides-dependencies.json
+!/tools/prepare-android-editor.ps1
 /.vs/
 /.vscode/
 *.user

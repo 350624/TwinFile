@@ -14,6 +14,7 @@ TwinFileTools/
     AdbWinUsbApi.dll
     fastboot.exe
   apktool.jar
+  arsclib.jar
   ecj.jar
   apksigner.jar
   runtime/
@@ -42,6 +43,8 @@ TwinFileTools/
 HFX 上游提交为 `c4981456aa240212b282929a69658189aa89574c`，源码 ZIP 与 GPL 在 `licenses`。历史手机端对 `.ClientActivity` 做了 `android:exported="true"` 修改并重新签名，**不是原封不动的官方 APK**。按 [HFX-MODIFICATIONS.md](../licenses/HFX-MODIFICATIONS.md) 在受支持的 Android/Gradle 环境构建并使用自己的密钥；历史签名私钥不在仓库，也不应索取或上传。桌面使用明文、无认证协议，仅限可信网络。
 
 ## 测试与发布范围
+
+AXML / ARSC 编辑另需执行 `pwsh -File tools/prepare-android-editor.ps1`，准备固定 SHA256 的 ARSCLib 1.4.0；完整测试与打包重新校验并部署 `arsclib.jar`。桥接源码为 `assets/AndroidBinaryBridge.java`，来源、源码与许可见 `licenses/ANDROID-EDITOR.md`。
 
 完整 PPTX 预览另需执行 `pwsh -File tools/prepare-slides.ps1`，将 Apache POI 5.5.1 和固定依赖下载到 `tools/slides`；脚本只从 Maven Central 获取，并核对仓库锁定的 SHA256。完整构建重新验证这些文件，桥接源码为 `assets/SlideBridge.java`，复用 Java 17 和 ECJ。依赖版本、哈希和源码坐标见 `tools/slides-dependencies.json`；运行包保留原 JAR 内 LICENSE/NOTICE 及 `licenses/SLIDES.md`。
 

@@ -22,6 +22,8 @@ $ToolRoot = [IO.Path]::GetFullPath($ToolRoot)
 $CMakeCommand = Get-Command $CMake -CommandType Application -ErrorAction Stop
 $CMake = $CMakeCommand.Source
 if (-not $SkipTests -or $Package) {
+    $ArscLibrary = Join-Path $ToolRoot 'arsclib.jar'
+    if (-not (Test-Path -LiteralPath $ArscLibrary) -or (Get-FileHash -LiteralPath $ArscLibrary -Algorithm SHA256).Hash.ToLowerInvariant() -ne '0cc95b160ba4c731a5cadb455f32b79f4e64b4160bc5ec3e5183ea3676b385ce') { throw 'Missing or changed ARSCLib 1.4.0. Run tools/prepare-android-editor.ps1 first.' }
     foreach ($Dependency in (Get-Content -LiteralPath "$Root\tools\slides-dependencies.json" -Raw | ConvertFrom-Json)) {
         $SlideFile = Join-Path $ToolRoot "slides/$($Dependency.artifact)-$($Dependency.version).jar"
         if (-not (Test-Path -LiteralPath $SlideFile) -or (Get-FileHash -LiteralPath $SlideFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Dependency.sha256) { throw "Missing or changed slide dependency: $SlideFile. Run tools/prepare-slides.ps1 first." }
@@ -106,7 +108,7 @@ if ($Package) {
             (Get-FileHash -LiteralPath $SourceFile -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $TargetFile -Algorithm SHA256).Hash) { continue }
         Copy-Item -LiteralPath $SourceFile -Destination $TargetFile -Force
     }
-    foreach ($Name in @('apktool.jar','apksigner.jar')) {
+    foreach ($Name in @('apktool.jar','apksigner.jar','arsclib.jar')) {
         Copy-Item -LiteralPath "$ToolSource\$Name" -Destination $ToolDestination -Force
     }
     New-Item -ItemType Directory -Path "$ToolDestination\slides" -Force | Out-Null

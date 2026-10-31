@@ -1,4 +1,6 @@
-# TwinFile 3.1.31 · C++ 原生版
+# TwinFile 3.1.32 · C++ 原生版
+
+新增 AndroidManifest.xml 二进制 XML 与 resources.arsc 内置编辑器，支持编译校验和原位置回写；DEX 新增行号、成员与字符串导航及全局搜索。ARSC 当前编辑现有条目的 JSON 资源值，不支持增删资源或更改资源 ID；APK 修改后需自行重新签名。
 
 PPTX 文件可在内置只读查看器中逐页预览、缩放、适应窗口及复制页面文字，无需安装 Office。支持本地、压缩包内和手机文件；不执行宏、动画或视频，不加载外部链接资源。旧二进制 `.ppt`、加密文件及部分复杂图表、SmartArt、特殊字体可能不支持或与 PowerPoint 排版不同，见 [PPTX 组件说明](licenses/SLIDES.md)。
 
@@ -12,8 +14,8 @@ TwinFile 是面向 Windows 的双栏文件管理与 Android 工具箱。本版�
 
 ## 运行和安装
 
-- 面向 Windows x64。[下载 3.1.31 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.31/TwinFile-3.1.31-Windows-x64-Setup.exe)或[独立直链下载器](https://github.com/350624/TwinFile/releases/download/v3.1.31/TwinFile-Downloader-3.1.31-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
-- 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；独立下载器 `dist/TwinFileDownloader-3.1.31/TwinFileDownloader.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.31）。这些是构建后的路径，不是仓库已包含的文件。
+- 面向 Windows x64。[下载 3.1.32 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.32/TwinFile-3.1.32-Windows-x64-Setup.exe)或[独立直链下载器](https://github.com/350624/TwinFile/releases/download/v3.1.32/TwinFile-Downloader-3.1.32-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
+- 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；独立下载器 `dist/TwinFileDownloader-3.1.32/TwinFileDownloader.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.32）。这些是构建后的路径，不是仓库已包含的文件。
 - 完整发布包不需要安装 Python、Qt SDK 或编译器。手机需开启 USB 调试并授权电脑；HFX 需经用户确认安装配套手机端。源码编译与完整工具包的准备步骤不同，详见[安装说明](docs/INSTALL.md)。
 - 新配置：`%APPDATA%/TwinFileNative/settings.json`。配置与旧版独立，菜单不再提供旧版设置/工作区导入入口。
 - 第一次使用：点选左栏目录，再点选右栏目标目录，回到源栏选择文件，按 `F5` 复制到另一栏；顶部“助手”打开可选 AI，未配置 API 不影响文件管理。

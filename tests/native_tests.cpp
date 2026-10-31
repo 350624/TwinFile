@@ -10,6 +10,7 @@
 #include "shell.h"
 #include "appearance.h"
 #include "dex.h"
+#include "android_editor.h"
 #include "slides.h"
 #include <QGraphicsView>
 #include <QGraphicsScene>
@@ -272,6 +273,7 @@ private slots:
     }
     void apkSuffix() { QFETCH(QString, name); QFETCH(bool, accepted); QCOMPARE(isApk(name), accepted); }
     void dexValidationAndSuffix() {
+        QVERIFY(isAndroidBinary(QStringLiteral("AndroidManifest.xml"))); QVERIFY(isAndroidBinary(QStringLiteral("resources.arsc"))); QVERIFY(!isAndroidBinary(QStringLiteral("classes.dex")));
         QVERIFY(isDex(QStringLiteral("classes.DEX"))); QVERIFY(!isDex(QStringLiteral("classes.dex.zip"))); QVERIFY(!isText(QStringLiteral("classes.dex")));
         QTemporaryDir directory; const QString path = directory.filePath(QStringLiteral("classes.dex"));
         QByteArray bytes(140, '\0'); bytes.replace(0, 8, QByteArray("dex\n035\0", 8));
@@ -327,6 +329,8 @@ private slots:
         auto *save = dialog->findChild<QPushButton *>(QStringLiteral("dexSave")); auto *tree = dialog->findChild<QTreeWidget *>(QStringLiteral("dexClasses")); auto *editor = dialog->findChild<QPlainTextEdit *>(QStringLiteral("dexCode"));
         QVERIFY(save); QVERIFY(tree); QVERIFY(editor); QTRY_VERIFY_WITH_TIMEOUT(save->isEnabled(), 20000); QCOMPARE(tree->topLevelItemCount(), 1); QCOMPARE(tree->topLevelItem(0)->text(0), QStringLiteral("com.example"));
         QVERIFY(editor->toPlainText().contains(QStringLiteral("Hello TwinFile"))); QCOMPARE(dialog->findChild<QComboBox *>(QStringLiteral("dexMembers"))->count(), 2);
+        auto *outline = dialog->findChild<QTreeWidget *>(QStringLiteral("dexOutline")); auto *strings = dialog->findChild<QTreeWidget *>(QStringLiteral("dexStrings")); QVERIFY(outline); QVERIFY(strings); QCOMPARE(outline->topLevelItemCount(), 2); QCOMPARE(strings->topLevelItemCount(), 1);
+        auto *query = dialog->findChild<QLineEdit *>(QStringLiteral("dexFind")); query->setText(QStringLiteral("Hello TwinFile")); dialog->findChild<QPushButton *>(QStringLiteral("dexSearchAll"))->click(); QTRY_VERIFY_WITH_TIMEOUT(save->isEnabled(), 20000); auto *results = dialog->findChild<QTreeWidget *>(QStringLiteral("dexResults")); QCOMPARE(results->topLevelItemCount(), 1); results->itemActivated(results->topLevelItem(0), 0); QVERIFY(editor->textCursor().selectedText().contains(QStringLiteral("Hello TwinFile")));
         auto *filter = dialog->findChild<QLineEdit *>(QStringLiteral("dexFilter")); filter->setText(QStringLiteral("missing")); QVERIFY(tree->topLevelItem(0)->child(0)->isHidden()); filter->clear(); QVERIFY(!tree->topLevelItem(0)->child(0)->isHidden());
         const QString evidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT"); if (!evidence.isEmpty()) QVERIFY(dialog->grab().save(QDir(evidence).filePath(QStringLiteral("native-dex-editor-%1-%2.png").arg(theme, dark ? QStringLiteral("dark") : QStringLiteral("light")))));
         auto cursor = editor->textCursor(); cursor.select(QTextCursor::Document); cursor.insertText(editor->toPlainText().replace(QStringLiteral("Hello TwinFile"), QStringLiteral("Edited in Dex++")));
@@ -351,6 +355,38 @@ private slots:
     void unsafeArchiveNames_data() {
         QTest::addColumn<QString>("name");
         for (const QString &name : {QStringLiteral("../escape"), QStringLiteral("/absolute"), QStringLiteral("C:/absolute"), QStringLiteral("a/../../bad"), QStringLiteral("a\\bad"), QStringLiteral("a/CON.txt"), QStringLiteral("a/file."), QStringLiteral("a/./file")}) QTest::newRow(qPrintable(name)) << name;
+    }
+    void androidBinaryRoundTripEditRejectAndArchive_data() {
+        QTest::addColumn<QString>("kind"); QTest::addColumn<QString>("name");
+        QTest::newRow("AXML") << QStringLiteral("axml") << QStringLiteral("AndroidManifest.xml"); QTest::newRow("ARSC") << QStringLiteral("arsc") << QStringLiteral("resources.arsc");
+    }
+    void androidBinaryRoundTripEditRejectAndArchive() {
+        QFETCH(QString, kind); QFETCH(QString, name); QTemporaryDir directory; ZipReader apk(toolPath(QStringLiteral("hfx/HybridFileXfer-phone.apk"))); const QByteArray binary = apk.fileData(name); QVERIFY(binary.size() > 8);
+        const QString source = directory.filePath(name), document = directory.filePath(QStringLiteral("document.txt")), output = directory.filePath(QStringLiteral("compiled.bin")); QVERIFY(writeFixture(source, binary)); const QByteArray expected = fileDigest(source);
+        Result result = convertAndroidBinary(source, document, {}, kind); QVERIFY2(result.ok, qPrintable(result.error)); QByteArray text = contents(document); QVERIFY(!text.isEmpty());
+        if (kind == QStringLiteral("axml")) { QVERIFY(text.contains("versionName=\"3.0.0 - beta\"")); text.replace("versionName=\"3.0.0 - beta\"", "versionName=\"TwinFile edited\""); }
+        else { auto rows = QJsonDocument::fromJson(text).array(); QVERIFY(rows.size() > 1000); bool changed = false; for (int i = 0; i < rows.size(); ++i) { auto row = rows[i].toObject(); if (row.value(QStringLiteral("type")).toString() != QStringLiteral("string")) continue; auto entry = row.value(QStringLiteral("value")).toObject(); auto value = entry.value(QStringLiteral("value")).toObject(); if (value.value(QStringLiteral("value_type")).toString() != QStringLiteral("STRING")) continue; value[QStringLiteral("data")] = QStringLiteral("TwinFile edited 中文"); entry[QStringLiteral("value")] = value; row[QStringLiteral("value")] = entry; rows[i] = row; changed = true; break; } QVERIFY(changed); text = QJsonDocument(rows).toJson(); }
+        QVERIFY(writeFixture(document, text)); result = convertAndroidBinary(source, document, output, kind); QVERIFY2(result.ok, qPrintable(result.error)); const QString checked = directory.filePath(QStringLiteral("checked.txt")); result = convertAndroidBinary(output, checked, {}, kind); QVERIFY2(result.ok, qPrintable(result.error)); QVERIFY(contents(checked).contains("TwinFile edited")); QCOMPARE(contents(source), binary);
+        const QString archive = directory.filePath(QStringLiteral("test.apk")); QVERIFY(createArchive({source}, archive).ok); Entry entry; entry.source = Source::Archive; entry.path = archive; entry.name = name; entry.inner = name; result = saveAndroidBinary(source, output, expected, entry); QVERIFY2(result.ok, qPrintable(result.error)); QString error; QCOMPARE(readArchiveFile(archive, name, 32 * 1024 * 1024, &error), contents(output)); QVERIFY(error.isEmpty());
+        result = saveAndroidBinary(source, output, expected); QVERIFY2(result.ok, qPrintable(result.error)); QCOMPARE(contents(source), contents(output)); QVERIFY(!saveAndroidBinary(source, output, expected).ok);
+        const QByteArray saved = contents(source); QVERIFY(writeFixture(document, QByteArray("broken syntax"))); QVERIFY(!convertAndroidBinary(source, document, directory.filePath(QStringLiteral("invalid.bin")), kind).ok); QCOMPARE(contents(source), saved); auto cancel = std::make_shared<std::atomic_bool>(true); QVERIFY(!convertAndroidBinary(source, directory.filePath(QStringLiteral("cancelled.txt")), {}, kind, cancel).ok); QVERIFY(!saveAndroidBinary(source, output, fileDigest(source), {}, cancel).ok);
+        QVERIFY(writeFixture(source, QByteArray("externally modified"))); QVERIFY(!saveAndroidBinary(source, output, expected).ok); QCOMPARE(contents(source), QByteArray("externally modified"));
+        const QString plain = directory.filePath(QStringLiteral("AndroidManifest.xml")); QVERIFY(writeFixture(plain, QByteArray("<manifest package=\"example\"/>"))); QVERIFY(!isAndroidBinary(plain));
+    }
+    void androidBinaryEditorRendersAndSaves_data() {
+        QTest::addColumn<QString>("theme"); QTest::addColumn<bool>("dark"); QTest::addColumn<QString>("name");
+        for (const QString &theme : themeIds()) for (bool dark : {false, true}) for (const QString &name : {QStringLiteral("AndroidManifest.xml"), QStringLiteral("resources.arsc")}) QTest::newRow(qPrintable(theme + (dark ? QStringLiteral("-dark-") : QStringLiteral("-light-")) + name)) << theme << dark << name;
+    }
+    void androidBinaryEditorRendersAndSaves() {
+        QFETCH(QString, theme); QFETCH(bool, dark); QFETCH(QString, name); const auto previousPalette = qApp->palette(); const QString previousStyle = qApp->styleSheet(); const auto restore = qScopeGuard([&] { qApp->setPalette(previousPalette); qApp->setStyleSheet(previousStyle); }); const auto palette = appearancePalette(theme, dark, QStringLiteral("#5b8def")); qApp->setPalette(palette); qApp->setStyleSheet(appearanceStyleSheet(theme, dark, palette));
+        QTemporaryDir directory; ZipReader apk(toolPath(QStringLiteral("hfx/HybridFileXfer-phone.apk"))); const QString source = directory.filePath(name); QVERIFY(writeFixture(source, apk.fileData(name))); auto *dialog = new AndroidEditorDialog(source, nullptr); dialog->setAttribute(Qt::WA_DontShowOnScreen); dialog->show(); const auto cleanup = qScopeGuard([&] { delete dialog; }); auto *save = dialog->findChild<QPushButton *>(QStringLiteral("androidBinarySave")); QTRY_VERIFY_WITH_TIMEOUT(save->isEnabled(), 20000); auto *code = dialog->findChild<QPlainTextEdit *>(QStringLiteral("androidBinaryCode")); QVERIFY(code); QVERIFY(!code->isReadOnly()); QVERIFY(!code->toPlainText().isEmpty());
+        const QString evidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT"); const QString label = theme + (dark ? QStringLiteral("-dark-") : QStringLiteral("-light-")) + name; if (!evidence.isEmpty()) QVERIFY(dialog->grab().save(QDir(evidence).filePath(QStringLiteral("native-android-") + label + QStringLiteral(".png")))); dialog->resize(720, 500); QTest::qWait(30); if (!evidence.isEmpty()) QVERIFY(dialog->grab().save(QDir(evidence).filePath(QStringLiteral("native-android-narrow-") + label + QStringLiteral(".png")))); QVERIFY(code->width() > 200);
+        if (theme == themeIds().first() && !dark) { auto cursor = code->textCursor(); cursor.movePosition(QTextCursor::End); cursor.insertText(QStringLiteral("\n")); QTimer approval; connect(&approval, &QTimer::timeout, dialog, [] { for (auto *widget : QApplication::topLevelWidgets()) if (auto *box = qobject_cast<QMessageBox *>(widget)) if (auto *button = box->button(QMessageBox::Yes)) button->click(); }); approval.start(25); save->click(); QTRY_VERIFY_WITH_TIMEOUT(save->isEnabled(), 20000); approval.stop(); QVERIFY2(dialog->findChild<QLabel *>(QStringLiteral("androidBinaryStatus"))->text().startsWith(QStringLiteral("已编译保存")), qPrintable(dialog->findChild<QLabel *>(QStringLiteral("androidBinaryStatus"))->text())); }
+    }
+    void androidBinaryWindowRouting() {
+        QTemporaryDir directory; ZipReader apk(toolPath(QStringLiteral("hfx/HybridFileXfer-phone.apk"))); Window window; window.setAttribute(Qt::WA_DontShowOnScreen);
+        for (const QString &name : {QStringLiteral("AndroidManifest.xml"), QStringLiteral("resources.arsc")}) { const QString source = directory.filePath(name); QVERIFY(writeFixture(source, apk.fileData(name))); Entry local; local.source = Source::Local; local.path = source; local.name = name; window.leftPane()->openRequested(local); QTRY_VERIFY(window.findChild<QDialog *>(QStringLiteral("androidBinaryEditor"))); auto *dialog = window.findChild<QDialog *>(QStringLiteral("androidBinaryEditor")); QTRY_VERIFY_WITH_TIMEOUT(dialog->findChild<QPushButton *>(QStringLiteral("androidBinarySave"))->isEnabled(), 20000); delete dialog; }
+        const QString archive = directory.filePath(QStringLiteral("test.apk")); QVERIFY(createArchive({directory.filePath(QStringLiteral("resources.arsc"))}, archive).ok); Entry entry; entry.source = Source::Archive; entry.path = archive; entry.name = QStringLiteral("resources.arsc"); entry.inner = entry.name; window.leftPane()->openRequested(entry); QTRY_VERIFY(window.findChild<QDialog *>(QStringLiteral("androidBinaryEditor"))); auto *dialog = window.findChild<QDialog *>(QStringLiteral("androidBinaryEditor")); QTRY_VERIFY_WITH_TIMEOUT(dialog->findChild<QPushButton *>(QStringLiteral("androidBinarySave"))->isEnabled(), 20000); delete dialog;
     }
     void unsafeArchiveNames() { QFETCH(QString, name); QVERIFY(safeArchiveName(name).isEmpty()); }
     void validUnicodeArchiveName() { QCOMPARE(safeArchiveName(QStringLiteral("文件夹/中文 空格.txt")), QStringLiteral("文件夹/中文 空格.txt")); }

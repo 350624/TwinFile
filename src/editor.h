@@ -9,8 +9,10 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QCheckBox;
+class QTextDocument;
 
 namespace twinfile {
+void highlightTextDocument(QTextDocument *document);
 
 struct TextDocument {
     QString text;

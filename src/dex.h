@@ -25,12 +25,16 @@ public:
     void reject() override;
 protected:
     void closeEvent(QCloseEvent *event) override;
+    void changeEvent(QEvent *event) override;
 private:
     void selectClass(QTreeWidgetItem *item);
     bool flushClass();
     void compile(bool exportOnly);
     void launch(std::function<Result(const Cancellation &)> work, std::function<void(const Result &)> done);
     void populate();
+    void updateOutline();
+    void searchAll();
+    void jumpTo(int position);
     QString path_, current_;
     Entry original_;
     QByteArray expected_;
@@ -39,6 +43,9 @@ private:
     Cancellation cancel_;
     QFutureWatcher<Result> worker_;
     QTreeWidget *tree_;
+    QTreeWidget *outline_, *strings_, *results_;
+    QLabel *className_, *position_;
+    QPushButton *searchAll_;
     QPlainTextEdit *editor_;
     QLineEdit *filter_, *find_, *replacement_;
     QLabel *status_;

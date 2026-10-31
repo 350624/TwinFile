@@ -37,6 +37,11 @@ try {
     Get-Content -LiteralPath $IconResults
     if ($Process.ExitCode -ne 0) { throw 'Native icon UI check failed' }
     $SlideResults = Join-Path $Evidence 'slides-ui-test-results.txt'
+    $AndroidResults = Join-Path $Evidence 'android-editor-ui-test-results.txt'
+    $Process = Start-Process -FilePath $AnimationExecutable -ArgumentList @('-platform','windows','androidBinaryEditorRendersAndSaves','androidBinaryWindowRouting','-o',('"' + $AndroidResults + ',txt"')) -WindowStyle Hidden -PassThru
+    if (-not $Process.WaitForExit(180000)) { $Process.Kill(); throw 'Android editor UI check timed out' }
+    Get-Content -LiteralPath $AndroidResults
+    if ($Process.ExitCode -ne 0) { throw 'Android editor UI check failed' }
     $Process = Start-Process -FilePath $AnimationExecutable -ArgumentList @('-platform','windows','slidesRenderNavigateAndStayReadOnly','slidesToolbarIconsRespectThemes','slidesRejectBrokenAndExternalResources','windowOpensPresentationInternally','-o',('"' + $SlideResults + ',txt"')) -WindowStyle Hidden -PassThru
     if (-not $Process.WaitForExit(120000)) { $Process.Kill(); throw 'PPTX UI check timed out' }
     Get-Content -LiteralPath $SlideResults

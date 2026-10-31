@@ -58,6 +58,8 @@ protected:
 };
 }
 
+void highlightTextDocument(QTextDocument *document) { new Highlight(document); }
+
 Result decodeText(const QByteArray &bytes, const QString &encoding, TextDocument *document) {
     if (!document || bytes.size() > 16 * 1024 * 1024) return failed(QStringLiteral("文本超过 16 MiB 编辑上限"));
     TextDocument result; result.encoding = encoding;
