@@ -15,6 +15,7 @@
 #include <QThread>
 #include <QtEndian>
 #include <algorithm>
+#include <chrono>
 #include <future>
 #include <limits>
 #include <stdexcept>
@@ -185,6 +186,12 @@ Result HfxSession::push(const QStringList &paths, const QString &destination, co
             if (QFileInfo(root).isDir()) { QDirIterator iterator(root, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDirIterator::Subdirectories); while (iterator.hasNext()) { iterator.next(); append(iterator.filePath(), joinRemote(remoteRoot, QDir(root).relativeFilePath(iterator.filePath()))); } }
         }
         Wire control{state_->control, cancel}; control.number<qint16>(10); std::mutex schedule, reports; qsizetype fileIndex = 0; qint32 block = 0; std::atomic<qint64> done{0}; auto aborted = std::make_shared<std::atomic_bool>(false);
+        auto phoneResult = std::async(std::launch::async, [&] {
+            if (control.boolean()) return QString();
+            const QString error = control.text();
+            aborted->store(true);
+            return error;
+        });
         ChannelTasks tasks;
         for (const SOCKET socket : state_->channels) tasks.start([&, socket] {
             try {
@@ -201,8 +208,22 @@ Result HfxSession::push(const QStringList &paths, const QString &destination, co
                 channel.number<qint16>(3);
             } catch (...) { aborted->store(true); throw; }
         });
-        tasks.wait();
-        if (!control.boolean()) throw HfxError(QStringLiteral("手机写入失败：") + control.text()); control.boolean(true); return {};
+        std::exception_ptr transferError;
+        try { tasks.wait(); } catch (...) { transferError = std::current_exception(); }
+        if (transferError) {
+            QString phoneError;
+            if (phoneResult.wait_for(std::chrono::milliseconds(500)) == std::future_status::ready) {
+                try { phoneError = phoneResult.get(); } catch (...) {}
+            } else {
+                state_->close();
+                try { phoneError = phoneResult.get(); } catch (...) {}
+            }
+            if (!phoneError.isEmpty()) throw HfxError(QStringLiteral("手机写入失败：") + phoneError);
+            std::rethrow_exception(transferError);
+        }
+        const QString error = phoneResult.get();
+        if (!error.isEmpty()) throw HfxError(QStringLiteral("手机写入失败：") + error);
+        control.boolean(true); return {};
     } catch (const std::exception &error) { state_->close(); return failure(error); }
 }
 

@@ -1409,6 +1409,18 @@ private slots:
             const QString evidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT"); if (!evidence.isEmpty()) { window.setTheme(QStringLiteral("bataUI01")); window.show(); QApplication::processEvents(); QVERIFY(window.grab().save(QDir(evidence).filePath(QStringLiteral("native-hfx-main-pane.png")))); }
         }
         if (settings.isEmpty()) qunsetenv("TWINFILE_SETTINGS"); else qputenv("TWINFILE_SETTINGS", settings);
+        const QString largeSource = files.filePath(QStringLiteral("large-upload.bin"));
+        {
+            QFile output(largeSource); QVERIFY(output.open(QIODevice::WriteOnly));
+            const QByteArray block(1024 * 1024, 'x');
+            for (int index = 0; index < 32; ++index) QCOMPARE(output.write(block), qint64(block.size()));
+        }
+        Entry largeUpload = local; largeUpload.name = QStringLiteral("large-upload.bin"); largeUpload.path = largeSource;
+        auto failedPush = qtAsync([&] { return transferEntries({largeUpload}, phoneLocation, false, cancel); });
+        QCOMPARE(read(2), network<qint16>(1)); QCOMPARE(readText(), QStringLiteral("/sdcard")); control.write(network<qint32>(0)); control.waitForBytesWritten(3000);
+        QCOMPARE(read(2), network<qint16>(10)); control.write(QByteArray(1, char(0)) + utf(QStringLiteral("java.io.IOException: permission denied"))); control.waitForBytesWritten(3000);
+        QVERIFY(failedPush.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+        const Result writeFailure = failedPush.get(); QVERIFY(!writeFailure.ok); QVERIFY(writeFailure.error.contains(QStringLiteral("手机写入失败"))); QVERIFY(writeFailure.error.contains(QStringLiteral("permission denied")));
         session.close(); QVERIFY(!session.connected());
         QVERIFY(!findHfxSession(endpoint)); QVERIFY(listPhone(endpoint, QStringLiteral("/sdcard"), false).error.contains(QStringLiteral("HFX"))); QVERIFY(!transferEntries({local}, phoneLocation, true).ok); QVERIFY(QFileInfo::exists(source));
         QVERIFY(phoneCommand(endpoint, QStringLiteral("echo unexpected")).error.contains(QStringLiteral("HFX"))); QVERIFY(!adbSyncPush(endpoint, source, QStringLiteral("/sdcard/push.bin")).ok);
