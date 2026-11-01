@@ -1,6 +1,7 @@
 #include "operations.h"
 #include "zip.h"
 #include "adbsync.h"
+#include "hfx_provider.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -117,6 +118,7 @@ Result editArchive(const QString &path, const ArchiveChanges &changes, const Can
 }
 
 Result phoneCommand(const QString &serial, const QString &command, const Cancellation &cancel) {
+    if (isHfxEndpoint(serial)) return failed(QStringLiteral("此操作需要 ADB；HFX 连接不执行手机 Shell 命令"));
     if (serial.isEmpty()) return failed(QStringLiteral("没有设备序列号"));
     return runProcess(toolPath(QStringLiteral("adb/adb.exe")), {QStringLiteral("-s"), serial, QStringLiteral("shell"), command}, 3600000, cancel);
 }
@@ -129,6 +131,12 @@ Result createEntry(const Location &location, const QString &name, bool directory
         const bool ok = directory ? QDir().mkdir(target) : QFile(target).open(QIODevice::WriteOnly | QIODevice::NewOnly); return ok ? Result{} : failed(QStringLiteral("创建失败"));
     }
     if (location.source == Source::Phone) {
+        if (isHfxEndpoint(location.path)) {
+            const auto session = findHfxSession(location.path);
+            if (!session) return failed(QStringLiteral("HFX 已断开，请重新连接多轨快传"));
+            if (!directory) return failed(QStringLiteral("HFX 暂不支持直接新建文件，请在电脑创建后复制到手机"));
+            return session->mkdir(location.inner, name, cancel);
+        }
         const QString target = remoteChild(location.inner, name); if (!allowedRemote(target)) return failed(QStringLiteral("不安全的手机路径"));
         return phoneCommand(location.path, QStringLiteral("if test -e ") + shellQuote(target) + QStringLiteral(" || test -L ") + shellQuote(target) + QStringLiteral("; then echo '目标已存在' >&2; exit 1; else ") + (directory ? QStringLiteral("mkdir -- ") + shellQuote(target) : QStringLiteral("(set -C; : > ") + shellQuote(target) + QChar(')')) + QStringLiteral("; fi"), cancel);
     }
@@ -154,7 +162,11 @@ Result removeEntries(const QList<Entry> &entries, const Cancellation &cancel) {
     }
     if (source == Source::Local) return recycleFiles(local);
     if (source == Source::Archive) return editArchive(entries.first().path, changes, cancel);
-    for (const auto &entry : entries) { const Result result = phoneCommand(entry.serial, QStringLiteral("rm -rf -- ") + shellQuote(entry.path), cancel); if (!result.ok) return result; }
+    for (const auto &entry : entries) {
+        const auto session = isHfxEndpoint(entry.serial) ? findHfxSession(entry.serial) : std::shared_ptr<HfxSession>{};
+        if (isHfxEndpoint(entry.serial) && !session) return failed(QStringLiteral("HFX 已断开，未删除来源"));
+        const Result result = session ? session->remove(entry.path, cancel) : phoneCommand(entry.serial, QStringLiteral("rm -rf -- ") + shellQuote(entry.path), cancel); if (!result.ok) return result;
+    }
     return {};
 }
 
@@ -188,6 +200,7 @@ Result materializeEntry(const Entry &entry, const QString &destination, const Ca
 }
 
 Result writeBackEntry(const Entry &entry, const QString &local, const QByteArray &expectedHash, const Cancellation &cancel) {
+    if (entry.source == Source::Phone && isHfxEndpoint(entry.serial)) return failed(QStringLiteral("HFX 不支持安全覆盖回写，请另存到电脑；手机原文件未修改"));
     QTemporaryDir staging; if (!staging.isValid() || expectedHash.isEmpty()) return failed(QStringLiteral("缺少原始校验值，拒绝覆盖"));
     if (entry.source == Source::Archive) { ArchiveChanges changes; changes.files.insert(entry.inner, local); changes.expected.insert(entry.inner, expectedHash); return editArchive(entry.path, changes, cancel); }
     const Result read = materializeEntry(entry, staging.path(), cancel); if (!read.ok) return read;
@@ -206,6 +219,7 @@ Result writeBackEntry(const Entry &entry, const QString &local, const QByteArray
 
 Result transferEntries(const QList<Entry> &entries, const Location &destination, bool move, const Cancellation &cancel, const Progress &progress) {
     if (entries.isEmpty()) return {};
+    if (usesHfx(entries, destination)) return transferHfx(entries, destination, move, cancel, progress);
     if (move && destination.source == Source::Archive && entries.first().source == Source::Archive && entries.first().path == destination.path) {
         ArchiveChanges changes;
         for (const auto &entry : entries) { if (entry.source != Source::Archive || entry.path != destination.path) return failed(QStringLiteral("不能混合多个压缩包内部移动")); const QString target = destination.inner.isEmpty() ? entry.name : destination.inner + QChar('/') + entry.name; if (target != entry.inner) changes.rename.insert(entry.inner, target); }

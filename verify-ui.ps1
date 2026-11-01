@@ -14,7 +14,7 @@ try {
     $env:QT_QPA_PLATFORM_PLUGIN_PATH = Join-Path $Runtime 'platforms'
     $env:TWINFILE_VERIFY_SCREENSHOT_ROOT = $Evidence
     $Results = Join-Path $Evidence 'ui-test-results.txt'
-    $Process = Start-Process -FilePath $Executable -ArgumentList @('-platform','windows','comparisonDialogsAndThemesRenderWithoutUserSettings','-o',('"' + $Results + ',txt"')) -WindowStyle Hidden -PassThru
+    $Process = Start-Process -FilePath $Executable -ArgumentList @('-platform','windows','comparisonDialogsAndThemesRenderWithoutUserSettings','hfxLoopbackHandshakeAndListing','-o',('"' + $Results + ',txt"')) -WindowStyle Hidden -PassThru
     if (-not $Process.WaitForExit(30000)) { $Process.Kill(); throw 'Native UI check timed out' }
     Get-Content -LiteralPath $Results
     if ($Process.ExitCode -ne 0) { throw 'Native UI check failed' }

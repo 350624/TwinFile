@@ -2,6 +2,7 @@
 #include "zip.h"
 #include "operations.h"
 #include "adbsync.h"
+#include "hfx_provider.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -40,7 +41,7 @@ QString Entry::key() const {
 QString Location::display() const {
     if (source == Source::Drive) return QStringLiteral("此电脑");
     if (source == Source::Archive) return path + QStringLiteral("!/") + inner;
-    if (source == Source::Phone) return path + QChar(':') + inner;
+    if (source == Source::Phone) return (isHfxEndpoint(path) ? QStringLiteral("HFX") : path) + QChar(':') + inner;
     return QDir::toNativeSeparators(path);
 }
 
@@ -244,6 +245,7 @@ Result runProcess(const QString &program, const QStringList &arguments, int time
 }
 
 Listing listPhone(const QString &serial, const QString &path, bool hidden) {
+    if (isHfxEndpoint(serial)) return listHfx(serial, path, hidden);
     const Listing synced = adbSyncList(serial, path, hidden);
     if (synced.error.isEmpty()) return synced;
     const Result output = runProcess(toolPath(QStringLiteral("adb/adb.exe")),
@@ -308,7 +310,7 @@ Listing searchLocation(const Location &location, const QString &pattern, bool hi
     while (next < pending.size()) {
         if (cancelled(cancel)) return {{}, QStringLiteral("已取消")};
         const auto current = pending[next++];
-        const Listing listing = adbSyncList(location.path, current.first, hidden, cancel);
+        const Listing listing = isHfxEndpoint(location.path) ? listHfx(location.path, current.first, hidden, cancel) : adbSyncList(location.path, current.first, hidden, cancel);
         if (!listing.error.isEmpty()) return {{}, listing.error};
         for (auto entry : listing.entries) {
             if (++visited > 200000 || result.entries.size() >= 100000) return {result.entries, QStringLiteral("搜索达到数量上限，请缩小范围")};
@@ -647,6 +649,7 @@ Result checksum(const QStringList &paths, const Cancellation &cancel) {
 }
 
 Result phoneTransfer(const QList<Entry> &entries, const Location &destination, bool move, const Cancellation &cancel, const Progress &progress) {
+    if (usesHfx(entries, destination)) return transferHfx(entries, destination, move, cancel, progress);
     const QString adb = toolPath(QStringLiteral("adb/adb.exe"));
     qint64 completedBytes = 0;
     for (const Entry &entry : entries) {

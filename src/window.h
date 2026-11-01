@@ -50,6 +50,8 @@ private:
     void sortMenu(QWidget *anchor);
     void updateNavigation();
     void updateDeviceNavigation();
+    void updateHfxDevice();
+    QList<Entry> phoneEntries() const;
     void buildExtensions();
     void setExtensionsVisible(bool visible);
     void menu(const QPoint &position);
@@ -122,6 +124,7 @@ private:
     Cancellation cancellation_;
     TaskProgress *taskProgress_ = nullptr;
     std::shared_ptr<HfxSession> hfxSession_;
+    QString hfxEndpoint_;
     ArchiveMounts mounts_;
     ExtensionSidebar *extensions_ = nullptr;
     QDockWidget *extensionDock_ = nullptr;

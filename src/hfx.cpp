@@ -150,7 +150,12 @@ Listing HfxSession::list(const QString &path, const Cancellation &cancel) {
     std::lock_guard guard(operation_);
     try {
         require(connected(), QStringLiteral("HFX 尚未连接")); Wire control{state_->control, cancel}; control.number<qint16>(1); control.text(path); const qint32 count = control.number<qint32>(); require(count >= 0 && count <= 200000, QStringLiteral("HFX 目录读取失败或条目过多")); Listing listing;
-        for (int index = 0; index < count; ++index) { Entry entry; entry.name = control.text(); entry.path = control.text(); entry.modified = QDateTime::fromMSecsSinceEpoch(control.number<qint64>()); entry.size = control.number<qint64>(); entry.directory = control.boolean(); entry.source = Source::Phone; entry.serial = state_->options.serial; listing.entries.append(entry); }
+        QSet<QString> names;
+        for (int index = 0; index < count; ++index) {
+            Entry entry; entry.name = control.text(); entry.path = control.text(); entry.modified = QDateTime::fromMSecsSinceEpoch(control.number<qint64>()); entry.size = control.number<qint64>(); entry.directory = control.boolean();
+            require(!entry.name.isEmpty() && entry.name != QStringLiteral(".") && entry.name != QStringLiteral("..") && !entry.name.contains(QChar('/')) && !entry.name.contains(QChar('\\')) && entry.path == QDir::cleanPath(joinRemote(path, entry.name)) && !names.contains(entry.name) && entry.size >= 0, QStringLiteral("HFX 返回了无效、越界或重复目录条目"));
+            names.insert(entry.name); entry.source = Source::Phone; entry.serial = state_->options.serial; listing.entries.append(entry);
+        }
         return listing;
     } catch (const std::exception &error) { state_->close(); return {{}, QString::fromUtf8(error.what())}; }
 }

@@ -1,4 +1,5 @@
 #include "window.h"
+#include "hfx_provider.h"
 #include "android.h"
 #include "operations.h"
 #include "payload.h"
@@ -211,8 +212,9 @@ Window::Window(QWidget *parent, const QUrl &updateTestEndpoint) : QMainWindow(pa
     const QString geometry = settings_.value(QStringLiteral("geometry")).toString(); if (geometry.size() <= 65536) restoreGeometry(QByteArray::fromHex(geometry.toLatin1()));
     for (Pane *pane : {left_, right_}) pane->setOptions(settings_.value(QStringLiteral("show_hidden")).toBool(), settings_.value(QStringLiteral("sort")).toString(QStringLiteral("name")), settings_.value(QStringLiteral("descending")).toBool());
     monitor_ = new DeviceMonitor(this);
-    connect(monitor_, &DeviceMonitor::changed, left_, &Pane::setDevices); connect(monitor_, &DeviceMonitor::changed, right_, &Pane::setDevices);
-    connect(monitor_, &DeviceMonitor::changed, this, [this](const QList<Entry> &entries) { navigationPhones_ = entries; updateDeviceNavigation(); });
+    connect(monitor_, &DeviceMonitor::changed, this, [this](const QList<Entry> &entries) { navigationPhones_ = entries; left_->setDevices(phoneEntries()); right_->setDevices(phoneEntries()); updateDeviceNavigation(); });
+    auto *hfxMonitor = new QTimer(this); hfxMonitor->setInterval(1000);
+    connect(hfxMonitor, &QTimer::timeout, this, [this] { if (!hfxEndpoint_.isEmpty() && (!hfxSession_ || !hfxSession_->connected())) updateHfxDevice(); }); hfxMonitor->start();
     connect(monitor_, &DeviceMonitor::status, this, [this](const QString &message) { statusBar()->showMessage(message, 8000); });
     QTimer::singleShot(0, monitor_, &DeviceMonitor::start);
     storageMonitor_ = new StorageMonitor(this);
@@ -325,9 +327,23 @@ void Window::updateNavigation() {
     if (motion_) motion_->updateNavigation();
 }
 
+QList<Entry> Window::phoneEntries() const {
+    QList<Entry> entries = navigationPhones_;
+    if (!hfxEndpoint_.isEmpty() && hfxSession_ && hfxSession_->connected()) {
+        Entry phone; phone.source = Source::Device; phone.serial = hfxEndpoint_; phone.path = hfxSession_->home(); phone.name = QStringLiteral("手机 · HFX 多轨"); phone.directory = true; phone.state = QStringLiteral("device"); phone.detail = QStringLiteral("USB / WLAN 多轨快传"); entries.prepend(phone);
+    }
+    return entries;
+}
+
+void Window::updateHfxDevice() {
+    if (!hfxEndpoint_.isEmpty() && (!hfxSession_ || !hfxSession_->connected())) { unregisterHfxSession(hfxEndpoint_); hfxEndpoint_.clear(); }
+    left_->setDevices(phoneEntries()); right_->setDevices(phoneEntries()); updateDeviceNavigation();
+}
+
 void Window::updateDeviceNavigation() {
+    const auto phones = phoneEntries();
     QStringList signature{QStringLiteral("devices")};
-    for (const auto &entries : {navigationPhones_, navigationDrives_}) {
+    for (const auto &entries : {phones, navigationDrives_}) {
         for (const Entry &entry : entries) signature << QString::number(int(entry.source)) << entry.path << entry.serial << entry.name << entry.state << entry.detail;
         signature << QStringLiteral("|");
     }
@@ -342,17 +358,17 @@ void Window::updateDeviceNavigation() {
         button->setText(button->fontMetrics().elidedText(label, Qt::ElideMiddle, 104)); button->setAccessibleName(label); button->setToolTip(tip);
         button->setIcon(actionSymbol(symbol, qApp->palette().color(QPalette::Text))); button->setIconSize(QSize(18, 18)); button->setMinimumHeight(36); button->setFlat(true); button->setCheckable(true); button->setCursor(Qt::PointingHandCursor); layout->addWidget(button); return button;
     };
-    if (navigationPhones_.isEmpty()) {
+    if (phones.isEmpty()) {
         auto *button = add(QStringLiteral("手机 · 未连接"), QStringLiteral("phone"), QStringLiteral("连接手机并开启 USB 调试，点击重新检测"));
         button->setObjectName(QStringLiteral("navigationPhoneDetect")); button->setCheckable(false);
         connect(button, &QPushButton::clicked, this, [this] { if (monitor_) monitor_->detect(); statusBar()->showMessage(QStringLiteral("正在检测手机，请允许 USB 调试"), 5000); });
     }
-    for (const Entry &entry : navigationPhones_) {
+    for (const Entry &entry : phones) {
         const QString label = entry.name + (entry.state == QStringLiteral("device") ? QString() : entry.state == QStringLiteral("unauthorized") ? QStringLiteral(" · 未授权") : QStringLiteral(" · 离线"));
         auto *button = add(label, QStringLiteral("phone"), entry.name + '\n' + entry.serial + '\n' + entry.detail);
         button->setProperty("navigationDevice", entry.serial);
         connect(button, &QPushButton::clicked, this, [this, entry] {
-            if (entry.state == QStringLiteral("device")) active_->navigate({Source::Phone, entry.serial, QStringLiteral("/sdcard"), entry.name});
+            if (entry.state == QStringLiteral("device")) active_->navigate({Source::Phone, entry.serial, isHfxEndpoint(entry.serial) ? entry.path : QStringLiteral("/sdcard"), entry.name});
             else { statusBar()->showMessage(entry.detail, 8000); updateNavigation(); if (monitor_) monitor_->detect(); }
         });
     }
@@ -746,7 +762,7 @@ void Window::edit(const QString &path) {
 
 void Window::open(const Entry &entry) {
     if (entry.source == Source::Device) {
-        if (entry.state == QStringLiteral("device")) active_->navigate({Source::Phone, entry.serial, QStringLiteral("/sdcard"), entry.name});
+        if (entry.state == QStringLiteral("device")) active_->navigate({Source::Phone, entry.serial, isHfxEndpoint(entry.serial) ? entry.path : QStringLiteral("/sdcard"), entry.name});
         else report(entry.detail);
         return;
     }
@@ -1127,8 +1143,9 @@ void Window::payload() {
 }
 
 void Window::hfx() {
-    if (!hfxSession_) hfxSession_ = std::make_shared<HfxSession>(); const auto session = hfxSession_;
-    auto *dialog = new QDialog(this); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->setWindowTitle(QStringLiteral("HFX USB + WiFi 多轨传输")); dialog->resize(740, 640); QPointer<QDialog> guarded(dialog);
+    if (auto *existing = findChild<QDialog *>(QStringLiteral("hfxConnection"))) { existing->show(); existing->raise(); existing->activateWindow(); return; }
+    if (!hfxSession_ || !hfxSession_->connected()) { unregisterHfxSession(hfxEndpoint_); hfxEndpoint_.clear(); hfxSession_ = std::make_shared<HfxSession>(); updateHfxDevice(); } const auto session = hfxSession_;
+    auto *dialog = new QDialog(this); dialog->setObjectName(QStringLiteral("hfxConnection")); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->setWindowTitle(QStringLiteral("HFX USB + WiFi 多轨传输")); dialog->resize(740, 640); QPointer<QDialog> guarded(dialog);
     auto *layout = new QVBoxLayout(dialog); layout->addWidget(new QLabel(QStringLiteral("需安装配套 HybridFileXfer 手机端并授予文件权限。\nWiFi 模式是未加密的局域网传输，仅在可信网络使用；程序不会自动修改防火墙。")));
     auto *devices = new QComboBox; devices->addItem(QStringLiteral("仅 WLAN（手机端手动连接电脑 IP:5740）"), QString());
     for (const Entry &entry : monitor_->entries()) if (entry.state == QStringLiteral("device")) devices->addItem(entry.name + QStringLiteral(" · USB"), entry.serial);
@@ -1146,6 +1163,8 @@ void Window::hfx() {
     auto *listing = new QListWidget; listing->setSelectionMode(QAbstractItemView::ExtendedSelection); layout->addWidget(listing, 1);
     auto *actions = new QHBoxLayout; auto *refresh = new QPushButton(QStringLiteral("读取目录")); auto *push = new QPushButton(QStringLiteral("电脑所选 → 手机")); auto *pull = new QPushButton(QStringLiteral("手机所选 → 电脑")); auto *mkdir = new QPushButton(QStringLiteral("新建文件夹")); auto *remove = new QPushButton(QStringLiteral("删除"));
     for (auto *button : {refresh, push, pull, mkdir, remove}) actions->addWidget(button); layout->addLayout(actions);
+    auto *openPane = new QPushButton(QStringLiteral("在主界面打开手机")); openPane->setObjectName(QStringLiteral("hfxOpenInPane")); layout->addWidget(openPane);
+    connect(openPane, &QPushButton::clicked, dialog, [this, guarded, session, path] { if (!session->connected() || hfxEndpoint_.isEmpty()) { report(QStringLiteral("请先连接多轨快传")); return; } if (!path->text().startsWith(QChar('/')) || path->text().contains(QChar(0))) return; active_->navigate({Source::Phone, hfxEndpoint_, QDir::cleanPath(path->text()), QStringLiteral("手机 · HFX 多轨")}); if (guarded) guarded->close(); });
     auto refreshDirectory = [this, session, guarded, path, listing, status] {
         const QString current = path->text();
         runJob(QStringLiteral("读取 HFX 目录"), [session, current](const Cancellation &cancel) { const Listing result = session->list(current, cancel); Result output; output.ok = result.error.isEmpty(); output.error = result.error; for (const auto &entry : result.entries) { QJsonObject item{{QStringLiteral("name"), entry.name}, {QStringLiteral("path"), entry.path}, {QStringLiteral("directory"), entry.directory}, {QStringLiteral("size"), double(entry.size)}}; output.paths.append(QString::fromUtf8(QJsonDocument(item).toJson(QJsonDocument::Compact))); } return output; }, [guarded, listing, status](const Result &result) {
@@ -1161,13 +1180,21 @@ void Window::hfx() {
         runJob(QStringLiteral("安装 HFX 手机端"), [serial](const Cancellation &cancel) { return runProcess(toolPath(QStringLiteral("adb/adb.exe")), {QStringLiteral("-s"), serial, QStringLiteral("install"), QStringLiteral("-r"), toolPath(QStringLiteral("hfx/HybridFileXfer-phone.apk"))}, 300000, cancel); });
     });
     connect(connectButton, &QPushButton::clicked, dialog, [this, session, guarded, devices, interfaces, status, path] {
+        if (busy_ || taskProgress_->active()) return;
+        if (session->connected() && !hfxEndpoint_.isEmpty()) { active_->navigate({Source::Phone, hfxEndpoint_, session->home(), QStringLiteral("手机 · HFX 多轨")}); if (guarded) guarded->close(); return; }
+        unregisterHfxSession(hfxEndpoint_); hfxEndpoint_.clear(); updateHfxDevice();
         HfxOptions options; options.serial = devices->currentData().toString(); if (!options.serial.isEmpty()) options.interfaces.append({QStringLiteral("USB"), QHostAddress::LocalHost});
         for (int index = 0; index < interfaces->count(); ++index) if (interfaces->item(index)->checkState() == Qt::Checked) options.interfaces.append({interfaces->item(index)->text(), QHostAddress(interfaces->item(index)->data(Qt::UserRole).toString())});
         if (options.interfaces.isEmpty()) { report(QStringLiteral("请选择 USB 手机或至少一个 WLAN 通道")); return; }
         status->setText(QStringLiteral("等待手机连接；请解锁手机。WLAN 手动连接电脑 IP:5740。"));
-        runJob(QStringLiteral("等待 HFX 手机端连接（最长 90 秒，可取消）"), [session, options](const Cancellation &cancel) { return session->connect(options, cancel); }, [session, guarded, status, path](const Result &result) { if (guarded) { status->setText(result.output); path->setText(session->home()); } });
+        runJob(QStringLiteral("等待 HFX 手机端连接（最长 90 秒，可取消）"), [session, options](const Cancellation &cancel) { return session->connect(options, cancel); }, [this, session, guarded, status, path](const Result &result) {
+            unregisterHfxSession(hfxEndpoint_); hfxEndpoint_ = registerHfxSession(session); updateHfxDevice();
+            Pane *phonePane = active_->location().source == Source::Phone ? active_ : otherPane();
+            phonePane->navigate({Source::Phone, hfxEndpoint_, session->home(), QStringLiteral("手机 · HFX 多轨")});
+            if (guarded) { status->setText(result.output); path->setText(session->home()); guarded->close(); }
+        }, [this] { updateHfxDevice(); });
     });
-    connect(disconnect, &QPushButton::clicked, dialog, [this, session, guarded, status] { runJob(QStringLiteral("断开 HFX"), [session](const Cancellation &) { session->close(); return Result{}; }, [guarded, status](const Result &) { if (guarded) status->setText(QStringLiteral("已断开")); }); });
+    connect(disconnect, &QPushButton::clicked, dialog, [this, session, guarded] { runJob(QStringLiteral("断开 HFX"), [session](const Cancellation &) { session->close(); return Result{}; }, [this, guarded](const Result &) { updateHfxDevice(); hfxSession_.reset(); if (guarded) guarded->close(); }); });
     connect(push, &QPushButton::clicked, dialog, [this, session, path, dialog] { QStringList files = localPaths(active_->selected()); if (files.isEmpty()) files = localPaths(otherPane()->selected()); if (files.isEmpty()) { report(QStringLiteral("请先在文件栏选择本地文件")); return; } const QString target = path->text(); if (busy_ || taskProgress_->active()) return; dialog->hide(); runJob(QStringLiteral("HFX 推送到手机"), [session, files, target](const Cancellation &cancel, const Progress &progress) { return session->push(files, target, cancel, progress); }); });
     connect(pull, &QPushButton::clicked, dialog, [this, session, path, listing, dialog] { QStringList files; for (const auto *item : listing->selectedItems()) files.append(item->data(Qt::UserRole).toJsonObject().value(QStringLiteral("path")).toString()); if (files.isEmpty()) return; const QString target = QFileDialog::getExistingDirectory(this, QStringLiteral("接收到电脑文件夹")); if (target.isEmpty()) return; const QString source = path->text(); if (busy_ || taskProgress_->active()) return; dialog->hide(); runJob(QStringLiteral("HFX 接收手机文件"), [session, files, source, target](const Cancellation &cancel, const Progress &progress) { return session->pull(files, source, target, cancel, progress); }); });
     connect(mkdir, &QPushButton::clicked, dialog, [this, session, path] { bool accepted; const QString name = QInputDialog::getText(this, QStringLiteral("手机新建文件夹"), QStringLiteral("名称"), QLineEdit::Normal, {}, &accepted); if (!accepted) return; const QString parent = path->text(); runJob(QStringLiteral("HFX 新建文件夹"), [session, parent, name](const Cancellation &cancel) { return session->mkdir(parent, name, cancel); }); });

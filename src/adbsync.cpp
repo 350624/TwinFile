@@ -1,5 +1,6 @@
 #include "adbsync.h"
 #include "operations.h"
+#include "hfx_provider.h"
 #include <QDir>
 #include <QDirIterator>
 #include <QElapsedTimer>
@@ -29,6 +30,7 @@ quint32 value(const QByteArray &bytes, qsizetype position = 0) { require(positio
 class Sync {
 public:
     Sync(const QString &serial, const Cancellation &cancel) : cancel_(cancel) {
+        require(!isHfxEndpoint(serial), QStringLiteral("HFX 连接不使用 ADB；请使用主界面的多轨复制／移动"));
         require(!serial.isEmpty() && serial.toUtf8().size() < 1024 && !serial.contains(QChar(0)), QStringLiteral("无效设备序列号"));
         check(cancel_);
         const bool testing = qEnvironmentVariableIsSet("TWINFILE_TEST_MODE") && qEnvironmentVariableIsSet("TWINFILE_ADB_TEST_PORT");

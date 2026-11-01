@@ -4,6 +4,7 @@
 #include "thumbnails.h"
 #include "appearance.h"
 #include "motion.h"
+#include "hfx_provider.h"
 
 #include <QEvent>
 #include <QDir>
@@ -319,6 +320,7 @@ bool Pane::navigatePath(const QString &text) {
     if (path.isEmpty() || path == QStringLiteral("此电脑")) { navigate({}); return true; }
     const Location current = location();
     const QString phonePrefix = current.path + QChar(':');
+    if (current.source == Source::Phone && isHfxEndpoint(current.path) && path.startsWith(QStringLiteral("HFX:/"))) path = path.mid(4);
     if (current.source == Source::Phone && (path.startsWith(phonePrefix) || (path.startsWith(QChar('/')) && !path.startsWith(QStringLiteral("//"))))) {
         const QString inner = QDir::cleanPath(path.startsWith(phonePrefix) ? path.mid(phonePrefix.size()) : path);
         if (!inner.startsWith(QChar('/'))) return false;
@@ -398,7 +400,7 @@ void Pane::openIndex(const QModelIndex &index) {
     const Entry entry = model_->entry(index.row());
     if (entry.source == Source::Device) {
         if (entry.state != QStringLiteral("device")) { error_ = entry.detail; updateFooter(); return; }
-        navigate({Source::Phone, entry.serial, QStringLiteral("/sdcard"), entry.name});
+        navigate({Source::Phone, entry.serial, isHfxEndpoint(entry.serial) ? entry.path : QStringLiteral("/sdcard"), entry.name});
     } else if (entry.directory) {
         if (entry.source == Source::Archive) navigate({Source::Archive, entry.path, entry.inner, {}});
         else if (entry.source == Source::Phone) navigate({Source::Phone, entry.serial, entry.path, location().label});
