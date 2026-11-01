@@ -53,6 +53,7 @@ private:
     void updateHfxDevice();
     QList<Entry> phoneEntries() const;
     void buildExtensions();
+    void ensureExtensions();
     void setExtensionsVisible(bool visible);
     void menu(const QPoint &position);
     void moreMenu();

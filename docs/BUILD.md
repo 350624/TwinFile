@@ -68,6 +68,8 @@ cmake --build build-core --parallel 4
 
 安装器输出 `releases\TwinFile-3.1-Cpp-Setup.exe` 及 `.sha256`。脚本**不执行安装器**。运行包附实际工具链通知、Qt SDK SBOM 与 `release-components.json` 文件校验清单，来源见 [THIRD_PARTY.md](../THIRD_PARTY.md)。完整发布使用 [publish.ps1 流程](RELEASING.md)，自动生成带版本的安装包名称、对应提交源码、校验值与更新日志并上传 GitHub Releases；不是上传历史旧安装器。
 
+内存对比可在同一工具链和 Windows 桌面下运行 `build\bin\twinfile_memory_probe.exe -platform windows`。该测试使用独立临时设置与 1024 张生成图片，输出空闲、打开助手、滚动浏览、回到首屏和离开图片目录时的工作集与私有提交字节；`incomplete_pages` 记录等待一秒后仍缺缩略图的页面数。建议重复三次比较中位数，测量程序不强制清空工作集，数据在进程内生成，不读取个人目录。
+
 ## D. 导出源码
 
 ```powershell

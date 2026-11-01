@@ -25,13 +25,13 @@ try {
     if ($Process.ExitCode -ne 0) { throw 'Payload UI check failed' }
     $AnimationExecutable = Join-Path $PSScriptRoot 'build\bin\twinfile_tests.exe'
     $AnimationResults = Join-Path $Evidence 'animation-ui-test-results.txt'
-    $AnimationTests = @('directoryTransitionsFollowNavigationAndArchiveParents','refreshAnimationPreservesSelectionAndScroll','reducedMotionCancelsCurrentAndPendingAnimations','viewAnimationCancelsOnInteractionResizeHideAndTheme','animationsOnlyRepaintVisibleRows','paneAnimationsRenderWithoutUserSettings')
+    $AnimationTests = @('directoryTransitionsFollowNavigationAndArchiveParents','refreshAnimationPreservesSelectionAndScroll','reducedMotionCancelsCurrentAndPendingAnimations','paneOpacityCacheIsReleasedAfterSwitching','viewAnimationCancelsOnInteractionResizeHideAndTheme','animationsOnlyRepaintVisibleRows','paneAnimationsRenderWithoutUserSettings')
     $Process = Start-Process -FilePath $AnimationExecutable -ArgumentList (@('-platform','windows') + $AnimationTests + @('-o',('"' + $AnimationResults + ',txt"'))) -WindowStyle Hidden -PassThru
     if (-not $Process.WaitForExit(90000)) { $Process.Kill(); throw 'Native animation UI check timed out' }
     Get-Content -LiteralPath $AnimationResults
     if ($Process.ExitCode -ne 0) { throw 'Native animation UI check failed' }
     $IconResults = Join-Path $Evidence 'icon-ui-test-results.txt'
-    $IconTests = @('nativeResourceTables','androidStringPoolsSupportModifiedUtf8','adaptiveIconIgnoresMonochromeAndRejectsMissingLayers','webpApkIconsDecodeWithoutQtPluginOrAapt','thumbnailCacheTracksIdentityAndOnlyHandlesSupportedFiles','windowsExecutableIconsAcceptQtPaths','thumbnailResultsArrivePerFileAndSurviveFolderRevisit','fileIconsUseRoundedMasksAndCorrectFit','maskedFileIconsRenderWithoutUserSettings','dexEditorRendersAndEdits')
+    $IconTests = @('nativeResourceTables','androidStringPoolsSupportModifiedUtf8','adaptiveIconIgnoresMonochromeAndRejectsMissingLayers','webpApkIconsDecodeWithoutQtPluginOrAapt','thumbnailCacheTracksIdentityAndOnlyHandlesSupportedFiles','thumbnailCachesEvictByBytesAndKeepRecentImages','windowsExecutableIconsAcceptQtPaths','thumbnailResultsArrivePerFileAndSurviveFolderRevisit','fileIconsUseRoundedMasksAndCorrectFit','maskedFileIconsRenderWithoutUserSettings','dexEditorRendersAndEdits')
     $Process = Start-Process -FilePath $AnimationExecutable -ArgumentList (@('-platform','windows') + $IconTests + @('-o',('"' + $IconResults + ',txt"'))) -WindowStyle Hidden -PassThru
     if (-not $Process.WaitForExit(90000)) { $Process.Kill(); throw 'Native icon and DEX UI check timed out' }
     Get-Content -LiteralPath $IconResults
@@ -48,7 +48,7 @@ try {
     if ($Process.ExitCode -ne 0) { throw 'PPTX UI check failed' }
     $ExtensionExecutable = Join-Path $PSScriptRoot 'build\bin\twinfile_extension_tests.exe'
     $ExtensionResults = Join-Path $Evidence 'extension-ui-test-results.txt'
-    $ExtensionTests = @('sidebarRendersAndDoesNotStealFileShortcuts','appearanceMigrationAndPalette','appearanceRendersAllModesAndRestores','propertiesRenderAndSpaceOpensProperties','contextMenusMatchSelectedEntryTypes','toolbarSelectionAndDirection','toolbarTransfersFollowActivePane','workspaceRedesignLayoutAndNavigation','workspaceNavigationScrollsWithoutGrowingWindow','storageLocationsAndTestModeIsolation','deviceAndDriveShortcuts','modelsEndpointAndExplicitGet','modelsFailures','modelsCancelAndRestart','modelSettingsDialogFetchAndManualFallback','codexComposerRendersAllModes','codexComposerMenusKeyboardAndStop','updateReleaseValidation','updateCheckIsAsyncBoundedAndShowsReleaseNotes','applicationChecksUpdatesAtStartupAndFromSettings','updateCheckFailureCancelAndStartupOnce')
+    $ExtensionTests = @('hiddenSidebarLoadsOnDemandAndKeepsDraft','hiddenSidebarStillStartsEnabledExternalPlugins','sidebarRendersAndDoesNotStealFileShortcuts','appearanceMigrationAndPalette','appearanceRendersAllModesAndRestores','propertiesRenderAndSpaceOpensProperties','contextMenusMatchSelectedEntryTypes','toolbarSelectionAndDirection','toolbarTransfersFollowActivePane','workspaceRedesignLayoutAndNavigation','workspaceNavigationScrollsWithoutGrowingWindow','storageLocationsAndTestModeIsolation','deviceAndDriveShortcuts','modelsEndpointAndExplicitGet','modelsFailures','modelsCancelAndRestart','modelSettingsDialogFetchAndManualFallback','codexComposerRendersAllModes','codexComposerMenusKeyboardAndStop','updateReleaseValidation','updateCheckIsAsyncBoundedAndShowsReleaseNotes','applicationChecksUpdatesAtStartupAndFromSettings','updateCheckFailureCancelAndStartupOnce')
     $Process = Start-Process -FilePath $ExtensionExecutable -ArgumentList (@('-platform','windows') + $ExtensionTests + @('-o',('"' + $ExtensionResults + ',txt"'))) -WindowStyle Hidden -PassThru
     if (-not $Process.WaitForExit(240000)) { $Process.Kill(); throw 'AI and extension UI check timed out' }
     Get-Content -LiteralPath $ExtensionResults

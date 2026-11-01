@@ -69,7 +69,7 @@ QVariant FileModel::data(const QModelIndex &index, int role) const {
     if (role == Qt::DisplayRole) return entry.name;
     if (role == Qt::ToolTipRole) return entry.source == Source::Archive ? entry.inner : entry.path;
     if (role == EntryRole) return QVariant::fromValue(entry);
-    if (role == ImageRole) return thumbnails_.value(entry.key());
+    if (role == ImageRole) return thumbnail(index.row());
     return {};
 }
 
@@ -101,19 +101,29 @@ void FileModel::replace(QList<Entry> entries) {
     QHash<QString, Entry> old;
     for (const Entry &entry : entries_) if (thumbnails_.contains(entry.key())) old.insert(entry.key(), entry);
     beginResetModel(); entries_ = std::move(entries); rows_.clear();
-    QHash<QString, QImage> retained;
     for (int row = 0; row < entries_.size(); ++row) {
         const Entry &entry = entries_[row]; const QString key = entry.key(); rows_.insert(key, row);
-        if (old.contains(key) && old.value(key).modified == entry.modified && old.value(key).size == entry.size) retained.insert(key, thumbnails_.value(key));
     }
-    thumbnails_ = std::move(retained); endResetModel();
+    for (const QString &key : thumbnails_.keys()) {
+        const auto previous = old.constFind(key);
+        const auto row = rows_.constFind(key);
+        if (previous == old.cend() || row == rows_.cend()
+            || previous->modified != entries_[*row].modified || previous->size != entries_[*row].size) thumbnails_.remove(key);
+    }
+    endResetModel();
 }
 
-QImage FileModel::thumbnail(int row) const { return thumbnails_.value(entry(row).key()); }
+QImage FileModel::thumbnail(int row) const {
+    const QImage *image = thumbnails_.object(entry(row).key());
+    return image ? *image : QImage();
+}
+void FileModel::reserveVisibleThumbnails(int count) {
+    // Keep a full viewport resident even on very tall displays.
+    thumbnails_.setMaxCost(qMax(2 * 1024, count * 64));
+}
 void FileModel::setThumbnail(const QString &key, const QImage &image) {
     if (image.isNull() || !rows_.contains(key)) return;
-    if (thumbnails_.size() >= 300 && !thumbnails_.contains(key)) thumbnails_.erase(thumbnails_.begin());
-    thumbnails_.insert(key, image);
+    if (!thumbnails_.insert(key, new QImage(image), qMax<qsizetype>(1, (image.sizeInBytes() + 1023) / 1024))) return;
     const int row = rows_.value(key); emit dataChanged(index(row), index(row), {ImageRole});
 }
 

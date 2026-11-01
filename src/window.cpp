@@ -238,6 +238,28 @@ void Window::buildExtensions() {
     extensionDock_->setAllowedAreas(Qt::RightDockWidgetArea);
     extensionDock_->setFeatures(QDockWidget::DockWidgetClosable);
     auto *dockTitle = new QWidget(extensionDock_); dockTitle->setFixedHeight(0); extensionDock_->setTitleBarWidget(dockTitle);
+    addDockWidget(Qt::RightDockWidgetArea, extensionDock_);
+    connect(extensionDock_, &QDockWidget::visibilityChanged, this, [this](bool visible) { if (visible) ensureExtensions(); });
+    const bool visible = settings_.value(QStringLiteral("extension_visible")).toBool(true);
+    const auto plugins = readSettings(QFileInfo(settingsPath()).dir().filePath(QStringLiteral("extensions/index.json"))).value(QStringLiteral("plugins")).toArray();
+    bool enabledPlugin = false;
+    for (const auto &value : plugins) {
+        const auto plugin = value.toObject();
+        if (plugin.value(QStringLiteral("id")).toString() != QStringLiteral("twinfile.ai") && plugin.value(QStringLiteral("enabled")).toBool()) enabledPlugin = true;
+    }
+    if (visible || enabledPlugin) ensureExtensions();
+    if (auto *toggle = findChild<QPushButton *>(QStringLiteral("assistantToggle"))) {
+        connect(extensionDock_, &QDockWidget::visibilityChanged, toggle, &QPushButton::setChecked);
+        toggle->setChecked(visible);
+    }
+    resizeDocks({extensionDock_}, {qBound(330, settings_.value(QStringLiteral("extension_width")).toInt(370), 700)}, Qt::Horizontal);
+    extensionDock_->setVisible(visible);
+    auto *shortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+A")), this);
+    connect(shortcut, &QShortcut::activated, this, [this] { setExtensionsVisible(!extensionDock_->isVisible()); });
+}
+
+void Window::ensureExtensions() {
+    if (extensions_) return;
     extensions_ = new ExtensionSidebar(QFileInfo(settingsPath()).dir().filePath(QStringLiteral("extensions")), extensionDock_);
     connect(extensions_, &ExtensionSidebar::closeRequested, this, [this] { setExtensionsVisible(false); });
     extensions_->contextProvider = [this] {
@@ -254,18 +276,11 @@ void Window::buildExtensions() {
     extensions_->refresh = [this] { refreshActive(); };
     extensions_->notify = [this](const QString &message) { statusBar()->showMessage(message, 8000); };
     extensions_->manager()->restore();
-    extensionDock_->setWidget(extensions_); addDockWidget(Qt::RightDockWidgetArea, extensionDock_);
-    if (auto *toggle = findChild<QPushButton *>(QStringLiteral("assistantToggle"))) {
-        connect(extensionDock_, &QDockWidget::visibilityChanged, toggle, &QPushButton::setChecked);
-        toggle->setChecked(settings_.value(QStringLiteral("extension_visible")).toBool(true));
-    }
-    resizeDocks({extensionDock_}, {qBound(330, settings_.value(QStringLiteral("extension_width")).toInt(370), 700)}, Qt::Horizontal);
-    extensionDock_->setVisible(settings_.value(QStringLiteral("extension_visible")).toBool(true));
-    auto *shortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+A")), this);
-    connect(shortcut, &QShortcut::activated, this, [this] { setExtensionsVisible(!extensionDock_->isVisible()); });
+    extensionDock_->setWidget(extensions_);
 }
 
 void Window::setExtensionsVisible(bool visible) {
+    if (visible) ensureExtensions();
     if (extensionDock_->isVisible() == visible) return;
     const QPixmap before = motionAllowed(this) ? grab() : QPixmap();
     extensionDock_->setVisible(visible);
@@ -396,10 +411,10 @@ void Window::setActive(Pane *pane) {
         if (auto *indicator = item->findChild<QLabel *>(QStringLiteral("paneIndicator"))) { indicator->style()->unpolish(indicator); indicator->style()->polish(indicator); indicator->update(); }
     }
     if (changed && !settings_.value(QStringLiteral("reduced_motion")).toBool()) {
-        auto *effect = qobject_cast<QGraphicsOpacityEffect *>(pane->graphicsEffect());
-        if (!effect) { effect = new QGraphicsOpacityEffect(pane); pane->setGraphicsEffect(effect); }
-        if (auto *previous = effect->findChild<QPropertyAnimation *>()) previous->stop();
-        auto *animation = new QPropertyAnimation(effect, "opacity", effect); animation->setDuration(120); animation->setStartValue(0.88); animation->setEndValue(1.0); animation->start(QAbstractAnimation::DeleteWhenStopped);
+        auto *effect = new QGraphicsOpacityEffect(pane); pane->setGraphicsEffect(effect);
+        auto *animation = new QPropertyAnimation(effect, "opacity", effect); animation->setDuration(120); animation->setStartValue(0.88); animation->setEndValue(1.0);
+        connect(animation, &QPropertyAnimation::finished, effect, &QObject::deleteLater);
+        animation->start(QAbstractAnimation::DeleteWhenStopped);
     }
 }
 Pane *Window::otherPane() const { return active_ == left_ ? right_ : left_; }
@@ -1237,8 +1252,8 @@ void Window::populateMoreMenu(QMenu &popup) {
     settings->addAction(QStringLiteral("软件更新…"), this, [this] { showUpdateSettings(); });
     settings->addAction(QStringLiteral("MCP 服务…"), this, &Window::showMcpSettings);
     popup.addSeparator();
-    popup.addAction(QStringLiteral("AI / 扩展侧栏  Ctrl+Shift+A"), this, [this] { extensionDock_->show(); extensionDock_->raise(); });
-    popup.addAction(QStringLiteral("管理插件"), this, [this] { extensionDock_->show(); extensions_->showExtensions(); });
+    popup.addAction(QStringLiteral("AI / 扩展侧栏  Ctrl+Shift+A"), this, [this] { setExtensionsVisible(true); extensionDock_->raise(); });
+    popup.addAction(QStringLiteral("管理插件"), this, [this] { setExtensionsVisible(true); extensions_->showExtensions(); });
     popup.addSeparator();
     popup.addAction(QStringLiteral("刷新当前栏"), this, &Window::refreshActive);
     popup.addAction(QStringLiteral("立即检测手机"), monitor_, &DeviceMonitor::detect);

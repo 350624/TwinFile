@@ -594,6 +594,39 @@ private slots:
         entry.name = QStringLiteral("file.zip"); QVERIFY(!supportsThumbnail(entry)); QVERIFY(loadThumbnail(entry).isNull());
         entry.name = QStringLiteral("file.exe"); QVERIFY(supportsThumbnail(entry)); entry.source = Source::Phone; QVERIFY(!supportsThumbnail(entry)); QCOMPARE(thumbnailPool()->maxThreadCount(), 4);
     }
+    void thumbnailCachesEvictByBytesAndKeepRecentImages() {
+        QTemporaryDir directory;
+        for (int number = 0; number < 130; ++number) {
+            QImage image(128, 128, QImage::Format_ARGB32); image.fill(QColor::fromHsv(number * 2, 200, 200));
+            QVERIFY(image.save(directory.filePath(QStringLiteral("%1.png").arg(number, 3, 10, QChar('0')))));
+        }
+        const auto entries = listLocal(directory.path(), false, QStringLiteral("name"), false).entries;
+        QCOMPARE(entries.size(), 130);
+        for (const auto &entry : entries) QVERIFY(!loadThumbnail(entry).isNull());
+        QVERIFY(cachedThumbnail(entries.first()).isNull()); QVERIFY(!cachedThumbnail(entries.last()).isNull());
+        const QString firstPath = entries.first().path;
+        const QString renamed = firstPath + QStringLiteral(".saved");
+        QVERIFY(QFile::rename(firstPath, renamed));
+        const auto restore = qScopeGuard([&] { QFile::rename(renamed, firstPath); });
+        QVERIFY(!loadThumbnail(entries.first()).isNull()); // Reload from the existing disk cache.
+        FileModel model; model.replace(entries);
+        for (int row = 0; row < 32; ++row) {
+            QImage image(128, 128, QImage::Format_ARGB32); image.fill(Qt::red); model.setThumbnail(entries[row].key(), image);
+        }
+        QVERIFY(!model.thumbnail(0).isNull());
+        QImage next(128, 128, QImage::Format_ARGB32); next.fill(Qt::blue); model.setThumbnail(entries[32].key(), next);
+        QVERIFY(!model.thumbnail(0).isNull()); QVERIFY(model.thumbnail(1).isNull()); QCOMPARE(model.thumbnail(32), next);
+        qint64 bytes = 0;
+        for (int row = 0; row < entries.size(); ++row) bytes += model.thumbnail(row).sizeInBytes();
+        QVERIFY(bytes <= 2 * 1024 * 1024);
+        model.reserveVisibleThumbnails(80);
+        for (int row = 0; row < 80; ++row) model.setThumbnail(entries[row].key(), next);
+        for (int row = 0; row < 80; ++row) QVERIFY(!model.thumbnail(row).isNull());
+        model.reserveVisibleThumbnails(10); bytes = 0;
+        for (int row = 0; row < entries.size(); ++row) bytes += model.thumbnail(row).sizeInBytes();
+        QVERIFY(bytes <= 2 * 1024 * 1024);
+        model.replace({}); QVERIFY(model.thumbnail(0).isNull());
+    }
     void windowsExecutableIconsAcceptQtPaths() {
         const QString path = QDir::fromNativeSeparators(QCoreApplication::applicationFilePath()); QVERIFY(path.contains(QChar('/')));
         QVERIFY(!shellThumbnail(path).isNull());
@@ -829,6 +862,17 @@ private slots:
         window.setReducedMotion(false); pane->refresh(); QCOMPARE(rotation->state(), QAbstractAnimation::Running); QTRY_COMPARE(started.count(), 1); QVERIFY(pane->view()->isTransitionRunning()); QCOMPARE(rotation->state(), QAbstractAnimation::Stopped);
         window.setActive(window.rightPane()); window.setReducedMotion(true); QVERIFY(!pane->view()->isTransitionRunning()); QCOMPARE(pane->view()->transitionProgress(), 1.0); QVERIFY(!window.rightPane()->graphicsEffect());
         window.setReducedMotion(false); pane->refresh(); window.setReducedMotion(true); QCOMPARE(rotation->state(), QAbstractAnimation::Stopped); QTest::qWait(100); QCOMPARE(started.count(), 1); QVERIFY(!pane->view()->isTransitionRunning());
+    }
+    void paneOpacityCacheIsReleasedAfterSwitching() {
+        Window window; window.setAttribute(Qt::WA_DontShowOnScreen); window.show(); window.setReducedMotion(false);
+        for (int repeat = 0; repeat < 12; ++repeat) {
+            window.setActive(repeat % 2 ? window.leftPane() : window.rightPane());
+            QTest::qWait(15);
+        }
+        window.setActive(window.rightPane()); QCOMPARE(window.activePane(), window.rightPane());
+        QTRY_VERIFY(!window.leftPane()->graphicsEffect()); QTRY_VERIFY(!window.rightPane()->graphicsEffect());
+        window.setActive(window.leftPane()); QVERIFY(window.leftPane()->graphicsEffect());
+        window.setReducedMotion(true); QVERIFY(!window.leftPane()->graphicsEffect());
     }
     void viewAnimationCancelsOnInteractionResizeHideAndTheme() {
         FileModel model; Entry entry; entry.name = QStringLiteral("file.txt"); entry.path = QStringLiteral("C:/fixture/file.txt"); model.replace({entry});

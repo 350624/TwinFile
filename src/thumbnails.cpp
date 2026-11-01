@@ -16,14 +16,14 @@ namespace twinfile {
 namespace {
 
 QMutex cacheMutex;
-QCache<QString, QImage> images(32 * 1024);
+QCache<QString, QImage> images(8 * 1024);
 
 QString cacheDirectory() {
     return qEnvironmentVariable("TWINFILE_THUMBNAIL_CACHE", QDir(QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation)).filePath(QStringLiteral("TwinFileNative/thumbnails-v2")));
 }
 
 void remember(const QString &key, const QImage &image) {
-    QMutexLocker lock(&cacheMutex); images.insert(key, new QImage(image), qMax<qsizetype>(1, image.sizeInBytes() / 1024));
+    QMutexLocker lock(&cacheMutex); images.insert(key, new QImage(image), qMax<qsizetype>(1, (image.sizeInBytes() + 1023) / 1024));
 }
 
 void pruneCache(const QString &directory) {

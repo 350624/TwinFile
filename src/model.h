@@ -2,6 +2,7 @@
 
 #include "core.h"
 #include <QAbstractListModel>
+#include <QCache>
 #include <QHash>
 #include <QImage>
 #include <QListView>
@@ -25,10 +26,11 @@ public:
     const QList<Entry> &entries() const { return entries_; }
     Entry entry(int row) const;
     void setThumbnail(const QString &key, const QImage &image);
+    void reserveVisibleThumbnails(int count);
     QImage thumbnail(int row) const;
 private:
     QList<Entry> entries_;
-    QHash<QString, QImage> thumbnails_;
+    mutable QCache<QString, QImage> thumbnails_{2 * 1024};
     QHash<QString, int> rows_;
 };
 

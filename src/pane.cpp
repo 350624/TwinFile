@@ -434,6 +434,7 @@ void Pane::loadThumbnails() {
     int first = view_->indexAt(QPoint(4, 4)).row(); if (first < 0) first = 0;
     const int rowHeight = qMax(1, view_->sizeHintForRow(first));
     const int limit = qMin(model_->rowCount(), first + view_->viewport()->height() / rowHeight + 2);
+    model_->reserveVisibleThumbnails(limit - first + 4);
     for (int row = first; row < limit; ++row) {
         const Entry entry = model_->entry(row);
         const QString key = entry.key();

@@ -1435,6 +1435,41 @@ private slots:
         const QByteArray second = QJsonDocument(api.bodies.last()).toJson(); QVERIFY(second.contains(QStringLiteral("测试.txt").toUtf8())); QVERIFY(!second.contains(QStringLiteral("未附加的秘密").toUtf8()));
         QCOMPARE(api.bodies.last().value(QStringLiteral("messages")).toArray().size(), 4);
     }
+    void hiddenSidebarLoadsOnDemandAndKeepsDraft() {
+        QTemporaryDir root; const QByteArray original = qgetenv("TWINFILE_SETTINGS");
+        const auto restore = qScopeGuard([&] { qputenv("TWINFILE_SETTINGS", original); });
+        qputenv("TWINFILE_SETTINGS", root.filePath(QStringLiteral("settings.json")).toUtf8());
+        QVERIFY(writeSettings(settingsPath(), {{QStringLiteral("extension_visible"), false}}));
+        {
+            Window window; window.setAttribute(Qt::WA_DontShowOnScreen); window.show();
+            auto *dock = window.findChild<QDockWidget *>(QStringLiteral("extensionDock")); QVERIFY(dock); QVERIFY(!dock->isVisible());
+            QVERIFY(!window.findChild<ExtensionSidebar *>()); QVERIFY(!window.findChild<AiPanel *>());
+            dock->show(); auto *sidebar = window.findChild<ExtensionSidebar *>(); QVERIFY(sidebar);
+            QTRY_VERIFY(dock->width() >= 310 && dock->width() <= 700);
+            auto *input = sidebar->findChild<QPlainTextEdit *>(QStringLiteral("aiInput")); QVERIFY(input);
+            input->setPlainText(QStringLiteral("unsent draft"));
+            auto *toggle = window.findChild<QPushButton *>(QStringLiteral("assistantToggle")); QVERIFY(toggle);
+            toggle->click(); QVERIFY(!dock->isVisible()); toggle->click(); QVERIFY(dock->isVisible());
+            QCOMPARE(window.findChild<ExtensionSidebar *>(), sidebar);
+            QCOMPARE(input->toPlainText(), QStringLiteral("unsent draft"));
+            dock->hide(); window.close();
+        }
+        Window window; QVERIFY(!window.findChild<ExtensionSidebar *>());
+    }
+    void hiddenSidebarStillStartsEnabledExternalPlugins() {
+        QTemporaryDir root; const QByteArray original = qgetenv("TWINFILE_SETTINGS");
+        const auto restore = qScopeGuard([&] { qputenv("TWINFILE_SETTINGS", original); });
+        qputenv("TWINFILE_SETTINGS", root.filePath(QStringLiteral("settings.json")).toUtf8());
+        QVERIFY(writeSettings(settingsPath(), {{QStringLiteral("extension_visible"), false}}));
+        QString error; const auto info = ExtensionManager::inspect(examplePath(), &error); QVERIFY2(!info.id.isEmpty(), qPrintable(error));
+        {
+            QWidget owner; FakeHost host; ExtensionManager manager(root.filePath(QStringLiteral("extensions")), &host, &owner);
+            QVERIFY2(manager.install(examplePath(), true, info.hash, &error), qPrintable(error)); QVERIFY(manager.setEnabled(info.id, true, &error));
+        }
+        Window window; window.setAttribute(Qt::WA_DontShowOnScreen); window.show();
+        auto *dock = window.findChild<QDockWidget *>(QStringLiteral("extensionDock")); QVERIFY(dock); QVERIFY(!dock->isVisible());
+        auto *sidebar = window.findChild<ExtensionSidebar *>(); QVERIFY(sidebar); QVERIFY(sidebar->manager()->panel(info.id));
+    }
     void sidebarRendersAndDoesNotStealFileShortcuts() {
         const QString output = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT");
         QTemporaryDir workspace; QVERIFY(QDir().mkpath(workspace.filePath(QStringLiteral("示例文件"))));
