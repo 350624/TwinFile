@@ -26,6 +26,7 @@
 #include <QTreeWidget>
 #include <QTimer>
 #include <QBuffer>
+#include <QCryptographicHash>
 
 #include <QApplication>
 #include <QDir>
@@ -543,6 +544,48 @@ private slots:
         error.clear(); QVERIFY(androidXml(QByteArray(50, '\0'), &error).isNull()); QVERIFY(!error.isEmpty());
         error.clear(); QVERIFY(androidXml(QByteArray("<!DOCTYPE x [<!ENTITY a 'bad'>]><x>&a;</x>"), &error).isNull()); QVERIFY(!error.isEmpty());
         error.clear(); QVERIFY(androidXml(QByteArray("<x>") + QByteArray("<x>").repeated(20) + QByteArray("</x>").repeated(21), &error).isNull()); QVERIFY(!error.isEmpty());
+    }
+    void frameworkColorsInAdaptiveIcons() {
+        QTemporaryDir directory; const QString archive = directory.filePath(QStringLiteral("system-colors.APK"));
+        const QByteArray foreground("<vector viewportWidth=\"100\" viewportHeight=\"100\"><path fillColor=\"@0x01060037\" strokeColor=\"@android:color/system_accent1_0\" strokeWidth=\"2\" pathData=\"M40,40 H60 V60 H40 Z\"/></vector>");
+        const QByteArray adaptive("<adaptive-icon><background drawable=\"@0x0106003c\"/><foreground drawable=\"res/foreground.xml\"/></adaptive-icon>");
+        { ZipWriter writer(archive);
+          writer.addFile(QStringLiteral("AndroidManifest.xml"), QByteArray("<manifest><application icon=\"res/adaptive.xml\"/></manifest>"));
+          writer.addFile(QStringLiteral("res/adaptive.xml"), adaptive);
+          writer.addFile(QStringLiteral("res/foreground.xml"), foreground); }
+        ZipReader reader(archive);
+        const QImage icon = apkIcon(archive);
+        QVERIFY(!icon.isNull()); QCOMPARE(icon.pixelColor(64, 64), QColor(Qt::white));
+        QCOMPARE(icon.pixelColor(15, 64), QColor(QStringLiteral("#4bb6e8"))); QCOMPARE(icon.pixelColor(0, 0).alpha(), 0);
+        const AndroidResources aliases{{QStringLiteral("@0x36060032"), QStringLiteral("@0x0106003c")}, {QStringLiteral("@0x36060033"), QStringLiteral("@0x01060037")}};
+        const QString aliased = QStringLiteral("<adaptive-icon><background drawable=\"@0x36060032\"/><foreground><vector viewportWidth=\"100\" viewportHeight=\"100\"><path fillColor=\"@0x36060033\" strokeColor=\"@0x36060033\" strokeWidth=\"2\" pathData=\"M40,40 H60 V60 H40 Z\"/></vector></foreground></adaptive-icon>");
+        QCOMPARE(androidDrawable(reader, aliases, aliased), icon);
+        const QStringList palettes{QStringLiteral("neutral1"), QStringLiteral("neutral2"), QStringLiteral("accent1"), QStringLiteral("accent2"), QStringLiteral("accent3")};
+        const QStringList shades{QStringLiteral("0"), QStringLiteral("10"), QStringLiteral("50"), QStringLiteral("100"), QStringLiteral("200"), QStringLiteral("300"), QStringLiteral("400"), QStringLiteral("500"), QStringLiteral("600"), QStringLiteral("700"), QStringLiteral("800"), QStringLiteral("900"), QStringLiteral("1000")};
+        for (int palette = 0; palette < palettes.size(); ++palette) for (int shade = 0; shade < shades.size(); ++shade) {
+            const QString numeric = QStringLiteral("@0x%1").arg(0x0106001d + palette * 13 + shade, 8, 16, QChar('0'));
+            const QString symbolic = QStringLiteral("@android:color/system_%1_%2").arg(palettes[palette], shades[shade]);
+            const QImage color = androidDrawable(reader, {}, numeric);
+            QVERIFY2(!color.isNull(), qPrintable(numeric)); QCOMPARE(androidDrawable(reader, {}, symbolic), color);
+        }
+        QCOMPARE(androidDrawable(reader, {}, QStringLiteral("@0x0106000d")).pixelColor(64, 64).alpha(), 0);
+        QVERIFY(androidDrawable(reader, {}, QStringLiteral("@0x0106005e")).isNull());
+        QVERIFY(androidDrawable(reader, {}, QStringLiteral("@android:color/system_accent1_123")).isNull());
+        QVERIFY(androidDrawable(reader, {}, QStringLiteral("@0xzz06003c")).isNull());
+    }
+    void apkThumbnailDecoderIgnoresLegacyCache() {
+        QTemporaryDir directory; const QString path = directory.filePath(QStringLiteral("icon.APK"));
+        { ZipWriter writer(path); writer.addFile(QStringLiteral("AndroidManifest.xml"), QByteArray("<manifest><application icon=\"@0x0106003c\"/></manifest>")); }
+        const Entry entry = listLocal(directory.path(), false, QStringLiteral("name"), false).entries.first();
+        const QString identity = QDir::fromNativeSeparators(entry.path).toCaseFolded() + QChar('\n') + QString::number(entry.size) + QChar('\n') + QString::number(entry.modified.toMSecsSinceEpoch());
+        const QString legacy = QString::fromLatin1(QCryptographicHash::hash(identity.toUtf8(), QCryptographicHash::Sha256).toHex());
+        QVERIFY(thumbnailCacheKey(entry) != legacy);
+        const QString oldPath = QDir(qEnvironmentVariable("TWINFILE_THUMBNAIL_CACHE")).filePath(legacy + QStringLiteral(".png"));
+        QVERIFY(QDir().mkpath(QFileInfo(oldPath).absolutePath()));
+        QImage stale(128, 128, QImage::Format_ARGB32); stale.fill(Qt::red); QVERIFY(stale.save(oldPath));
+        const QImage corrected = loadThumbnail(entry); QVERIFY(!corrected.isNull());
+        QCOMPARE(corrected.pixelColor(64, 64), QColor(QStringLiteral("#4bb6e8")));
+        QCOMPARE(loadThumbnail(entry), corrected); QVERIFY(QFileInfo::exists(oldPath));
     }
     void nativeResourceTables_data() {
         QTest::addColumn<bool>("sparse"); QTest::addColumn<bool>("compact"); QTest::addColumn<bool>("offset16");

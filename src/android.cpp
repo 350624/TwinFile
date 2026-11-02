@@ -163,6 +163,33 @@ static QColor drawableColor(QString value) {
     return QColor(value);
 }
 
+static QString frameworkColor(const QString &value) {
+    // Android's default tonal palette is used offline; wallpaper overlays are unavailable.
+    // AOSP android-12.0.0_r1 colors.xml / public.xml; Apache-2.0, see licenses/ANDROID-COLORS.md.
+    static constexpr QRgb tones[][13] = {
+        {0xffffffff, 0xfffcfcff, 0xfff0f0f3, 0xffe1e3e5, 0xffc5c7c9, 0xffaaabae, 0xff8f9193, 0xff747679, 0xff5c5f61, 0xff454749, 0xff2e3133, 0xff191c1e, 0xff000000},
+        {0xffffffff, 0xfff9fcff, 0xffebf1f8, 0xffdce3e9, 0xffc0c7cd, 0xffa5acb2, 0xff8a9297, 0xff70777c, 0xff585f65, 0xff40484d, 0xff2a3136, 0xff161c20, 0xff000000},
+        {0xffffffff, 0xfff9fcff, 0xffe0f3ff, 0xffc1e8ff, 0xff76d1ff, 0xff4bb6e8, 0xff219bcc, 0xff007fac, 0xff00668b, 0xff004c69, 0xff003549, 0xff001e2c, 0xff000000},
+        {0xffffffff, 0xfff9fcff, 0xffe0f3ff, 0xffd1e5f4, 0xffb5cad7, 0xff9aaebb, 0xff8094a0, 0xff657985, 0xff4e616c, 0xff374955, 0xff20333d, 0xff091e28, 0xff000000},
+        {0xffffffff, 0xfffffbff, 0xfff5eeff, 0xffe6deff, 0xffcac1ea, 0xffaea6ce, 0xff938cb1, 0xff787296, 0xff605a7c, 0xff484264, 0xff322c4c, 0xff1d1736, 0xff000000}
+    };
+    if (value == QStringLiteral("@android:color/white") || value == QStringLiteral("@0x0106000b")) return QStringLiteral("#ffffffff");
+    if (value == QStringLiteral("@android:color/black") || value == QStringLiteral("@0x0106000c")) return QStringLiteral("#ff000000");
+    if (value == QStringLiteral("@android:color/transparent") || value == QStringLiteral("@0x0106000d")) return QStringLiteral("#00000000");
+    int palette = -1, shade = -1;
+    if (value.startsWith(QStringLiteral("@0x")) && value.size() == 11) {
+        bool valid; const quint32 id = value.mid(3).toUInt(&valid, 16);
+        if (valid && id >= 0x0106001d && id <= 0x0106005d) { palette = (id - 0x0106001d) / 13; shade = (id - 0x0106001d) % 13; }
+    } else if (value.startsWith(QStringLiteral("@android:color/system_"))) {
+        const QString name = value.mid(22);
+        const qsizetype separator = name.lastIndexOf(QChar('_'));
+        const QStringList palettes{QStringLiteral("neutral1"), QStringLiteral("neutral2"), QStringLiteral("accent1"), QStringLiteral("accent2"), QStringLiteral("accent3")};
+        const QStringList shades{QStringLiteral("0"), QStringLiteral("10"), QStringLiteral("50"), QStringLiteral("100"), QStringLiteral("200"), QStringLiteral("300"), QStringLiteral("400"), QStringLiteral("500"), QStringLiteral("600"), QStringLiteral("700"), QStringLiteral("800"), QStringLiteral("900"), QStringLiteral("1000")};
+        if (separator > 0) { palette = palettes.indexOf(name.left(separator)); shade = shades.indexOf(name.mid(separator + 1)); }
+    }
+    return palette >= 0 && shade >= 0 ? QColor::fromRgba(tones[palette][shade]).name(QColor::HexArgb) : QString();
+}
+
 QImage androidBitmap(const QByteArray &bytes, int size) {
     if (size < 1 || size > 192 || bytes.isEmpty() || bytes.size() > 4 * 1024 * 1024) return {};
     if (bytes.startsWith("RIFF") && bytes.mid(8, 4) == "WEBP") {
@@ -189,12 +216,8 @@ public:
     QImage render(QString value, int depth = 0) {
         if (++visits_ > 2048 || depth > 16 || size_ < 1 || size_ > 192) return {};
         if (value.startsWith(QChar('@'))) {
-            if (value == QStringLiteral("@android:color/transparent")) return render(QStringLiteral("#00000000"), depth + 1);
-            if (value == QStringLiteral("@android:color/white")) return render(QStringLiteral("#ffffffff"), depth + 1);
-            if (value == QStringLiteral("@android:color/black")) return render(QStringLiteral("#ff000000"), depth + 1);
-            value = resources_.value(value.toLower());
-            if (value.isEmpty()) return {};
-            return render(value, depth + 1);
+            value = resolve(value);
+            if (value.isEmpty() || value.startsWith(QChar('@'))) return {};
         }
         if (value.startsWith(QChar('#'))) {
             const QColor color = drawableColor(value); if (!color.isValid()) return {};
@@ -260,15 +283,6 @@ public:
         QDomElement definitions = svg.createElement(QStringLiteral("defs")); canvas.appendChild(definitions);
         canvas.setAttribute(QStringLiteral("opacity"), attr(root, QStringLiteral("alpha"), QStringLiteral("1")));
         std::function<bool(QDomElement, QDomElement, int)> convert;
-        auto resolve = [&](QString value) {
-            for (int iteration = 0; value.startsWith(QChar('@')) && iteration < 16; ++iteration) {
-                if (value == QStringLiteral("@android:color/transparent")) return QStringLiteral("#00000000");
-                if (value == QStringLiteral("@android:color/white")) return QStringLiteral("#ffffffff");
-                if (value == QStringLiteral("@android:color/black")) return QStringLiteral("#ff000000");
-                value = resources_.value(value.toLower());
-            }
-            return value;
-        };
         std::function<bool(QDomElement &, const QString &, QString, double, int)> paint;
         paint = [&](QDomElement &element, const QString &kind, QString value, double alpha, int level) -> bool {
             if (level > 16 || ++visits_ > 2048) return false;
@@ -323,6 +337,14 @@ public:
         QPainter painter(&image); renderer.render(&painter); return image;
     }
 private:
+    QString resolve(QString value) const {
+        for (int iteration = 0; value.startsWith(QChar('@')) && iteration < 16; ++iteration) {
+            const QString system = frameworkColor(value.toLower());
+            if (!system.isEmpty()) return system;
+            value = resources_.value(value.toLower());
+        }
+        return value;
+    }
     ZipReader &archive_;
     const AndroidResources &resources_;
     int size_;

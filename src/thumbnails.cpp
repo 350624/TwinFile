@@ -55,7 +55,7 @@ bool supportsThumbnail(const Entry &entry) {
 }
 
 QString thumbnailCacheKey(const Entry &entry) {
-    const QString identity = QDir::fromNativeSeparators(entry.path).toCaseFolded() + QChar('\n') + QString::number(entry.size) + QChar('\n') + QString::number(entry.modified.toMSecsSinceEpoch());
+    const QString identity = (isApk(entry.name) ? QStringLiteral("apk-drawable-v3\n") : QString()) + QDir::fromNativeSeparators(entry.path).toCaseFolded() + QChar('\n') + QString::number(entry.size) + QChar('\n') + QString::number(entry.modified.toMSecsSinceEpoch());
     return QString::fromLatin1(QCryptographicHash::hash(identity.toUtf8(), QCryptographicHash::Sha256).toHex());
 }
 

@@ -3,6 +3,7 @@
 #include "window.h"
 
 #include <QApplication>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -21,17 +22,25 @@ int main(int argc, char **argv) {
     if (!QDir().mkpath(output)) return 2;
     qputenv("TWINFILE_TEST_MODE", "1"); qputenv("TWINFILE_SETTINGS", QDir(output).filePath(QStringLiteral("probe-settings.json")).toUtf8());
     qputenv("TWINFILE_TOOL_CACHE", QDir(output).filePath(QStringLiteral("probe-tools")).toUtf8()); qputenv("TWINFILE_THUMBNAIL_CACHE", QDir(output).filePath(QStringLiteral("probe-thumbnails")).toUtf8());
-    QJsonArray rows; QList<QPair<QString, QImage>> icons; int failures = 0;
+    auto hashFile = [](const QString &path) {
+        QFile file(path); QCryptographicHash hash(QCryptographicHash::Sha256);
+        return file.open(QIODevice::ReadOnly) && hash.addData(&file) ? hash.result().toHex() : QByteArray();
+    };
+    QJsonArray rows; QList<QPair<QString, QImage>> icons; int failures = 0; bool modified = false;
     for (const QFileInfo &file : QDir(source).entryInfoList(QDir::Files, QDir::Name)) {
         if (!isApk(file.fileName())) continue;
+        const QByteArray beforeHash = hashFile(file.absoluteFilePath());
         Entry entry; entry.name = file.fileName(); entry.path = file.absoluteFilePath(); entry.size = file.size(); entry.modified = file.lastModified();
         QElapsedTimer timer; timer.start(); const QImage decoded = apkIcon(entry.path); const qint64 decodeMs = timer.elapsed();
         timer.restart(); const QImage first = loadThumbnail(entry); const qint64 firstMs = timer.elapsed();
         timer.restart(); const QImage warm = loadThumbnail(entry); const qint64 warmMicros = timer.nsecsElapsed() / 1000;
         ZipReader archive(entry.path); QString resourceError; const auto resources = androidResources(archive.fileData(QStringLiteral("resources.arsc"), 64 * 1024 * 1024), {}, &resourceError);
-        const bool valid = !decoded.isNull() && !first.isNull() && first == warm;
+        const QByteArray afterHash = hashFile(entry.path);
+        const bool unchanged = !beforeHash.isEmpty() && beforeHash == afterHash;
+        modified |= !unchanged;
+        const bool valid = unchanged && !decoded.isNull() && !first.isNull() && first == warm;
         if (!valid) ++failures;
-        rows.append(QJsonObject{{QStringLiteral("file"), entry.path}, {QStringLiteral("ok"), valid}, {QStringLiteral("nativeDecodeMs"), decodeMs}, {QStringLiteral("firstLoadMs"), firstMs}, {QStringLiteral("memoryCacheMicros"), warmMicros}, {QStringLiteral("nativeResourceCount"), resources.size()}, {QStringLiteral("resourceError"), resourceError}});
+        rows.append(QJsonObject{{QStringLiteral("file"), entry.path}, {QStringLiteral("ok"), valid}, {QStringLiteral("sha256Before"), QString::fromLatin1(beforeHash)}, {QStringLiteral("sha256After"), QString::fromLatin1(afterHash)}, {QStringLiteral("nativeDecodeMs"), decodeMs}, {QStringLiteral("firstLoadMs"), firstMs}, {QStringLiteral("memoryCacheMicros"), warmMicros}, {QStringLiteral("nativeResourceCount"), resources.size()}, {QStringLiteral("resourceError"), resourceError}});
         if (!decoded.isNull()) { decoded.save(QDir(output).filePath(file.fileName() + QStringLiteral(".png"))); icons.append({file.fileName(), decoded}); }
     }
     if (icons.isEmpty()) return 3;
@@ -46,12 +55,12 @@ int main(int argc, char **argv) {
     {
         Window window; window.setAttribute(Qt::WA_DontShowOnScreen); window.show(); window.setReducedMotion(true); Pane *pane = window.leftPane(); pane->navigate({Source::Local, source, {}, {}});
         QElapsedTimer timer; timer.start(); while (pane->fileModel()->rowCount() == 0 && timer.elapsed() < 5000) QTest::qWait(20);
-        for (const QString &sample : {QStringLiteral("HXAudio"), QStringLiteral("MT2")}) {
+        for (const QString &sample : {QStringLiteral("HyperCeiler"), QStringLiteral("KernelSU"), QStringLiteral("HXAudio"), QStringLiteral("MT2")}) {
             for (int row = 0; row < pane->fileModel()->rowCount(); ++row) if (isApk(pane->fileModel()->entry(row).name) && pane->fileModel()->entry(row).name.startsWith(sample)) { pane->view()->scrollTo(pane->fileModel()->index(row), QAbstractItemView::PositionAtTop); break; }
             QTest::qWait(1500); window.grab().save(QDir(output).filePath(QStringLiteral("native-icons-") + sample + QStringLiteral(".png")));
         }
     }
-    QJsonObject report{{QStringLiteral("samples"), rows}, {QStringLiteral("failures"), failures}, {QStringLiteral("aaptFallbackExtracted"), QFileInfo(QDir(output).filePath(QStringLiteral("probe-tools/aapt2.exe"))).exists()}, {QStringLiteral("userApksModified"), false}};
+    QJsonObject report{{QStringLiteral("samples"), rows}, {QStringLiteral("failures"), failures}, {QStringLiteral("aaptFallbackExtracted"), QFileInfo(QDir(output).filePath(QStringLiteral("probe-tools/aapt2.exe"))).exists()}, {QStringLiteral("userApksModified"), modified}};
     QFile file(QDir(output).filePath(QStringLiteral("icon-verification.json"))); if (!file.open(QIODevice::WriteOnly)) return 4;
     file.write(QJsonDocument(report).toJson()); QTextStream(stdout) << QJsonDocument(report).toJson(QJsonDocument::Compact) << Qt::endl;
     return failures ? 1 : 0;
