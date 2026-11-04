@@ -1,6 +1,7 @@
 #include "payload.h"
 
 #include <QCryptographicHash>
+#include <QByteArrayView>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -658,7 +659,7 @@ void extractPartition(RangeSource source, const PayloadPartition &partition, qui
             checkCancel(cancel);
             const qint64 count = output.read(block.data(), qMin<qint64>(block.size(), qint64(partition.size) - verified));
             ensure(count > 0, output.error() == QFile::NoError ? QStringLiteral("分区镜像意外截断：") + partition.name : output.errorString());
-            hash.addData(block.constData(), count); verified += count;
+            hash.addData(QByteArrayView(block.constData(), count)); verified += count;
             if (progress) progress(verified, qint64(partition.size), stage);
         }
         ensure(hash.result() == partition.hash, QStringLiteral("分区 SHA256 校验失败：") + partition.name);
