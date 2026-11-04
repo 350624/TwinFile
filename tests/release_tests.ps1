@@ -3,6 +3,25 @@ $Source = Split-Path -Parent $PSScriptRoot
 $FixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ("TwinFile-release-tests-" + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $FixtureRoot | Out-Null
 $Passed = 0
+$Tokens = $null; $ParseErrors = $null
+$Ast = [System.Management.Automation.Language.Parser]::ParseFile("$Source\publish.ps1", [ref]$Tokens, [ref]$ParseErrors)
+$HttpStatusFunction = $Ast.Find({ param($Node) $Node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -eq 'Get-ExceptionHttpStatus' }, $true)
+if (-not $HttpStatusFunction -or $ParseErrors.Count) { throw 'Publisher HTTP status helper is missing or invalid' }
+. ([scriptblock]::Create($HttpStatusFunction.Extent.Text))
+& {
+    Set-StrictMode -Version Latest
+    foreach ($Expected in @(0, 404, 500)) {
+        $Failure = [System.Exception]::new('Fixture network error')
+        if ($Expected) { $Failure | Add-Member -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode = $Expected }) }
+        if ((Get-ExceptionHttpStatus $Failure) -ne $Expected) { throw "Incorrect HTTP status for fixture: $Expected" }
+        $script:Passed++
+    }
+    $Failure = [System.Exception]::new('Fixture transport failure')
+    $Failure | Add-Member -NotePropertyName Response -NotePropertyValue $null
+    if ((Get-ExceptionHttpStatus $Failure) -ne 0) { throw 'Null HTTP response must preserve the transport failure' }
+    $script:Passed++
+}
+Write-Output 'PASS publisher HTTP errors (transport, null response, 404, 500)'
 function Invoke-FixtureGit {
     param([string]$Directory,[string[]]$Arguments)
     $null = & git -C $Directory @Arguments 2>&1

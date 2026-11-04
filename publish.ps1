@@ -62,6 +62,14 @@ if (-not $Token) {
 if (-not $Token) { throw 'GitHub authentication unavailable' }
 $Headers = @{ Authorization="Bearer $Token"; Accept='application/vnd.github+json'; 'User-Agent'='TwinFile-Publisher'; 'X-GitHub-Api-Version'='2022-11-28' }
 $Token = $null
+function Get-ExceptionHttpStatus {
+    param([System.Exception]$Exception)
+    $Response = $Exception.PSObject.Properties['Response']
+    if ($null -eq $Response -or $null -eq $Response.Value) { return 0 }
+    $Status = $Response.Value.PSObject.Properties['StatusCode']
+    if ($null -eq $Status -or $null -eq $Status.Value) { return 0 }
+    return [int]$Status.Value
+}
 function Invoke-Api {
     param([string]$Path, [string]$Method='Get', [object]$Body=$null)
     $Parameters = @{ Uri="https://api.github.com/repos/$Repository/$Path"; Method=$Method; Headers=$Headers; TimeoutSec=120 }
@@ -72,7 +80,7 @@ function Invoke-Api {
 try {
     $Existing = $null
     try { $Existing = Invoke-Api "releases/tags/$Tag" } catch {
-        if (-not $_.Exception.Response -or [int]$_.Exception.Response.StatusCode -ne 404) { throw }
+        if ((Get-ExceptionHttpStatus $_.Exception) -ne 404) { throw }
     }
     $LocalTag = Invoke-Git @('tag','--list',$Tag)
     if ($LocalTag -and (Invoke-Git @('rev-list','-n','1',$Tag)) -ne $Commit) { throw 'Version tag points to another commit; increment the version' }
