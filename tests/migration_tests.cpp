@@ -571,6 +571,69 @@ private slots:
         QFETCH(int, type); QTemporaryDir root; const QByteArray data(4096 * 30, 'a'); const QString source = root.filePath(QStringLiteral("payload.bin")); QVERIFY(writeFile(source, encodePayload(data, type))); const Result info = inspectPayload(source); QVERIFY2(info.ok, qPrintable(info.error)); QCOMPARE(info.paths, QStringList{QStringLiteral("system")});
         const Result extracted = extractPayload(source, info.paths, root.path()); QVERIFY2(extracted.ok, qPrintable(extracted.error)); QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), type == 6 || type == 7 ? QByteArray(data.size(), '\0') : data); QVERIFY(!extractPayload(source, info.paths, root.path()).ok);
     }
+    void payloadHashProgressReportsBytesRead() {
+        QTemporaryDir root; const QByteArray data(3 * 1024 * 1024, 'p'); const QString source = root.filePath(QStringLiteral("payload.bin"));
+        QVERIFY(writeFile(source, encodePayload(data)));
+        QVector<qint64> verified; qint64 verifyTotal = 0;
+        const auto result = extractPayload(source, {QStringLiteral("system")}, root.path(), 1, {}, [&](qint64 done, qint64 total, const QString &stage) {
+            if (stage.startsWith(QStringLiteral("校验分区 · "))) { verified.append(done); verifyTotal = total; }
+        });
+        QVERIFY2(result.ok, qPrintable(result.error)); QCOMPARE(verifyTotal, qint64(data.size() * 2));
+        QVERIFY(verified.size() >= 4); QCOMPARE(verified.first(), qint64(data.size())); QCOMPARE(verified.last(), qint64(data.size() * 2));
+        for (qsizetype index = 1; index < verified.size(); ++index) QVERIFY(verified[index] >= verified[index - 1]);
+    }
+    void payloadSparseImageProgressCompletes_data() {
+        QTest::addColumn<bool>("hash"); QTest::newRow("without-hash") << false; QTest::newRow("with-hash") << true;
+    }
+    void payloadSparseImageProgressCompletes() {
+        QFETCH(bool, hash); QTemporaryDir root; const QByteArray data(4096, 's');
+        const QByteArray image = data + QByteArray(4096, '\0');
+        const QByteArray info = integer(1, image.size()) + (hash ? message(2, QCryptographicHash::hash(image, QCryptographicHash::Sha256)) : QByteArray());
+        const QByteArray operation = integer(1, 0) + integer(2, 0) + integer(3, data.size()) + message(6, integer(1, 0) + integer(2, 1));
+        const QByteArray manifest = integer(3, 4096) + message(13, message(1, "system") + message(7, info) + message(8, operation));
+        const QString source = root.filePath(QStringLiteral("payload.bin"));
+        QVERIFY(writeFile(source, QByteArray("CrAU") + network<quint64>(2) + network<quint64>(manifest.size()) + network<quint32>(0) + manifest + data));
+        qint64 previous = 0, finalTotal = 0; bool monotonic = true;
+        const auto result = extractPayload(source, {QStringLiteral("system")}, root.path(), 1, {}, [&](qint64 done, qint64 total, const QString &stage) {
+            if (!stage.startsWith(QStringLiteral("提取分区 · ")) && !stage.startsWith(QStringLiteral("校验分区 · "))) return;
+            monotonic = monotonic && done >= previous && done <= total; previous = done; finalTotal = total;
+        });
+        QVERIFY2(result.ok, qPrintable(result.error)); QVERIFY(monotonic); QCOMPARE(previous, finalTotal);
+        QCOMPARE(finalTotal, qint64(image.size() * (hash ? 2 : 1))); QCOMPARE(readFile(root.filePath(QStringLiteral("system.img"))), image);
+    }
+    void payloadParallelVerificationProgressStaysMonotonic() {
+        QTemporaryDir root; const QByteArray data(2 * 1024 * 1024, 'v');
+        const QString source = root.filePath(QStringLiteral("payload.bin"));
+        QVERIFY(writeFile(source, encodePayload(data, 0, false, 3)));
+        qint64 previous = 0, finalTotal = 0; bool monotonic = true; QSet<QString> verified;
+        const auto result = extractPayload(source, {QStringLiteral("system"), QStringLiteral("partition_1"), QStringLiteral("partition_2")}, root.path(), 3, {},
+            [&](qint64 done, qint64 total, const QString &stage) {
+                if (!stage.startsWith(QStringLiteral("提取分区 · ")) && !stage.startsWith(QStringLiteral("校验分区 · "))) return;
+                monotonic = monotonic && done >= previous && done <= total; previous = done; finalTotal = total;
+                if (stage.startsWith(QStringLiteral("校验分区 · "))) verified.insert(stage);
+            });
+        QVERIFY2(result.ok, qPrintable(result.error)); QVERIFY(monotonic); QCOMPARE(verified.size(), 3);
+        QCOMPARE(previous, qint64(data.size() * 6)); QCOMPARE(previous, finalTotal);
+        for (const auto &path : result.paths) QCOMPARE(readFile(path), data);
+    }
+    void payloadVerificationCancellationAndHashFailureDoNotPublish() {
+        QTemporaryDir root; const QByteArray data(3 * 1024 * 1024, 'c');
+        const QString source = root.filePath(QStringLiteral("payload.bin"));
+        QVERIFY(writeFile(source, encodePayload(data))); auto cancel = std::make_shared<std::atomic_bool>(false); bool sawVerification = false;
+        const auto cancelled = extractPayload(source, {QStringLiteral("system")}, root.path(), 1, cancel,
+            [&](qint64 done, qint64, const QString &stage) {
+                if (stage.startsWith(QStringLiteral("校验分区 · ")) && done > data.size()) { sawVerification = true; cancel->store(true); }
+            });
+        QVERIFY(sawVerification); QVERIFY(!cancelled.ok); QVERIFY(!QFileInfo::exists(root.filePath(QStringLiteral("system.img"))));
+        QByteArray corrupted = encodePayload(data);
+        const QByteArray expected = QCryptographicHash::hash(data, QCryptographicHash::Sha256);
+        const auto hashOffset = corrupted.indexOf(expected); QVERIFY(hashOffset >= 0); corrupted[hashOffset] ^= 1;
+        QVERIFY(writeFile(source, corrupted));
+        const auto rejected = extractPayload(source, {QStringLiteral("system")}, root.path());
+        QVERIFY(!rejected.ok); QVERIFY(rejected.error.contains(QStringLiteral("分区 SHA256 校验失败")));
+        QVERIFY(!QFileInfo::exists(root.filePath(QStringLiteral("system.img"))));
+        QCOMPARE(QDir(root.path()).entryList(QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot).size(), 0);
+    }
     void payloadStagingInheritsDestinationAndCleansUp_data() {
         QTest::addColumn<bool>("longPath"); QTest::newRow("native-unicode") << false; QTest::newRow("long-path") << true;
     }
@@ -1332,6 +1395,13 @@ private slots:
         QTest::qWait(750);
         QVERIFY(!task.toolTip().section(QChar('\n'), 1).startsWith(QStringLiteral("0 B/s")));
         QTRY_VERIFY_WITH_TIMEOUT(task.toolTip().section(QChar('\n'), 1).startsWith(QStringLiteral("0 B/s")), 4000);
+        task.updateNetworkProgress(8 * 1024 * 1024, 8 * 1024 * 1024);
+        task.updateProgress(11 * 1024 * 1024, 20 * 1024 * 1024, QStringLiteral("校验分区 · system"));
+        QCOMPARE(task.findChild<QProgressBar *>()->value(), 550);
+        QVERIFY(task.toolTip().contains(QStringLiteral("11.0 MB / 20.0 MB")));
+        task.updateNetworkProgress(8 * 1024 * 1024, 8 * 1024 * 1024);
+        task.updateProgress(12 * 1024 * 1024, 20 * 1024 * 1024, QStringLiteral("校验分区 · system"));
+        QCOMPARE(task.findChild<QProgressBar *>()->value(), 600);
         task.finish(QStringLiteral("完成"), true);
         task.begin(QStringLiteral("复制文件"), [] {}); task.updateProgress(1, 4, QStringLiteral("copy"));
         QCOMPARE(task.findChild<QProgressBar *>()->value(), 250);

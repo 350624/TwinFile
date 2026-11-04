@@ -641,16 +641,26 @@ void extractPartition(RangeSource source, const PayloadPartition &partition, qui
             } catch (...) { if (bzReady) BZ2_bzDecompressEnd(&bz); if (xzReady) lzma_end(&xz); if (zstd) ZSTD_freeDStream(zstd); throw; }
             if (bzReady) BZ2_bzDecompressEnd(&bz); if (xzReady) lzma_end(&xz); if (zstd) ZSTD_freeDStream(zstd);
         }
-        ensure(produced == expected, QStringLiteral("操作解压大小不足")); done += produced; if (progress) progress(qint64(done), qint64(partition.size), partition.name);
+        ensure(produced == expected, QStringLiteral("操作解压大小不足")); done += produced; if (progress) progress(qint64(done), qint64(partition.size), QStringLiteral("提取分区 · ") + partition.name);
     }
     if (producer) {
         producer->wait();
         if (downloadError) std::rethrow_exception(downloadError);
     }
     ensure(output.flush(), output.errorString());
+    if (progress) progress(qint64(partition.size), qint64(partition.size), QStringLiteral("提取分区 · ") + partition.name);
     if (!partition.hash.isEmpty()) {
         ensure(output.seek(0), output.errorString()); QCryptographicHash hash(QCryptographicHash::Sha256);
-        while (!output.atEnd()) { checkCancel(cancel); const QByteArray block = output.read(1024 * 1024); ensure(output.error() == QFile::NoError, output.errorString()); hash.addData(block); if (progress) progress(qint64(done), qint64(partition.size), QStringLiteral("校验分区 · ") + partition.name); }
+        QByteArray block(1024 * 1024, Qt::Uninitialized); qint64 verified = 0;
+        const QString stage = QStringLiteral("校验分区 · ") + partition.name;
+        if (progress) progress(0, qint64(partition.size), stage);
+        while (verified < qint64(partition.size)) {
+            checkCancel(cancel);
+            const qint64 count = output.read(block.data(), qMin<qint64>(block.size(), qint64(partition.size) - verified));
+            ensure(count > 0, output.error() == QFile::NoError ? QStringLiteral("分区镜像意外截断：") + partition.name : output.errorString());
+            hash.addData(block.constData(), count); verified += count;
+            if (progress) progress(verified, qint64(partition.size), stage);
+        }
         ensure(hash.result() == partition.hash, QStringLiteral("分区 SHA256 校验失败：") + partition.name);
     }
 }
@@ -726,6 +736,7 @@ Result extractPayload(const QString &source, const QStringList &partitions, cons
         auto payload = openPayload(source, cancel, options, false, progress); QList<PayloadPartition> selected; QSet<QString> selectedNames; quint64 total = 0;
         for (const auto &partition : payload.manifest.partitions) if (partitions.contains(partition.name)) {
             ensure(!QFileInfo::exists(QDir(destination).filePath(partition.name + QStringLiteral(".img"))), QStringLiteral("输出已存在：") + partition.name);
+            ensure(fits(total, partition.size, quint64(std::numeric_limits<qint64>::max())), QStringLiteral("分区镜像总大小溢出"));
             total += partition.size; selected.append(partition); selectedNames.insert(partition.name);
         }
         ensure(selectedNames.size() == QSet<QString>(partitions.cbegin(), partitions.cend()).size(), QStringLiteral("未知分区名称"));
@@ -743,8 +754,14 @@ Result extractPayload(const QString &source, const QStringList &partitions, cons
         std::atomic<qsizetype> next{0}; const int concurrency = qBound(1, qMin(workers, int(selected.size())), 8);
         std::vector<std::future<void>> tasks; std::vector<std::unique_ptr<QThread>> threads;
         payload.source.inputSize = qMax<quint64>(256 * 1024, payload.source.inputSize / quint64(concurrency));
-        qint64 networkTotal = 0, networkDone = 0;
-        for (const auto &partition : selected) for (const auto &operation : partition.operations) networkTotal += qint64(operation.length);
+        const qint64 networkTotal = payload.source.remote() ? qint64(cacheBytes) : 0;
+        qint64 networkDone = 0;
+        // Verification reads the whole image in addition to writing its extents.
+        quint64 workTotal = total;
+        for (const auto &partition : selected) if (!partition.hash.isEmpty()) {
+            ensure(fits(workTotal, partition.size, quint64(std::numeric_limits<qint64>::max())), QStringLiteral("校验进度总大小溢出"));
+            workTotal += partition.size;
+        }
         std::mutex progressMutex; std::vector<qint64> completed(size_t(selected.size()), 0); qint64 done = 0;
         const auto waitWorkers = qScopeGuard([&] { for (auto &thread : threads) thread->wait(); });
         for (int worker = 0; worker < concurrency; ++worker) {
@@ -753,7 +770,8 @@ Result extractPayload(const QString &source, const QStringList &partitions, cons
                     extractPartition(payload.source, selected[index], payload.manifest.blockSize, payload.dataOffset, staging.filePath(selected[index].name + QStringLiteral(".img")), cancel,
                         [&](qint64 current, qint64, const QString &stage) {
                             if (!progress) return;
-                            std::lock_guard<std::mutex> lock(progressMutex); done += current - completed[size_t(index)]; completed[size_t(index)] = current; progress(done, qint64(total), stage);
+                            const qint64 work = current + (stage.startsWith(QStringLiteral("校验分区 · ")) ? qint64(selected[index].size) : 0);
+                            std::lock_guard<std::mutex> lock(progressMutex); done += work - completed[size_t(index)]; completed[size_t(index)] = work; progress(done, qint64(workTotal), stage);
                         }, [&](qint64 received) {
                             if (!progress) return;
                             std::lock_guard<std::mutex> lock(progressMutex); networkDone += received;

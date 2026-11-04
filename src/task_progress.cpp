@@ -59,9 +59,17 @@ void TaskProgress::begin(const QString &title, std::function<void()> cancel) {
 
 void TaskProgress::updateProgress(qint64 done, qint64 total, const QString &stage, double speed) {
     if (!active_) return;
-    if (!networkMode_ && done < done_) { sampleBytes_ = done; sampleAt_ = elapsed_.elapsed(); speed_ = 0; samples_ = {{sampleAt_, done}}; }
+    const bool networkStage = stage.startsWith(QStringLiteral("下载 Payload 分区数据"));
+    if (!networkStage && networkMode_ && networkTotal_ > 0 && networkDone_ >= networkTotal_) {
+        networkMode_ = false;
+        sampleAt_ = elapsed_.elapsed();
+        sampleBytes_ = done;
+        speed_ = 0;
+        samples_ = {{sampleAt_, done}};
+    }
+    if (!networkMode_ && (done < done_ || (total_ > 0 && total != total_))) { sampleBytes_ = done; sampleAt_ = elapsed_.elapsed(); speed_ = 0; samples_ = {{sampleAt_, done}}; }
     done_ = done; total_ = total;
-    if (cancel_->isEnabled()) stage_ = stage.isEmpty() ? title_ : stage;
+    if (cancel_->isEnabled() && (!networkMode_ || networkStage)) stage_ = stage.isEmpty() ? title_ : stage;
     if (speed >= 0 && !networkMode_) { speed_ = speed; sampleBytes_ = done; sampleAt_ = elapsed_.elapsed(); samples_ = {{sampleAt_, done}}; }
     if (networkMode_) { done = networkDone_; total = networkTotal_; }
     bar_->setRange(0, total > 0 ? 1000 : 0);
@@ -71,7 +79,8 @@ void TaskProgress::updateProgress(qint64 done, qint64 total, const QString &stag
 
 void TaskProgress::updateNetworkProgress(qint64 done, qint64 total) {
     if (!active_) return;
-    if (!networkMode_) {
+    const bool completed = networkTotal_ > 0 && networkDone_ >= networkTotal_;
+    if (!networkMode_ && !completed) {
         networkMode_ = true; sampleAt_ = elapsed_.elapsed(); sampleBytes_ = 0; speed_ = 0; samples_ = {{sampleAt_, 0}};
     }
     networkDone_ = qMax(networkDone_, done); networkTotal_ = total;
