@@ -10,6 +10,7 @@
 #include <QFileInfo>
 #include <QHash>
 #include <QSet>
+#include <QScopeGuard>
 #include <QStorageInfo>
 #include <QTemporaryDir>
 #include <QThread>
@@ -36,10 +37,14 @@ void tune(SOCKET socket) {
     setsockopt(socket, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char *>(&size), sizeof(size)); setsockopt(socket, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char *>(&size), sizeof(size));
     u_long nonblocking = 1; require(ioctlsocket(socket, FIONBIO, &nonblocking) == 0, QStringLiteral("不能设置 HFX socket"));
 }
-void ready(SOCKET socket, bool write, const Cancellation &cancel, int timeout = 60000, const Cancellation &secondary = {}) {
-    QElapsedTimer elapsed; elapsed.start();
+// Control replies and idle lanes share the transfer's activity, not its total duration.
+void ready(SOCKET socket, bool write, const Cancellation &cancel, int timeout = 60000, const Cancellation &secondary = {}, std::atomic<qint64> *activity = nullptr, int startTimeout = 0) {
+    qint64 seen = activity ? activity->load() : 0; QElapsedTimer elapsed; elapsed.start();
     for (;;) {
-        cancelled(cancel); cancelled(secondary); require(elapsed.elapsed() < timeout, QStringLiteral("HFX 通道等待超时")); fd_set sockets; FD_ZERO(&sockets); FD_SET(socket, &sockets); timeval interval{0, 100000};
+        cancelled(cancel); cancelled(secondary);
+        if (activity) { const qint64 latest = activity->load(); if (latest != seen) { seen = latest; elapsed.restart(); } }
+        const int limit = startTimeout > 0 && (!activity || seen == 0) ? startTimeout : timeout;
+        require(elapsed.elapsed() < limit, QStringLiteral("HFX 通道等待超时")); fd_set sockets; FD_ZERO(&sockets); FD_SET(socket, &sockets); timeval interval{0, 100000};
         const int status = select(0, write ? nullptr : &sockets, write ? &sockets : nullptr, nullptr, &interval); require(status != SOCKET_ERROR, QStringLiteral("HFX 通道已断开")); if (status > 0) return;
     }
 }
@@ -48,14 +53,18 @@ public:
     SOCKET socket = INVALID_SOCKET;
     Cancellation cancel;
     Cancellation secondary;
+    int timeout = 60000;
+    int firstReadTimeout = 0;
+    std::atomic<qint64> *activity = nullptr;
+    void wait(bool write) { ready(socket, write, cancel, timeout, secondary, activity, write ? 0 : firstReadTimeout); }
     QByteArray read(qint64 size) {
         require(size >= 0 && size <= blockSize + 65536, QStringLiteral("HFX 数据块超限")); QByteArray bytes(size, '\0'); qint64 offset = 0;
-        while (offset < size) { ready(socket, false, cancel, 60000, secondary); const int count = recv(socket, bytes.data() + offset, int(size - offset), 0); if (count < 0 && WSAGetLastError() == WSAEWOULDBLOCK) continue; require(count > 0, QStringLiteral("HFX 对端断开连接")); offset += count; }
+        while (offset < size) { wait(false); const int count = recv(socket, bytes.data() + offset, int(size - offset), 0); if (count < 0 && WSAGetLastError() == WSAEWOULDBLOCK) continue; require(count > 0, QStringLiteral("HFX 对端断开连接")); firstReadTimeout = 0; offset += count; if (activity) activity->fetch_add(1); }
         return bytes;
     }
     void send(const QByteArray &bytes) {
         qsizetype offset = 0;
-        while (offset < bytes.size()) { ready(socket, true, cancel, 60000, secondary); const int count = ::send(socket, bytes.constData() + offset, int(qMin<qsizetype>(bytes.size() - offset, blockSize)), 0); if (count < 0 && WSAGetLastError() == WSAEWOULDBLOCK) continue; require(count > 0, QStringLiteral("HFX 通道写入失败")); offset += count; }
+        while (offset < bytes.size()) { wait(true); const int count = ::send(socket, bytes.constData() + offset, int(qMin<qsizetype>(bytes.size() - offset, blockSize)), 0); if (count < 0 && WSAGetLastError() == WSAEWOULDBLOCK) continue; require(count > 0, QStringLiteral("HFX 通道写入失败")); offset += count; if (activity) activity->fetch_add(1); }
     }
     template<class Integer> Integer number() { const QByteArray bytes = read(sizeof(Integer)); return qFromBigEndian<Integer>(bytes.constData()); }
     template<class Integer> void number(Integer value) { QByteArray bytes(sizeof(Integer), '\0'); qToBigEndian<Integer>(value, bytes.data()); send(bytes); }
@@ -69,22 +78,32 @@ QString joinRemote(const QString &directory, const QString &relative) { return d
 // File and locale APIs also need Qt-owned worker teardown on Windows.
 class ChannelTasks {
 public:
-    ~ChannelTasks() { for (auto &thread : threads_) thread->wait(); }
-    template<class Function> void start(Function function) {
-        std::packaged_task<void()> task(std::move(function));
+    ~ChannelTasks() { if (aborted_) aborted_->store(true); for (auto &thread : threads_) thread->wait(); }
+    template<class Function> void start(Function function, const Cancellation &aborted) {
+        aborted_ = aborted;
+        std::packaged_task<void()> task([this, function = std::move(function), aborted] {
+            try { function(); }
+            catch (...) {
+                { std::lock_guard guard(errors_); if (!error_) error_ = std::current_exception(); }
+                aborted->store(true);
+                throw;
+            }
+        });
         results_.emplace_back(task.get_future());
         threads_.emplace_back(QThread::create([task = std::move(task)]() mutable { task(); }));
         threads_.back()->start();
     }
     void wait() {
-        std::exception_ptr error;
-        for (auto &result : results_) try { result.get(); } catch (...) { if (!error) error = std::current_exception(); }
+        for (auto &result : results_) try { result.get(); } catch (...) {}
         for (auto &thread : threads_) thread->wait();
-        if (error) std::rethrow_exception(error);
+        if (error_) std::rethrow_exception(error_);
     }
 private:
     std::vector<std::future<void>> results_;
     std::vector<std::unique_ptr<QThread>> threads_;
+    std::mutex errors_;
+    std::exception_ptr error_;
+    Cancellation aborted_;
 };
 }
 
@@ -119,6 +138,7 @@ Result HfxSession::connect(const HfxOptions &options, const Cancellation &cancel
     std::lock_guard guard(operation_); state_->close(); state_->options = options; state_->names.clear(); SOCKET server = INVALID_SOCKET;
     try {
         cancelled(cancel); require(!options.interfaces.isEmpty() && options.interfaces.size() <= 8, QStringLiteral("请选择 1–8 条 IPv4 通道"));
+        require(options.idleTimeoutMs > 0 && options.startTimeoutMs >= options.idleTimeoutMs, QStringLiteral("HFX 超时设置无效"));
         bool loopback = true; for (const auto &interface : options.interfaces) { require(interface.second.protocol() == QAbstractSocket::IPv4Protocol, QStringLiteral("HFX v300 仅支持 IPv4 通道")); loopback &= interface.second.isLoopback(); }
         server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP); require(server != INVALID_SOCKET, QStringLiteral("不能创建 HFX 监听"));
         const int exclusive = 1; setsockopt(server, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char *>(&exclusive), sizeof(exclusive));
@@ -185,42 +205,48 @@ Result HfxSession::push(const QStringList &paths, const QString &destination, co
             append(root, remoteRoot);
             if (QFileInfo(root).isDir()) { QDirIterator iterator(root, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDirIterator::Subdirectories); while (iterator.hasNext()) { iterator.next(); append(iterator.filePath(), joinRemote(remoteRoot, QDir(root).relativeFilePath(iterator.filePath()))); } }
         }
-        Wire control{state_->control, cancel}; control.number<qint16>(10); std::mutex schedule, reports; qsizetype fileIndex = 0; qint32 block = 0; std::atomic<qint64> done{0}; auto aborted = std::make_shared<std::atomic_bool>(false);
+        auto activity = std::make_shared<std::atomic<qint64>>(0);
+        auto stopControl = std::make_shared<std::atomic_bool>(false);
+        Wire control{state_->control, cancel, stopControl, state_->options.idleTimeoutMs, 0, activity.get()}; control.number<qint16>(10); std::mutex schedule, reports; qsizetype fileIndex = 0; qint32 block = 0; std::atomic<qint64> done{0}; auto aborted = std::make_shared<std::atomic_bool>(false);
         auto phoneResult = std::async(std::launch::async, [&] {
-            if (control.boolean()) return QString();
-            const QString error = control.text();
-            aborted->store(true);
-            return error;
-        });
-        ChannelTasks tasks;
-        for (const SOCKET socket : state_->channels) tasks.start([&, socket] {
             try {
-                Wire channel{socket, cancel, aborted};
-                for (;;) {
-                    cancelled(cancel); require(!aborted->load(), QStringLiteral("其它 HFX 通道已失败")); qsizetype current; qint32 currentBlock;
-                    { std::lock_guard next(schedule); if (fileIndex >= files.size()) break; current = fileIndex; currentBlock = block; const File &file = files[current]; if (file.directory || (qint64(++block) * blockSize >= file.size)) { ++fileIndex; block = 0; } }
-                    const File &file = files[current]; channel.number<qint16>(file.directory ? 1 : 0); channel.number<qint32>(qint32(current)); channel.text(file.remote); channel.number<qint64>(file.modified);
-                    if (file.directory) continue;
-                    const qint64 count = qMin(blockSize, file.size - qint64(currentBlock) * blockSize); QFile input(file.local); require(input.open(QIODevice::ReadOnly) && input.size() == file.size && input.seek(qint64(currentBlock) * blockSize), QStringLiteral("HFX 来源变化或不能读取")); const QByteArray bytes = input.read(count); require(bytes.size() == count, QStringLiteral("HFX 来源读取不完整"));
-                    channel.number<qint64>(file.size); channel.number<qint32>(currentBlock); channel.number<qint32>(qint32(count)); channel.send(bytes); const qint64 completed = done.fetch_add(count) + count;
-                    if (progress) { std::lock_guard report(reports); progress(completed, total, QFileInfo(file.local).fileName()); }
-                }
-                channel.number<qint16>(3);
+                if (control.boolean()) return QString();
+                const QString error = control.text();
+                aborted->store(true);
+                return error.isEmpty() ? QStringLiteral("手机未提供错误详情") : error;
             } catch (...) { aborted->store(true); throw; }
         });
+        const auto stopReader = qScopeGuard([&] { stopControl->store(true); });
+        ChannelTasks tasks;
+        for (const SOCKET socket : state_->channels) tasks.start([&, socket] {
+            Wire channel{socket, cancel, aborted, state_->options.idleTimeoutMs}; channel.activity = activity.get();
+            for (;;) {
+                cancelled(cancel); require(!aborted->load(), QStringLiteral("其它 HFX 通道已失败")); qsizetype current; qint32 currentBlock;
+                { std::lock_guard next(schedule); if (fileIndex >= files.size()) break; current = fileIndex; currentBlock = block; const File &file = files[current]; if (file.directory || (qint64(++block) * blockSize >= file.size)) { ++fileIndex; block = 0; } }
+                const File &file = files[current]; channel.number<qint16>(file.directory ? 1 : 0); channel.number<qint32>(qint32(current)); channel.text(file.remote); channel.number<qint64>(file.modified);
+                if (file.directory) continue;
+                const qint64 count = qMin(blockSize, file.size - qint64(currentBlock) * blockSize); QFile input(file.local); require(input.open(QIODevice::ReadOnly) && input.size() == file.size && input.seek(qint64(currentBlock) * blockSize), QStringLiteral("HFX 来源变化或不能读取")); const QByteArray bytes = input.read(count); require(bytes.size() == count, QStringLiteral("HFX 来源读取不完整"));
+                channel.number<qint64>(file.size); channel.number<qint32>(currentBlock); channel.number<qint32>(qint32(count)); channel.send(bytes); const qint64 completed = done.fetch_add(count) + count;
+                if (progress) { std::lock_guard report(reports); progress(completed, total, QFileInfo(file.local).fileName()); }
+            }
+            channel.number<qint16>(3);
+        }, aborted);
         std::exception_ptr transferError;
         try { tasks.wait(); } catch (...) { transferError = std::current_exception(); }
         if (transferError) {
             QString phoneError;
             if (phoneResult.wait_for(std::chrono::milliseconds(500)) == std::future_status::ready) {
-                try { phoneError = phoneResult.get(); } catch (...) {}
+                phoneError = phoneResult.get();
             } else {
-                state_->close();
+                // Stop the control reader before closing sockets or destroying its captured state.
+                stopControl->store(true);
                 try { phoneError = phoneResult.get(); } catch (...) {}
             }
             if (!phoneError.isEmpty()) throw HfxError(QStringLiteral("手机写入失败：") + phoneError);
             std::rethrow_exception(transferError);
         }
+        // All lanes are done: give the phone a fresh idle window for finalizing and reporting the result.
+        activity->fetch_add(1);
         const QString error = phoneResult.get();
         if (!error.isEmpty()) throw HfxError(QStringLiteral("手机写入失败：") + error);
         control.boolean(true); return {};
@@ -233,35 +259,35 @@ Result HfxSession::pull(const QStringList &paths, const QString &source, const Q
         require(connected() && !paths.isEmpty() && QFileInfo(destination).isDir(), QStringLiteral("HFX 未连接或目标不是文件夹"));
         QSet<QString> roots; for (const QString &path : paths) { require(path.startsWith(source.endsWith(QChar('/')) ? source : source + QChar('/')), QStringLiteral("选择的手机文件不在来源目录")); const QString relative = path.mid(source.size()).remove(0, source.endsWith(QChar('/')) ? 0 : 1); require(!relative.contains(QChar('/')) && validateName(relative).isEmpty(), QStringLiteral("请选择同一目录的文件")); require(!QFileInfo::exists(QDir(destination).filePath(relative)), QStringLiteral("本地目标已存在：") + relative); roots.insert(relative); }
         QTemporaryDir staging(QDir(destination).filePath(QStringLiteral(".twinfile-hfx-XXXXXX"))); require(staging.isValid(), QStringLiteral("不能创建 HFX 暂存目录"));
-        Wire control{state_->control, cancel}; control.number<qint16>(11); control.number<qint32>(qint32(paths.size())); for (const QString &path : paths) control.text(path);
+        // Allow phone-side enumeration before the first frame; other lanes' traffic keeps waits alive.
+        auto activity = std::make_shared<std::atomic<qint64>>(0);
+        Wire control{state_->control, cancel, {}, state_->options.idleTimeoutMs}; control.number<qint16>(11); control.number<qint32>(qint32(paths.size())); for (const QString &path : paths) control.text(path);
         control.text(QDir::toNativeSeparators(staging.path()) + QChar('\\')); control.number<qint32>(1); control.text(source.endsWith(QChar('/')) ? source : source + QChar('/'));
         struct FileState { QString path; qint64 total = 0, modified = 0; QSet<qint32> blocks; bool directory = false; };
         QHash<qint32, FileState> files; QHash<QString, qint32> names; std::mutex write; qint64 done = 0, total = 0; auto aborted = std::make_shared<std::atomic_bool>(false); ChannelTasks tasks;
         for (const SOCKET socket : state_->channels) tasks.start([&, socket] {
-            try {
-                Wire channel{socket, cancel, aborted};
-                for (;;) {
-                    cancelled(cancel); require(!aborted->load(), QStringLiteral("其它 HFX 通道失败")); const qint16 type = channel.number<qint16>(); if (type == 3) break; require(type == 0 || type == 1, QStringLiteral("手机传输中断或发送了无效帧"));
-                    const qint32 index = channel.number<qint32>(); const QString raw = QDir::fromNativeSeparators(channel.text()); const qint64 modified = channel.number<qint64>();
-                    const QString absolute = QDir::cleanPath(QFileInfo(raw).isAbsolute() ? raw : QDir(staging.path()).filePath(raw)); const QString relative = QDir(staging.path()).relativeFilePath(absolute);
-                    require(index >= 0 && !safeArchiveName(relative).isEmpty() && normalizedPath(absolute).startsWith(normalizedPath(staging.path()) + QChar('/')) && roots.contains(relative.section(QChar('/'), 0, 0)), QStringLiteral("手机返回了越界或不安全路径"));
-                    qint64 size = 0; qint32 block = -1, length = 0; QByteArray bytes;
-                    if (type == 0) { size = channel.number<qint64>(); block = channel.number<qint32>(); length = channel.number<qint32>(); require(size >= 0 && size <= 256LL * 1024 * 1024 * 1024 && block >= 0 && qint64(block) * blockSize <= size && length >= 0 && length == qMin(blockSize, size - qint64(block) * blockSize) && (length > 0 || (size == 0 && block == 0)), QStringLiteral("手机文件块尺寸无效")); bytes = channel.read(length); }
-                    std::lock_guard guard(write); require(files.size() < 200000 || files.contains(index), QStringLiteral("HFX 文件数超限"));
-                    if (!files.contains(index)) {
-                        require(!names.contains(normalizedPath(absolute)), QStringLiteral("手机发送了重复目标路径")); names.insert(normalizedPath(absolute), index);
-                        FileState state; state.path = absolute; state.total = size; state.modified = modified; state.directory = type == 1; files.insert(index, state); total += size;
-                        const QStorageInfo storage(staging.path()); require(storage.bytesAvailable() < 0 || size <= storage.bytesAvailable(), QStringLiteral("磁盘空间不足"));
-                        require(QDir().mkpath(type == 1 ? absolute : QFileInfo(absolute).absolutePath()), QStringLiteral("不能创建 HFX 目录"));
-                        if (type == 0) { QFile output(absolute); require(output.open(QIODevice::ReadWrite | QIODevice::NewOnly) && output.resize(size), QStringLiteral("不能创建 HFX 文件")); }
-                    }
-                    auto &state = files[index]; require(state.path == absolute && state.total == size && state.directory == (type == 1) && state.modified == modified, QStringLiteral("手机文件编号、大小或类型不一致"));
-                    require(!state.blocks.contains(block), QStringLiteral("手机发送了重复文件块")); state.blocks.insert(block);
-                    if (type == 0) { QFile output(absolute); require(output.open(QIODevice::ReadWrite) && output.seek(qint64(block) * blockSize) && output.write(bytes) == length && output.flush(), QStringLiteral("HFX 写入失败")); }
-                    done += length; if (progress) progress(done, total, relative);
+            Wire channel{socket, cancel, aborted, state_->options.idleTimeoutMs}; channel.activity = activity.get(); channel.firstReadTimeout = state_->options.startTimeoutMs;
+            for (;;) {
+                cancelled(cancel); require(!aborted->load(), QStringLiteral("其它 HFX 通道失败")); const qint16 type = channel.number<qint16>(); if (type == 3) break; require(type == 0 || type == 1, QStringLiteral("手机传输中断或发送了无效帧"));
+                const qint32 index = channel.number<qint32>(); const QString raw = QDir::fromNativeSeparators(channel.text()); const qint64 modified = channel.number<qint64>();
+                const QString absolute = QDir::cleanPath(QFileInfo(raw).isAbsolute() ? raw : QDir(staging.path()).filePath(raw)); const QString relative = QDir(staging.path()).relativeFilePath(absolute);
+                require(index >= 0 && !safeArchiveName(relative).isEmpty() && normalizedPath(absolute).startsWith(normalizedPath(staging.path()) + QChar('/')) && roots.contains(relative.section(QChar('/'), 0, 0)), QStringLiteral("手机返回了越界或不安全路径"));
+                qint64 size = 0; qint32 block = -1, length = 0; QByteArray bytes;
+                if (type == 0) { size = channel.number<qint64>(); block = channel.number<qint32>(); length = channel.number<qint32>(); require(size >= 0 && size <= 256LL * 1024 * 1024 * 1024 && block >= 0 && qint64(block) * blockSize <= size && length >= 0 && length == qMin(blockSize, size - qint64(block) * blockSize) && (length > 0 || (size == 0 && block == 0)), QStringLiteral("手机文件块尺寸无效")); bytes = channel.read(length); }
+                std::lock_guard guard(write); require(files.size() < 200000 || files.contains(index), QStringLiteral("HFX 文件数超限"));
+                if (!files.contains(index)) {
+                    require(!names.contains(normalizedPath(absolute)), QStringLiteral("手机发送了重复目标路径")); names.insert(normalizedPath(absolute), index);
+                    FileState state; state.path = absolute; state.total = size; state.modified = modified; state.directory = type == 1; files.insert(index, state); total += size;
+                    const QStorageInfo storage(staging.path()); require(storage.bytesAvailable() < 0 || size <= storage.bytesAvailable(), QStringLiteral("磁盘空间不足"));
+                    require(QDir().mkpath(type == 1 ? absolute : QFileInfo(absolute).absolutePath()), QStringLiteral("不能创建 HFX 目录"));
+                    if (type == 0) { QFile output(absolute); require(output.open(QIODevice::ReadWrite | QIODevice::NewOnly) && output.resize(size), QStringLiteral("不能创建 HFX 文件")); }
                 }
-            } catch (...) { aborted->store(true); throw; }
-        });
+                auto &state = files[index]; require(state.path == absolute && state.total == size && state.directory == (type == 1) && state.modified == modified, QStringLiteral("手机文件编号、大小或类型不一致"));
+                require(!state.blocks.contains(block), QStringLiteral("手机发送了重复文件块")); state.blocks.insert(block);
+                if (type == 0) { QFile output(absolute); require(output.open(QIODevice::ReadWrite) && output.seek(qint64(block) * blockSize) && output.write(bytes) == length && output.flush(), QStringLiteral("HFX 写入失败")); }
+                done += length; activity->fetch_add(1); if (progress) progress(done, total, relative);
+            }
+        }, aborted);
         tasks.wait();
         for (const auto &file : files) { if (file.directory) continue; require(file.blocks.size() == qMax<qint64>(1, (file.total + blockSize - 1) / blockSize), QStringLiteral("手机文件块不完整")); QFile output(file.path); if (output.open(QIODevice::ReadWrite)) output.setFileTime(QDateTime::fromMSecsSinceEpoch(file.modified), QFileDevice::FileModificationTime); }
         for (const QString &root : roots) require(QFileInfo::exists(staging.filePath(root)), QStringLiteral("手机未发送所选文件：") + root);

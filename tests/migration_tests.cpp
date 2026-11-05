@@ -1409,6 +1409,7 @@ private slots:
     void hfxLoopbackHandshakeAndListing() {
         const auto owner = std::make_shared<HfxSession>(); HfxSession &session = *owner; HfxOptions options; options.port = 0; options.interfaces = {{QStringLiteral("loopback"), QHostAddress::LocalHost}}; auto cancel = std::make_shared<std::atomic_bool>(false); std::promise<quint16> listening; auto port = listening.get_future();
         auto task = qtAsync([&] { return session.connect(options, cancel, [&](quint16 value) { listening.set_value(value); }); });
+        const auto stopConnection = qScopeGuard([&] { cancel->store(true); });
         QVERIFY(port.wait_for(std::chrono::seconds(3)) == std::future_status::ready); QTcpSocket control; control.connectToHost(QHostAddress::LocalHost, port.get()); QVERIFY(control.waitForConnected(3000));
         auto read = [&](qsizetype count) { QByteArray bytes; while (bytes.size() < count) { if (!control.bytesAvailable() && !control.waitForReadyRead(3000)) break; bytes += control.read(count - bytes.size()); } return bytes; };
         control.write(QByteArray("HFXC") + network<qint32>(300)); control.waitForBytesWritten(3000); QCOMPARE(read(1), QByteArray(1, char(1))); QCOMPARE(read(4), network<qint32>(1)); const QByteArray length = read(2); QCOMPARE(length.size(), 2); read(qFromBigEndian<quint16>(length.constData())); QCOMPARE(read(1), QByteArray(1, char(4))); read(4); QCOMPARE(read(1), QByteArray(1, '\0'));
@@ -1494,6 +1495,128 @@ private slots:
         session.close(); QVERIFY(!session.connected());
         QVERIFY(!findHfxSession(endpoint)); QVERIFY(listPhone(endpoint, QStringLiteral("/sdcard"), false).error.contains(QStringLiteral("HFX"))); QVERIFY(!transferEntries({local}, phoneLocation, true).ok); QVERIFY(QFileInfo::exists(source));
         QVERIFY(phoneCommand(endpoint, QStringLiteral("echo unexpected")).error.contains(QStringLiteral("HFX"))); QVERIFY(!adbSyncPush(endpoint, source, QStringLiteral("/sdcard/push.bin")).ok);
+    }
+    void hfxRejectsInvalidTimeouts() {
+        HfxSession session; HfxOptions options; options.interfaces = {{QStringLiteral("loopback"), QHostAddress::LocalHost}};
+        bool listening = false;
+        options.idleTimeoutMs = 0; QVERIFY(!session.connect(options, {}, [&](quint16) { listening = true; }).ok);
+        options.idleTimeoutMs = 1000; options.startTimeoutMs = 500; QVERIFY(!session.connect(options, {}, [&](quint16) { listening = true; }).ok);
+        QVERIFY(!listening); QVERIFY(!session.connected());
+    }
+    void hfxLongRunningTransfersUseIdleTimeouts() {
+        const auto owner = std::make_shared<HfxSession>(); HfxSession &session = *owner; HfxOptions options; options.port = 0; options.interfaces = {{QStringLiteral("loopback"), QHostAddress::LocalHost}};
+        options.idleTimeoutMs = 800; options.startTimeoutMs = 2000;
+        auto cancel = std::make_shared<std::atomic_bool>(false); std::promise<quint16> listening; auto port = listening.get_future();
+        auto task = qtAsync([&] { return session.connect(options, cancel, [&](quint16 value) { listening.set_value(value); }); });
+        const auto stopConnection = qScopeGuard([&] { cancel->store(true); });
+        QVERIFY(port.wait_for(std::chrono::seconds(3)) == std::future_status::ready); QTcpSocket control; control.connectToHost(QHostAddress::LocalHost, port.get()); QVERIFY(control.waitForConnected(3000));
+        auto read = [&](qsizetype count) { QByteArray bytes; while (bytes.size() < count) { if (!control.bytesAvailable() && !control.waitForReadyRead(3000)) break; bytes += control.read(count - bytes.size()); } return bytes; };
+        control.write(QByteArray("HFXC") + network<qint32>(300)); control.waitForBytesWritten(3000); QCOMPARE(read(1), QByteArray(1, char(1))); QCOMPARE(read(4), network<qint32>(1)); const QByteArray length = read(2); QCOMPARE(length.size(), 2); read(qFromBigEndian<quint16>(length.constData())); QCOMPARE(read(1), QByteArray(1, char(4))); read(4); QCOMPARE(read(1), QByteArray(1, '\0'));
+        control.write(QByteArray(1, char(1)) + utf(QStringLiteral("loopback"))); control.waitForBytesWritten(3000); QTcpSocket channel; channel.connectToHost(QHostAddress::LocalHost, control.peerPort()); QVERIFY(channel.waitForConnected(3000)); QCOMPARE(read(1), QByteArray(1, char(1))); QCOMPARE(read(4), network<qint32>(64)); control.write(QByteArray(1, char(1))); control.waitForBytesWritten(3000); QCOMPARE(read(1), QByteArray(1, char(1))); control.write(network<qint32>(0) + utf(QStringLiteral("/sdcard"))); control.waitForBytesWritten(3000);
+        QVERIFY(task.wait_for(std::chrono::seconds(3)) == std::future_status::ready); QVERIFY2(task.get().ok, "loopback handshake");
+        auto readText = [&] { const QByteArray count = read(2); return count.size() == 2 ? QString::fromUtf8(read(qFromBigEndian<quint16>(count.constData()))) : QString(); };
+        auto readChannel = [&](qsizetype count) { QByteArray bytes; while (bytes.size() < count) { if (!channel.bytesAvailable() && !channel.waitForReadyRead(3000)) break; bytes += channel.read(count - bytes.size()); } return bytes; };
+        QTemporaryDir files; const QByteArray contents(8 * 1024 * 1024 + 7, 'z'); const QString source = files.filePath(QStringLiteral("slow.bin")); QVERIFY(writeFile(source, contents));
+        // Delay the sender itself so Qt's receive buffering cannot hide the long transfer.
+        auto push = qtAsync([&] { return session.push({source}, QStringLiteral("/sdcard"), cancel, [](qint64, qint64, const QString &) { QThread::msleep(300); }); });
+        const auto stopPushTransfer = qScopeGuard([&] { cancel->store(true); });
+        QCOMPARE(read(2), network<qint16>(1)); QCOMPARE(readText(), QStringLiteral("/sdcard")); control.write(network<qint32>(0)); control.waitForBytesWritten(3000);
+        QCOMPARE(read(2), network<qint16>(10));
+        const int blocks = int((contents.size() + 1024 * 1024 - 1) / (1024 * 1024));
+        for (int block = 0; block < blocks; ++block) {
+            QCOMPARE(readChannel(2), network<qint16>(0)); QCOMPARE(readChannel(4), network<qint32>(0)); const QByteArray nameLength = readChannel(2); QCOMPARE(nameLength.size(), 2); QCOMPARE(QString::fromUtf8(readChannel(qFromBigEndian<quint16>(nameLength.constData()))), QStringLiteral("/sdcard/slow.bin"));
+            readChannel(8); QCOMPARE(readChannel(8), network<qint64>(contents.size())); QCOMPARE(readChannel(4), network<qint32>(block)); const QByteArray blockLength = readChannel(4); const int count = qFromBigEndian<qint32>(blockLength.constData()); QCOMPARE(count, int(qMin<qsizetype>(1024 * 1024, contents.size() - qsizetype(block) * 1024 * 1024))); QCOMPARE(readChannel(count), contents.mid(qsizetype(block) * 1024 * 1024, count));
+        }
+        QCOMPARE(readChannel(2), network<qint16>(3));
+        control.write(QByteArray(1, char(1))); control.waitForBytesWritten(3000); QCOMPARE(read(1), QByteArray(1, char(1)));
+        QVERIFY(push.wait_for(std::chrono::seconds(5)) == std::future_status::ready); const Result pushed = push.get(); QVERIFY2(pushed.ok, qPrintable(pushed.error)); QVERIFY(session.connected());
+        // Pull: the phone needs longer than one idle window to list or find the first entry.
+        const QString destination = files.filePath(QStringLiteral("received")); QVERIFY(QDir().mkpath(destination));
+        auto pull = qtAsync([&] { return session.pull({QStringLiteral("/sdcard/pulled.bin")}, QStringLiteral("/sdcard"), destination, cancel); });
+        const auto stopPullTransfer = qScopeGuard([&] { cancel->store(true); });
+        QCOMPARE(read(2), network<qint16>(11)); QCOMPARE(read(4), network<qint32>(1)); QCOMPARE(readText(), QStringLiteral("/sdcard/pulled.bin")); const QString target = readText() + QStringLiteral("pulled.bin"); QCOMPARE(read(4), network<qint32>(1)); QCOMPARE(readText(), QStringLiteral("/sdcard/"));
+        const QByteArray received(1024 + 7, 'p');
+        QTest::qWait(1200); channel.write(network<qint16>(0) + network<qint32>(0) + utf(target) + network<qint64>(1200) + network<qint64>(received.size()) + network<qint32>(0) + network<qint32>(received.size()) + received + network<qint16>(3)); while (channel.bytesToWrite()) QVERIFY(channel.waitForBytesWritten(3000));
+        QCOMPARE(read(1), QByteArray(1, char(1))); control.write(QByteArray(1, char(1))); control.waitForBytesWritten(3000);
+        QVERIFY(pull.wait_for(std::chrono::seconds(5)) == std::future_status::ready); const Result pulled = pull.get(); QVERIFY2(pulled.ok, qPrintable(pulled.error)); QVERIFY(session.connected()); QCOMPARE(readFile(QDir(destination).filePath(QStringLiteral("pulled.bin"))), received);
+        // Losing the control channel must stop upload workers immediately, not at their idle deadline.
+        auto brokenPush = qtAsync([&] { return session.push({source}, QStringLiteral("/sdcard"), cancel, [](qint64, qint64, const QString &) { QThread::msleep(300); }); });
+        const auto stopPush = qScopeGuard([&] { cancel->store(true); });
+        QCOMPARE(read(2), network<qint16>(1)); QCOMPARE(readText(), QStringLiteral("/sdcard")); control.write(network<qint32>(0)); control.waitForBytesWritten(3000); QCOMPARE(read(2), network<qint16>(10));
+        control.abort(); QVERIFY(brokenPush.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+        const Result broken = brokenPush.get(); QVERIFY(!broken.ok); QVERIFY(broken.error.contains(QStringLiteral("断开"))); QVERIFY(!session.connected()); QCOMPARE(readFile(source), contents);
+    }
+    void hfxMultiLanePullActivityAndFailures_data() {
+        QTest::addColumn<QString>("scenario");
+        QTest::newRow("active-other-lane") << QStringLiteral("active");
+        QTest::newRow("all-lanes-stalled") << QStringLiteral("stall");
+        QTest::newRow("enumeration-stalled") << QStringLiteral("enumeration-stall");
+        QTest::newRow("cancel-partial-folder") << QStringLiteral("cancel");
+        QTest::newRow("disconnected-data-lane") << QStringLiteral("disconnect");
+    }
+    void hfxMultiLanePullActivityAndFailures() {
+        QFETCH(QString, scenario);
+        HfxSession session; HfxOptions options; options.port = 0;
+        options.interfaces = {{QStringLiteral("first"), QHostAddress::LocalHost}, {QStringLiteral("second"), QHostAddress::LocalHost}};
+        options.idleTimeoutMs = 800; options.startTimeoutMs = 2000;
+        auto cancel = std::make_shared<std::atomic_bool>(false); std::promise<quint16> listening; auto port = listening.get_future();
+        auto connection = qtAsync([&] { return session.connect(options, cancel, [&](quint16 value) { listening.set_value(value); }); });
+        const auto stopConnection = qScopeGuard([&] { cancel->store(true); });
+        QVERIFY(port.wait_for(std::chrono::seconds(3)) == std::future_status::ready);
+        QTcpSocket control, first, second; control.connectToHost(QHostAddress::LocalHost, port.get()); QVERIFY(control.waitForConnected(3000));
+        auto read = [&](qsizetype count) { QByteArray bytes; while (bytes.size() < count) { if (!control.bytesAvailable() && !control.waitForReadyRead(3000)) break; bytes += control.read(count - bytes.size()); } return bytes; };
+        auto readText = [&] { const QByteArray length = read(2); return length.size() == 2 ? QString::fromUtf8(read(qFromBigEndian<quint16>(length.constData()))) : QString(); };
+        auto flush = [](QTcpSocket &socket) { while (socket.bytesToWrite()) if (!socket.waitForBytesWritten(3000)) return false; return true; };
+        control.write(QByteArray("HFXC") + network<qint32>(300)); QVERIFY(flush(control)); QCOMPARE(read(1), QByteArray(1, char(1))); QCOMPARE(read(4), network<qint32>(2));
+        for (const QString &name : {QStringLiteral("first"), QStringLiteral("second")}) { QCOMPARE(readText(), name); QCOMPARE(read(1), QByteArray(1, char(4))); read(4); QCOMPARE(read(1), QByteArray(1, '\0')); }
+        for (QTcpSocket *socket : {&first, &second}) {
+            control.write(QByteArray(1, char(1)) + utf(QStringLiteral("loopback"))); QVERIFY(flush(control));
+            socket->connectToHost(QHostAddress::LocalHost, control.peerPort()); QVERIFY(socket->waitForConnected(3000)); QCOMPARE(read(1), QByteArray(1, char(1)));
+        }
+        QCOMPARE(read(4), network<qint32>(64)); control.write(QByteArray(1, char(1))); QVERIFY(flush(control)); QCOMPARE(read(1), QByteArray(1, char(1)));
+        control.write(network<qint32>(0) + utf(QStringLiteral("/sdcard"))); QVERIFY(flush(control));
+        QVERIFY(connection.wait_for(std::chrono::seconds(3)) == std::future_status::ready); QVERIFY(connection.get().ok);
+        QTemporaryDir destination; QVERIFY(destination.isValid());
+        auto pull = qtAsync([&] { return session.pull({QStringLiteral("/sdcard/tree")}, QStringLiteral("/sdcard"), destination.path(), cancel); });
+        const auto stopPull = qScopeGuard([&] { cancel->store(true); });
+        QCOMPARE(read(2), network<qint16>(11)); QCOMPARE(read(4), network<qint32>(1)); QCOMPARE(readText(), QStringLiteral("/sdcard/tree"));
+        const QString staging = readText(); QCOMPARE(read(4), network<qint32>(1)); QCOMPARE(readText(), QStringLiteral("/sdcard/"));
+        if (scenario == QStringLiteral("enumeration-stall")) {
+            QElapsedTimer elapsed; elapsed.start();
+            QVERIFY(pull.wait_for(std::chrono::seconds(4)) == std::future_status::ready);
+            const Result result = pull.get(); QVERIFY(!result.ok); QVERIFY(result.error.contains(QStringLiteral("超时"))); QVERIFY(!session.connected());
+            QVERIFY(elapsed.elapsed() >= 1600); QVERIFY(QDir(destination.path()).entryList(QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot).isEmpty());
+            return;
+        }
+        auto frame = [&](int index, const QString &name, const QByteArray &bytes, qint64 total) {
+            return network<qint16>(0) + network<qint32>(index) + utf(staging + name) + network<qint64>(1200)
+                + network<qint64>(total) + network<qint32>(0) + network<qint32>(qint32(bytes.size())) + bytes;
+        };
+        if (scenario == QStringLiteral("active")) QTest::qWait(1200);
+        second.write(network<qint16>(1) + network<qint32>(0) + utf(staging + QStringLiteral("tree")) + network<qint64>(1200)); QVERIFY(flush(second));
+        if (scenario == QStringLiteral("active")) {
+            const QByteArray contents(1024 + 7, 'f');
+            // The second lane has already started, then stays idle beyond both timeout windows.
+            for (int index = 1; index <= 12; ++index) {
+                first.write(frame(index, QStringLiteral("tree/nested/%1.bin").arg(index), contents, contents.size())); QVERIFY(flush(first)); QTest::qWait(250);
+            }
+            first.write(network<qint16>(3)); second.write(network<qint16>(3)); QVERIFY(flush(first)); QVERIFY(flush(second));
+            QCOMPARE(read(1), QByteArray(1, char(1))); control.write(QByteArray(1, char(1))); QVERIFY(flush(control));
+            QVERIFY(pull.wait_for(std::chrono::seconds(3)) == std::future_status::ready);
+            const Result result = pull.get(); QVERIFY2(result.ok, qPrintable(result.error)); QVERIFY(session.connected());
+            for (int index = 1; index <= 12; ++index) QCOMPARE(readFile(destination.filePath(QStringLiteral("tree/nested/%1.bin").arg(index))), contents);
+        } else {
+            first.write(frame(1, QStringLiteral("tree/partial.bin"), QByteArray(1024 * 1024, 'p'), 2 * 1024 * 1024)); QVERIFY(flush(first)); QTest::qWait(100);
+            QElapsedTimer elapsed; elapsed.start();
+            if (scenario == QStringLiteral("cancel")) cancel->store(true);
+            if (scenario == QStringLiteral("disconnect")) second.abort();
+            QVERIFY(pull.wait_for(std::chrono::seconds(3)) == std::future_status::ready);
+            const Result result = pull.get(); QVERIFY(!result.ok); QVERIFY(!session.connected());
+            if (scenario == QStringLiteral("stall")) { QVERIFY(result.error.contains(QStringLiteral("超时"))); QVERIFY(elapsed.elapsed() >= 500); }
+            else { QVERIFY(elapsed.elapsed() < 1500); QVERIFY(result.error.contains(scenario == QStringLiteral("cancel") ? QStringLiteral("取消") : QStringLiteral("断开"))); }
+            QVERIFY(!QFileInfo::exists(destination.filePath(QStringLiteral("tree"))));
+        }
+        QCOMPARE(QDir(destination.path()).entryList({QStringLiteral(".twinfile-hfx-*")}, QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot).size(), 0);
     }
     void comparisonDialogsAndThemesRenderWithoutUserSettings() {
         QTemporaryDir root; const QByteArray previous = qgetenv("TWINFILE_SETTINGS"); qputenv("TWINFILE_SETTINGS", root.filePath(QStringLiteral("settings.json")).toUtf8());

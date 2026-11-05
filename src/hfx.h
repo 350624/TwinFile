@@ -10,6 +10,8 @@ struct HfxOptions {
     QString serial;
     QList<QPair<QString, QHostAddress>> interfaces;
     quint16 port = 5740;
+    int idleTimeoutMs = 60000;
+    int startTimeoutMs = 180000;
 };
 
 class HfxSession {
