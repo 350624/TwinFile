@@ -164,7 +164,7 @@ Pane::Pane(QWidget *parent) : QFrame(parent) {
     refresh(false);
 }
 
-Pane::~Pane() { if (searchCancel_) searchCancel_->store(true); if (thumbnailCancel_) thumbnailCancel_->store(true); }
+Pane::~Pane() { if (searchCancel_) searchCancel_->store(true); cancelThumbnails(); }
 Location Pane::location() const { return states_[tab_].location; }
 
 QList<Entry> Pane::selected() const {
@@ -210,10 +210,9 @@ void Pane::reload(bool preserve, FileView::Transition transition) {
     if (!view_->isVisible() || !view_->animationsEnabled()) transition = FileView::Transition::None;
     refresh_->setBusy(true);
     if (searchCancel_) searchCancel_->store(true);
-    if (thumbnailCancel_) thumbnailCancel_->store(true);
-    thumbnailCancel_ = std::make_shared<std::atomic_bool>(false);
+    cancelThumbnails(); thumbnailReady_ = false; thumbnailFirst_ = -1; thumbnailBackwards_ = false;
     if (preserve) saveView();
-    ++generation_; thumbnailsRequested_.clear(); thumbnailsFailed_.clear(); thumbnailAttempts_.clear(); error_.clear();
+    ++generation_; thumbnailsFailed_.clear(); thumbnailAttempts_.clear(); error_.clear();
     const quint64 generation = generation_;
     const Location current = location();
     path_->setText(current.display());
@@ -236,7 +235,7 @@ void Pane::reload(bool preserve, FileView::Transition transition) {
         error_ = result.error;
         QList<Entry> entries = result.entries;
         if (current.source == Source::Drive) entries = devices_ + entries;
-        apply(entries, true);
+        thumbnailReady_ = true; apply(entries, true);
         view_->startTransition(transition);
     });
     watcher->setFuture(QtConcurrent::run([current, hidden, sort, descending] {
@@ -425,34 +424,56 @@ bool Pane::eventFilter(QObject *object, QEvent *event) {
         if (mouse->button() == Qt::LeftButton && mouse->modifiers() == Qt::NoModifier) { deselect(); return true; }
     }
     if (view_ && object == view_->viewport() && (event->type() == QEvent::Resize || event->type() == QEvent::Show)) scheduleThumbnails();
+    if (view_ && object == view_->viewport() && event->type() == QEvent::Hide) cancelThumbnails();
     return QFrame::eventFilter(object, event);
 }
 
 void Pane::scheduleThumbnails() { if (!thumbnailTimer_.isActive()) thumbnailTimer_.start(); }
+void Pane::cancelThumbnails() {
+    thumbnailTimer_.stop();
+    for (const auto &cancel : thumbnailsRequested_) cancel->store(true);
+    thumbnailsRequested_.clear();
+}
 void Pane::loadThumbnails() {
-    if (!view_->isVisible()) return;
+    if (!thumbnailReady_ || !view_->isVisible() || !model_->rowCount()) return;
     int first = view_->indexAt(QPoint(4, 4)).row(); if (first < 0) first = 0;
     const int rowHeight = qMax(1, view_->sizeHintForRow(first));
-    const int limit = qMin(model_->rowCount(), first + view_->viewport()->height() / rowHeight + 2);
-    model_->reserveVisibleThumbnails(limit - first + 4);
-    for (int row = first; row < limit; ++row) {
+    if (thumbnailFirst_ >= 0 && first != thumbnailFirst_) thumbnailBackwards_ = first < thumbnailFirst_;
+    thumbnailFirst_ = first;
+    const auto rows = thumbnailLoadOrder(first, view_->viewport()->height() / rowHeight + 2, model_->rowCount(), thumbnailBackwards_);
+    model_->reserveVisibleThumbnails(int(rows.size()) + 4);
+    QSet<QString> wanted;
+    for (int row : rows) wanted.insert(model_->entry(row).key());
+    for (auto request = thumbnailsRequested_.begin(); request != thumbnailsRequested_.end();) {
+        if (!wanted.contains(request.key())) { request.value()->store(true); request = thumbnailsRequested_.erase(request); }
+        else ++request;
+    }
+    bool visiblePending = false;
+    const int visibleEnd = qMin(model_->rowCount(), first + view_->viewport()->height() / rowHeight + 2);
+    for (int row : rows) {
         const Entry entry = model_->entry(row);
         const QString key = entry.key();
-        if (!supportsThumbnail(entry) || thumbnailsRequested_.contains(key) || thumbnailsFailed_.contains(key) || !model_->thumbnail(row).isNull()) continue;
+        if (!supportsThumbnail(entry) || thumbnailsFailed_.contains(key) || !model_->thumbnail(row).isNull()) continue;
+        const bool visible = row >= first && row < visibleEnd;
+        if (thumbnailsRequested_.contains(key)) { if (visible) visiblePending = true; continue; }
         const QImage cached = cachedThumbnail(entry);
         if (!cached.isNull()) { model_->setThumbnail(key, cached); continue; }
-        if (thumbnailJobs_ >= 4) continue;
-        thumbnailsRequested_.insert(key); ++thumbnailAttempts_[key]; ++thumbnailJobs_;
-        const quint64 generation = generation_; const auto cancel = thumbnailCancel_;
+        // Leave capacity for visible work and keep speculative decodes bounded.
+        if (!visible && visiblePending) continue;
+        if (visible) visiblePending = true;
+        if (thumbnailJobs_ >= (visible ? 4 : 2)) continue;
+        const auto cancel = std::make_shared<std::atomic_bool>(false);
+        thumbnailsRequested_.insert(key, cancel); ++thumbnailJobs_;
+        const quint64 generation = generation_;
         auto *watcher = new QFutureWatcher<QImage>(this);
-        connect(watcher, &QFutureWatcher<QImage>::finished, this, [this, watcher, generation, entry, key, cancel] {
+        connect(watcher, &QFutureWatcher<QImage>::finished, this, [this, watcher, generation, key, cancel] {
             const QImage image = watcher->result(); watcher->deleteLater(); --thumbnailJobs_;
             if (generation == generation_) {
-                thumbnailsRequested_.remove(key);
-                if (!image.isNull()) model_->setThumbnail(key, image);
-                else if (!cancel || !cancel->load()) {
+                if (thumbnailsRequested_.value(key) == cancel) thumbnailsRequested_.remove(key);
+                if (!cancel->load() && !image.isNull()) model_->setThumbnail(key, image);
+                else if (!cancel->load()) {
                     thumbnailsFailed_.insert(key);
-                    if (thumbnailAttempts_.value(key) < 2) QTimer::singleShot(1500, this, [this, generation, key] { if (generation == generation_) { thumbnailsFailed_.remove(key); scheduleThumbnails(); } });
+                    if (++thumbnailAttempts_[key] < 2) QTimer::singleShot(1500, this, [this, generation, key] { if (generation == generation_) { thumbnailsFailed_.remove(key); scheduleThumbnails(); } });
                 }
             }
             scheduleThumbnails();
@@ -465,9 +486,8 @@ void Pane::search(const QString &pattern) {
     if (location().source == Source::Drive || pattern.isEmpty()) return;
     view_->stopTransition(); refresh_->setBusy(false);
     if (searchCancel_) searchCancel_->store(true);
-    if (thumbnailCancel_) thumbnailCancel_->store(true);
-    thumbnailCancel_ = std::make_shared<std::atomic_bool>(false);
-    thumbnailsRequested_.clear(); thumbnailsFailed_.clear(); thumbnailAttempts_.clear();
+    cancelThumbnails(); thumbnailReady_ = false; thumbnailFirst_ = -1; thumbnailBackwards_ = false;
+    thumbnailsFailed_.clear(); thumbnailAttempts_.clear();
     searchCancel_ = std::make_shared<std::atomic_bool>(false);
     const auto cancel = searchCancel_; const Location source = location(); const bool hidden = hidden_;
     const quint64 generation = ++generation_;
@@ -476,7 +496,7 @@ void Pane::search(const QString &pattern) {
     connect(watcher, &QFutureWatcher<Listing>::finished, this, [this, watcher, generation] {
         const Listing result = watcher->result(); watcher->deleteLater();
         if (generation != generation_) return;
-        error_ = result.error; apply(result.entries, false);
+        error_ = result.error; thumbnailReady_ = true; apply(result.entries, false);
     });
     watcher->setFuture(QtConcurrent::run([source, pattern, hidden, cancel] { return searchLocation(source, pattern, hidden, cancel); }));
 }

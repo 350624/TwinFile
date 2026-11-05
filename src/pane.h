@@ -69,6 +69,7 @@ private:
     void openIndex(const QModelIndex &index);
     void scheduleThumbnails();
     void loadThumbnails();
+    void cancelThumbnails();
     bool eventFilter(QObject *object, QEvent *event) override;
     QTabBar *tabs_ = nullptr;
     QLineEdit *path_ = nullptr;
@@ -87,11 +88,13 @@ private:
     QString sort_ = QStringLiteral("name");
     QString error_;
     QTimer thumbnailTimer_;
-    QSet<QString> thumbnailsRequested_;
+    QHash<QString, Cancellation> thumbnailsRequested_;
     QSet<QString> thumbnailsFailed_;
     QHash<QString, int> thumbnailAttempts_;
     int thumbnailJobs_ = 0;
-    Cancellation thumbnailCancel_;
+    int thumbnailFirst_ = -1;
+    bool thumbnailBackwards_ = false;
+    bool thumbnailReady_ = false;
     Cancellation searchCancel_;
     QMap<QString, Location> archiveParents_;
 };

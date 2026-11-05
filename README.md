@@ -1,8 +1,8 @@
-# TwinFile 3.1.38 · C++ 原生版
+# TwinFile 3.1.39 · C++ 原生版
 
 修复引用 Android 系统色板的 APK 图标显示为通用占位图的问题，自适应图标的背景、矢量填充和描边均支持系统颜色引用。离线使用 Android 默认色板，颜色可能与手机壁纸配色不同。
 
-缩略图内存缓存按实际大小和最近使用情况淘汰，较高窗口自动保留足够的一屏；栏位淡入完成后释放绘图缓存。助手上次已收起时按需初始化，再次收起仍保留对话和草稿；已启用的外部插件照常启动。
+图片和 APK 图标优先加载可见项，再按滚动方向预加载约一屏，反向保留少量缓冲；快速滚动、切换目录和隐藏栏位会取消过期任务，不扫描整个目录。缩略图内存缓存按实际大小和最近使用情况淘汰，并为附近预加载区域预留有界容量；栏位淡入完成后释放绘图缓存。助手上次已收起时按需初始化，再次收起仍保留对话和草稿；已启用的外部插件照常启动。
 
 HFX 多轨快传连接后直接接入主界面手机目录，电脑与手机之间的复制、移动、剪切和粘贴使用已连接的 USB / WLAN 多轨通道。移动先复制并回读校验再删除来源，比复制增加一次回传；仅 WLAN 不需要 ADB 在线。手机内部与包内传输、重命名、编辑器覆盖回写仍需其它受支持通道。
 
@@ -20,8 +20,8 @@ TwinFile 是面向 Windows 的双栏文件管理与 Android 工具箱。本版�
 
 ## 运行和安装
 
-- 面向 Windows x64。[下载 3.1.38 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.38/TwinFile-3.1.38-Windows-x64-Setup.exe)或[独立直链下载器](https://github.com/350624/TwinFile/releases/download/v3.1.38/TwinFile-Downloader-3.1.38-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
-- 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；独立下载器 `dist/TwinFileDownloader-3.1.38/TwinFileDownloader.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.38）。这些是构建后的路径，不是仓库已包含的文件。
+- 面向 Windows x64。[下载 3.1.39 安装包](https://github.com/350624/TwinFile/releases/download/v3.1.39/TwinFile-3.1.39-Windows-x64-Setup.exe)或[独立直链下载器](https://github.com/350624/TwinFile/releases/download/v3.1.39/TwinFile-Downloader-3.1.39-Windows-x64-Setup.exe)，核对同页 `SHA256SUMS.txt` 后按向导安装。GitHub 的 Source code 不是安装器；也可按[构建说明](docs/BUILD.md)自行编译。
+- 构建产物：便携版 `dist/TwinFile/TwinFile.exe`；独立下载器 `dist/TwinFileDownloader-3.1.39/TwinFileDownloader.exe`；安装器 `releases/TwinFile-3.1-Cpp-Setup.exe`（版本 3.1.39）。这些是构建后的路径，不是仓库已包含的文件。
 - 完整发布包不需要安装 Python、Qt SDK 或编译器。手机需开启 USB 调试并授权电脑；HFX 需经用户确认安装配套手机端。源码编译与完整工具包的准备步骤不同，详见[安装说明](docs/INSTALL.md)。
 - 新配置：`%APPDATA%/TwinFileNative/settings.json`。配置与旧版独立，菜单不再提供旧版设置/工作区导入入口。
 - 第一次使用：点选左栏目录，再点选右栏目标目录，回到源栏选择文件，按 `F5` 复制到另一栏；顶部“助手”打开可选 AI，未配置 API 不影响文件管理。

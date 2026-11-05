@@ -35,6 +35,8 @@
 #include <QMimeData>
 #include <QPainter>
 #include <QScrollBar>
+#include <QRunnable>
+#include <QSemaphore>
 #include <QScopeGuard>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -55,6 +57,22 @@ static bool writeFixture(const QString &path, const QByteArray &bytes = QByteArr
 
 static QByteArray contents(const QString &path) {
     QFile file(path); if (!file.open(QIODevice::ReadOnly)) return {}; return file.readAll();
+}
+
+static bool writeThumbnailFixtures(const QString &directory, int count) {
+    for (int row = 0; row < count; ++row) {
+        QImage image(128, 128, QImage::Format_ARGB32); image.fill(QColor::fromHsv(row * 13 % 360, 180, 220));
+        QByteArray bytes; QBuffer buffer(&bytes); buffer.open(QIODevice::WriteOnly);
+        if (!image.save(&buffer, "PNG")) return false;
+        const QString path = QDir(directory).filePath(QStringLiteral("%1.%2").arg(row, 3, 10, QChar('0')).arg(row % 2 ? QStringLiteral("apk") : QStringLiteral("png")));
+        if (row % 2) {
+            ZipWriter writer(path);
+            writer.addFile(QStringLiteral("AndroidManifest.xml"), QByteArray("<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\"><application android:icon=\"res/icon.png\"/></manifest>"));
+            writer.addFile(QStringLiteral("res/icon.png"), bytes); writer.close();
+            if (writer.status() != ZipWriter::NoError) return false;
+        } else if (!writeFixture(path, bytes)) return false;
+    }
+    return true;
 }
 
 static QByteArray resourceTableFixture(bool sparse = false, bool compact = false, bool offset16 = false) {
@@ -683,6 +701,95 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!pane.fileModel()->thumbnail(11).isNull(), 5000); QVERIFY(!changed.isEmpty());
         for (const auto &signal : changed) QCOMPARE(signal[0].value<QModelIndex>().row(), signal[1].value<QModelIndex>().row());
         const QImage icon = pane.fileModel()->thumbnail(0); QVERIFY(!icon.isNull()); pane.navigate({}); pane.navigate({Source::Local, directory.path(), {}, {}}); QTRY_COMPARE(pane.fileModel()->rowCount(), 12); QTRY_COMPARE(pane.fileModel()->thumbnail(0), icon);
+    }
+    void thumbnailPreloadOrder() {
+        QCOMPARE(thumbnailLoadOrder(0, 4, 20, false), (QList<int>{0, 1, 2, 3, 4, 5, 6, 7}));
+        QCOMPARE(thumbnailLoadOrder(8, 4, 20, false), (QList<int>{8, 9, 10, 11, 12, 13, 14, 15, 7, 6}));
+        QCOMPARE(thumbnailLoadOrder(8, 4, 20, true), (QList<int>{8, 9, 10, 11, 7, 6, 5, 4, 12, 13}));
+        QCOMPARE(thumbnailLoadOrder(-4, 4, 3, false), (QList<int>{0, 1, 2}));
+        QCOMPARE(thumbnailLoadOrder(40, 4, 20, true), (QList<int>{19, 18}));
+        QVERIFY(thumbnailLoadOrder(0, 0, 20, false).isEmpty());
+        QVERIFY(thumbnailLoadOrder(0, 4, 0, false).isEmpty());
+        const auto rows = thumbnailLoadOrder(500000, 10, 1000000, false);
+        QCOMPARE(rows.size(), 22); QCOMPARE(QSet<int>(rows.begin(), rows.end()).size(), rows.size());
+    }
+    void thumbnailsPreloadBeforeScroll_data() {
+        QTest::addColumn<QString>("theme"); QTest::addColumn<bool>("dark");
+        for (const QString &theme : {QStringLiteral("twinfile"), QStringLiteral("mt"), QStringLiteral("miuix")})
+            for (bool dark : {false, true}) QTest::newRow(qPrintable(theme + (dark ? QStringLiteral("-dark") : QStringLiteral("-light")))) << theme << dark;
+    }
+    void thumbnailsPreloadBeforeScroll() {
+        QFETCH(QString, theme); QFETCH(bool, dark);
+        const auto previousPalette = qApp->palette(); const auto previousStyle = qApp->styleSheet();
+        const auto previousMt = qApp->property("mtStyle"), previousMiuix = qApp->property("miuixStyle");
+        const auto restore = qScopeGuard([&] {
+            qApp->setPalette(previousPalette); qApp->setStyleSheet(previousStyle);
+            qApp->setProperty("mtStyle", previousMt); qApp->setProperty("miuixStyle", previousMiuix);
+        });
+        const auto palette = appearancePalette(theme, dark, QStringLiteral("#5b8def"));
+        qApp->setPalette(palette); qApp->setStyleSheet(appearanceStyleSheet(theme, dark, palette));
+        qApp->setProperty("mtStyle", theme == QStringLiteral("mt")); qApp->setProperty("miuixStyle", theme == QStringLiteral("miuix"));
+        QTemporaryDir directory; QVERIFY(writeThumbnailFixtures(directory.path(), 120));
+        Pane pane; pane.setAttribute(Qt::WA_DontShowOnScreen); pane.resize(500, 520); pane.setAnimationsEnabled(false);
+        pane.setMtStyle(theme == QStringLiteral("mt")); pane.setMiuixStyle(theme == QStringLiteral("miuix")); pane.show();
+        QSignalSpy changed(pane.fileModel(), &FileModel::dataChanged);
+        pane.navigate({Source::Local, directory.path(), {}, {}}); QTRY_COMPARE(pane.fileModel()->rowCount(), 120);
+        const int visibleCount = pane.view()->viewport()->height() / pane.view()->sizeHintForRow(0) + 2;
+        const auto rows = thumbnailLoadOrder(0, visibleCount, 120, false);
+        const auto loaded = [&](const QList<int> &wanted) {
+            for (int row : wanted) if (pane.fileModel()->thumbnail(row).isNull()) return false;
+            return true;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(loaded(rows), 10000);
+        QVERIFY(pane.view()->visualRect(pane.fileModel()->index(visibleCount)).top() >= pane.view()->viewport()->height());
+        QVERIFY(!pane.fileModel()->thumbnail(visibleCount).isNull()); QVERIFY(!pane.fileModel()->thumbnail(visibleCount + 1).isNull());
+        const int apkRow = visibleCount % 2 ? visibleCount : visibleCount + 1;
+        QVERIFY(isApk(pane.fileModel()->entry(apkRow).name));
+        int firstPreloaded = -1, lastVisible = -1;
+        for (int index = 0; index < changed.size(); ++index) {
+            const int row = changed[index][0].value<QModelIndex>().row();
+            if (row < visibleCount) lastVisible = index;
+            else if (firstPreloaded < 0) firstPreloaded = index;
+        }
+        QVERIFY(firstPreloaded > lastVisible);
+        QVERIFY(cachedThumbnail(pane.fileModel()->entry(119)).isNull());
+        qint64 bytes = 0; for (int row = 0; row < 120; ++row) bytes += pane.fileModel()->thumbnail(row).sizeInBytes();
+        QVERIFY(bytes <= qMax<qint64>(2 * 1024 * 1024, (rows.size() + 4) * 64 * 1024));
+        pane.view()->scrollTo(pane.fileModel()->index(60), QAbstractItemView::PositionAtTop);
+        QTRY_VERIFY_WITH_TIMEOUT(!pane.fileModel()->thumbnail(60).isNull(), 10000);
+        pane.view()->scrollTo(pane.fileModel()->index(40), QAbstractItemView::PositionAtTop);
+        const int first = pane.view()->indexAt(QPoint(4, 4)).row(); QCOMPARE(first, 40);
+        const auto backwards = thumbnailLoadOrder(first, visibleCount, 120, true);
+        QTRY_VERIFY_WITH_TIMEOUT(loaded(backwards), 10000);
+        QVERIFY(!pane.fileModel()->thumbnail(first - visibleCount).isNull());
+        const QString evidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT");
+        if (!evidence.isEmpty()) QVERIFY(pane.grab().save(QDir(evidence).filePath(QStringLiteral("native-thumbnail-preload-%1-%2.png").arg(theme, dark ? QStringLiteral("dark") : QStringLiteral("light")))));
+    }
+    void thumbnailPreloadCancelsObsoleteWork_data() {
+        QTest::addColumn<QString>("action");
+        for (const QString &action : {QStringLiteral("scroll"), QStringLiteral("navigate"), QStringLiteral("hide")}) QTest::newRow(qPrintable(action)) << action;
+    }
+    void thumbnailPreloadCancelsObsoleteWork() {
+        QFETCH(QString, action);
+        QVERIFY(thumbnailPool()->waitForDone(10000));
+        QSemaphore started, gate; bool released = false;
+        const auto release = qScopeGuard([&] { if (!released) gate.release(4); thumbnailPool()->waitForDone(); });
+        for (int worker = 0; worker < 4; ++worker) thumbnailPool()->start(QRunnable::create([&] { started.release(); gate.acquire(); }));
+        QVERIFY(started.tryAcquire(4, 5000));
+        QTemporaryDir original, destination; QVERIFY(writeThumbnailFixtures(original.path(), 120)); QVERIFY(writeThumbnailFixtures(destination.path(), 12));
+        Pane pane; pane.setAttribute(Qt::WA_DontShowOnScreen); pane.resize(500, 520); pane.setAnimationsEnabled(false); pane.show();
+        pane.navigate({Source::Local, original.path(), {}, {}}); QTRY_COMPARE(pane.fileModel()->rowCount(), 120); QTest::qWait(80);
+        const Entry abandoned = pane.fileModel()->entry(0);
+        if (action == QStringLiteral("scroll")) pane.view()->scrollTo(pane.fileModel()->index(60), QAbstractItemView::PositionAtTop);
+        else if (action == QStringLiteral("navigate")) { pane.navigate({Source::Local, destination.path(), {}, {}}); QTRY_COMPARE(pane.fileModel()->rowCount(), 12); }
+        else pane.hide();
+        QTest::qWait(80); gate.release(4); released = true;
+        QVERIFY(thumbnailPool()->waitForDone(5000)); QTest::qWait(40);
+        QVERIFY(cachedThumbnail(abandoned).isNull());
+        if (action == QStringLiteral("hide")) { QVERIFY(pane.fileModel()->thumbnail(0).isNull()); pane.show(); }
+        const int expected = action == QStringLiteral("scroll") ? 60 : 0;
+        QTRY_VERIFY_WITH_TIMEOUT(!pane.fileModel()->thumbnail(expected).isNull(), 10000);
+        QVERIFY(pane.error().isEmpty());
     }
     void bundledApkIconAndBinaryManifest() {
         const QString path = toolPath(QStringLiteral("hfx/HybridFileXfer-phone.apk"));

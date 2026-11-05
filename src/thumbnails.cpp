@@ -54,6 +54,24 @@ bool supportsThumbnail(const Entry &entry) {
     return isApk(entry.name) || isImage(entry.name) || QStringList{QStringLiteral("exe"), QStringLiteral("dll"), QStringLiteral("lnk"), QStringLiteral("msi"), QStringLiteral("ico")}.contains(QFileInfo(entry.name).suffix().toLower());
 }
 
+QList<int> thumbnailLoadOrder(int first, int visibleCount, int total, bool backwards) {
+    QList<int> rows;
+    if (total <= 0 || visibleCount <= 0) return rows;
+    first = qBound(0, first, total - 1);
+    visibleCount = qMin(visibleCount, total - first);
+    const int end = first + visibleCount;
+    for (int row = first; row < end; ++row) rows.append(row);
+    // Finish visible icons first, then one screen ahead and a small reverse buffer.
+    const int reverse = qMax(2, visibleCount / 4);
+    const int before = qMin(first, backwards ? visibleCount : reverse);
+    const int after = qMin(total - end, backwards ? reverse : visibleCount);
+    const auto prependRows = [&] { for (int offset = 1; offset <= before; ++offset) rows.append(first - offset); };
+    const auto appendRows = [&] { for (int offset = 0; offset < after; ++offset) rows.append(end + offset); };
+    if (backwards) { prependRows(); appendRows(); }
+    else { appendRows(); prependRows(); }
+    return rows;
+}
+
 QString thumbnailCacheKey(const Entry &entry) {
     const QString identity = (isApk(entry.name) ? QStringLiteral("apk-drawable-v3\n") : QString()) + QDir::fromNativeSeparators(entry.path).toCaseFolded() + QChar('\n') + QString::number(entry.size) + QChar('\n') + QString::number(entry.modified.toMSecsSinceEpoch());
     return QString::fromLatin1(QCryptographicHash::hash(identity.toUtf8(), QCryptographicHash::Sha256).toHex());
