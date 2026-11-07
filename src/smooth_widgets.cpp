@@ -153,7 +153,7 @@ void SmoothActionButton::paintEvent(QPaintEvent *event) {
     if (!color_.isValid()) settleMotion();
     QStyleOptionButton option; initStyleOption(&option);
     const auto t = miuixTokens(palette());
-    QPainter painter(this); painter.setRenderHint(QPainter::Antialiasing);
+    QPainter painter(this); painter.setRenderHint(QPainter::Antialiasing); painter.setFont(font());
     painter.translate(width() / 2.0, height() / 2.0 + feedbackPosition_.y());
     painter.scale(feedbackPosition_.x(), feedbackPosition_.x()); painter.translate(-width() / 2.0, -height() / 2.0);
     const auto path = continuousRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 12);
