@@ -485,6 +485,7 @@ private slots:
         auto *create = dynamic_cast<SmoothActionButton *>(window.findChild<QPushButton *>(QStringLiteral("action_add")));
         auto *copy = dynamic_cast<SmoothActionButton *>(window.findChild<QPushButton *>(QStringLiteral("action_copy")));
         QVERIFY(toolbar && create && copy); QCOMPARE(toolbar->height(), 52);
+        QVERIFY(create->font().families().contains(miuixFontFamily(), Qt::CaseInsensitive));
         const QColor accent = qApp->palette().color(QPalette::Highlight);
         auto corner = [&] { const QPixmap image = create->grab(); return image.toImage().pixelColor(qRound(4 * image.devicePixelRatio()), qRound(4 * image.devicePixelRatio())); };
         QCOMPARE(corner(), accent);

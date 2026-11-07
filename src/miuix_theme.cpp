@@ -1,6 +1,15 @@
 #include "miuix_theme.h"
 
+#include <QFontDatabase>
+
 namespace twinfile {
+
+QString miuixFontFamily() {
+    const auto installed = QFontDatabase::families();
+    for (const auto &candidate : {QStringLiteral("MiSans"), QStringLiteral("Mi Sans"), QStringLiteral("Microsoft YaHei UI"), QStringLiteral("Microsoft YaHei")})
+        if (installed.contains(candidate, Qt::CaseInsensitive)) return candidate;
+    return QFontDatabase::systemFont(QFontDatabase::GeneralFont).family();
+}
 
 MiuixTokens miuixTokens(bool dark, const QColor &accent) {
     MiuixTokens t;
@@ -71,7 +80,7 @@ QEasingCurve miuixSpring() {
 QString miuixStyleSheet(bool dark, const QPalette &palette) {
     const auto t = miuixTokens(palette);
     QString sheet = QStringLiteral(R"(
-QWidget { font-family: "MiSans", "Mi Sans", "Microsoft YaHei UI"; font-size: 13px; letter-spacing: 0; }
+QWidget { font-family: "%9"; font-size: 13px; letter-spacing: 0; }
 QMainWindow, QDialog, QWidget#workspace, QWidget#workspaceContent { background: %1; }
 QWidget#workspaceHeader { background: %2; border: none; border-bottom: 1px solid %6; min-height: 52px; max-height: 52px; }
 QLabel#miuixTitle { font-size: 16px; font-weight: 600; background: transparent; }
@@ -102,9 +111,11 @@ QTabBar#paneTabs::tab:selected { background: transparent; color: %8; font-weight
 QLineEdit#panePath, QLineEdit#panePath:hover, QLineEdit#panePath:focus { background: transparent; border: 1px solid transparent; border-radius: 0; padding: 8px 12px; font-size: 12px; }
 QLabel#paneFooter { padding: 7px 8px; border: none; font-size: 11px; color: %7; }
 QWidget#workspaceToolbar { background: transparent; border: none; min-height: 52px; max-height: 52px; }
-QWidget#workspaceToolbar QPushButton { border: none; border-radius: 12px; min-height: 20px; padding: 8px 14px; font-weight: 600; }
+QWidget#workspaceToolbar QPushButton { border: none; border-radius: 12px; min-height: 20px; padding: 8px 14px; font-weight: 600; color: %7; }
+QWidget#workspaceToolbar QPushButton:hover { color: palette(text); }
 QWidget#workspaceToolbar QPushButton[compactToolbar="true"] { padding: 8px; }
-QWidget#workspaceToolbar QPushButton[primaryAction="true"] { background: %8; color: white; }
+QWidget#workspaceToolbar QPushButton[primaryAction="true"], QWidget#workspaceToolbar QPushButton[primaryAction="true"]:hover { background: %8; color: white; }
+QWidget#workspaceToolbar QPushButton#assistantToggle:checked { color: %8; }
 QSplitter#fileSplitter::handle { background: transparent; width: 12px; }
 QWidget#extensionSidebar { background: %3; border-left: 1px solid %6; }
 QTabWidget#extensionTabs::pane { background: %3; border: none; }
@@ -130,9 +141,10 @@ QScrollBar::handle:vertical { background: palette(mid); border-radius: 3px; min-
 QScrollBar:horizontal { height: 6px; background: transparent; }
 QStatusBar { background: %1; color: %7; font-size: 11px; border-top: 1px solid %6; }
 )").arg(t.background.name(), t.surface1.name(), t.surface2.name(), t.surface3.name(),
-         t.surface4.name(), t.divider.name(), t.secondaryText.name(), t.primary.name());
+         t.surface4.name(), t.divider.name(), t.secondaryText.name(), t.primary.name(), miuixFontFamily());
     sheet += QStringLiteral("QDialog QPushButton:disabled, QDialog QToolButton:disabled { color: %1; background: %2; }\n")
         .arg(t.disabledText.name(), t.surface2.name());
+    sheet += QStringLiteral("QWidget#workspaceToolbar QPushButton:disabled { color: %1; }\n").arg(t.disabledText.name());
     Q_UNUSED(dark);
     return sheet;
 }

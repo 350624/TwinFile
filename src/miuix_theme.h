@@ -17,6 +17,7 @@ MiuixTokens miuixTokens(bool dark, const QColor &accent = {});
 MiuixTokens miuixTokens(const QPalette &palette);
 QPalette miuixPalette(bool dark, const QColor &accent = {});
 QString miuixStyleSheet(bool dark, const QPalette &palette);
+QString miuixFontFamily();
 QEasingCurve miuixEase();
 QEasingCurve miuixSpring();
 
