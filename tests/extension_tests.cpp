@@ -7,6 +7,8 @@
 #include "task_progress.h"
 #include "properties.h"
 #include "motion.h"
+#include "smooth_widgets.h"
+#include "miuix_theme.h"
 
 #include <QApplication>
 #include <QAction>
@@ -28,6 +30,7 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
+#include <QPainter>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QScopeGuard>
@@ -405,6 +408,114 @@ private slots:
         QTest::newRow("light") << QStringLiteral("light");
         QTest::newRow("dark") << QStringLiteral("dark");
     }
+    void continuousCornersHaveSmoothJoins() {
+        const QRectF bounds(3, 7, 120, 40);
+        const auto path = continuousRoundedRect(bounds, 16);
+        QCOMPARE(path.boundingRect(), bounds);
+        auto point = [&](int index) { const auto p = path.elementAt(index); return QPointF(p.x, p.y); };
+        const QPointF start = point(1), a = point(2), b = point(3), join = point(4), c = point(5), d = point(6), end = point(7);
+        auto close = [](QPointF left, QPointF right) { return QLineF(left, right).length() < 0.000001; };
+        QVERIFY(close(join - b, c - join));
+        QVERIFY(close(join - b * 2 + a, d - c * 2 + join));
+        QCOMPARE(a.y(), start.y()); QCOMPARE(b.y(), start.y());
+        QCOMPARE(c.x(), end.x()); QCOMPARE(d.x(), end.x());
+        for (int y = 0; y < 40; ++y) for (int x = 0; x < 120; ++x) {
+            const bool inside = path.contains(bounds.topLeft() + QPointF(x + 0.5, y + 0.5));
+            QCOMPARE(inside, path.contains(bounds.topRight() + QPointF(-x - 0.5, y + 0.5)));
+            QCOMPARE(inside, path.contains(bounds.bottomLeft() + QPointF(x + 0.5, -y - 0.5)));
+        }
+        for (qreal scale : {1.0, 1.25, 1.5, 2.0}) {
+            QImage image(QSize(120 * scale, 40 * scale), QImage::Format_ARGB32_Premultiplied);
+            image.fill(Qt::transparent); QPainter painter(&image); painter.scale(scale, scale);
+            painter.setRenderHint(QPainter::Antialiasing);
+            painter.fillPath(continuousRoundedRect(QRectF(0, 0, 120, 40), 16), Qt::blue); painter.end();
+            QCOMPARE(image.pixelColor(0, 0).alpha(), 0);
+            QCOMPARE(image.pixelColor(image.width() / 2, image.height() / 2), QColor(Qt::blue));
+            QVERIFY(image.pixelColor(qRound(4 * scale), qRound(4 * scale)).alpha() > 200);
+        }
+        QCOMPARE(continuousRoundedRect(QRectF(0, 0, 4, 2), 500).boundingRect(), QRectF(0, 0, 4, 2));
+        QCOMPARE(continuousRoundedRect(bounds, -1).boundingRect(), bounds);
+        QVERIFY(continuousRoundedRect({}, 16).isEmpty());
+        QVERIFY(continuousRoundedRect(bounds, std::numeric_limits<qreal>::quiet_NaN()).isEmpty());
+    }
+    void miuixConsoleTokensAndMotion() {
+        for (bool dark : {false, true}) {
+            const auto tokens = miuixTokens(dark);
+            const auto palette = appearancePalette(QStringLiteral("miuix"), dark, {});
+            QCOMPARE(palette.color(QPalette::Window), QColor(dark ? "#161616" : "#ffffff"));
+            QCOMPARE(palette.color(QPalette::Base), QColor(dark ? "#1c1c1c" : "#ffffff"));
+            QCOMPARE(palette.color(QPalette::Highlight), QColor(dark ? "#277af7" : "#3482ff"));
+            QCOMPARE(tokens.surface1, QColor(dark ? "#0c0c0c" : "#f7f7f7"));
+            QCOMPARE(tokens.surface3, QColor(dark ? "#242424" : "#e8e8e8"));
+            QCOMPARE(tokens.surface4, QColor(dark ? "#2c2c2c" : "#e8e8e8"));
+            QCOMPARE(palette.color(QPalette::Disabled, QPalette::Highlight), tokens.primaryDisabled);
+            QCOMPARE(appearancePalette(QStringLiteral("miuix"), dark, QStringLiteral("teal")).color(QPalette::Highlight), QColor("#00695c"));
+            const QString sheet = appearanceStyleSheet(QStringLiteral("miuix"), dark, palette);
+            QVERIFY(sheet.contains(tokens.surface1.name())); QVERIFY(sheet.contains(tokens.surface4.name()));
+            QVERIFY(!sheet.contains(QStringLiteral("backdrop-filter")));
+        }
+        qreal previous = 0; bool springOvershoot = false;
+        for (int step = 0; step <= 100; ++step) {
+            const qreal eased = miuixEase().valueForProgress(step / 100.0);
+            QVERIFY(eased >= previous); QVERIFY(eased >= 0 && eased <= 1); previous = eased;
+            const qreal spring = miuixSpring().valueForProgress(step / 100.0);
+            QVERIFY(spring >= 0 && spring <= 1.15); springOvershoot |= spring > 1;
+        }
+        QVERIFY(springOvershoot);
+    }
+    void miuixContinuousCornersAndButtonStates_data() {
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("light") << QStringLiteral("light");
+        QTest::newRow("dark") << QStringLiteral("dark");
+    }
+    void miuixContinuousCornersAndButtonStates() {
+        QFETCH(QString, mode);
+        QTemporaryDir root; QVERIFY(root.isValid());
+        const QString source = root.filePath(QStringLiteral("项目资料")), destination = root.filePath(QStringLiteral("下载"));
+        QVERIFY(QDir().mkpath(source + QStringLiteral("/图片"))); QVERIFY(QDir().mkpath(destination + QStringLiteral("/固件")));
+        QFile fixture(source + QStringLiteral("/README.md")); QVERIFY(fixture.open(QIODevice::WriteOnly)); fixture.write("Miuix Console native adaptation"); fixture.close();
+        auto settings = readSettings(settingsPath()); settings.remove(QStringLiteral("workspace"));
+        settings.insert(QStringLiteral("extension_visible"), false); settings.insert(QStringLiteral("geometry"), QString()); QVERIFY(writeSettings(settingsPath(), settings));
+        Window window; window.setAttribute(Qt::WA_DontShowOnScreen);
+        window.setTheme(QStringLiteral("miuix")); window.setColorMode(mode); window.setReducedMotion(true);
+        window.resize(1440, 900); window.show(); QTest::qWait(50);
+        window.leftPane()->navigate({Source::Local, source, {}, {}}); window.rightPane()->navigate({Source::Local, destination, {}, {}});
+        QTRY_COMPARE(window.leftPane()->fileModel()->rowCount(), 2); QTRY_COMPARE(window.rightPane()->fileModel()->rowCount(), 1);
+        auto *toolbar = window.findChild<QWidget *>(QStringLiteral("workspaceToolbar"));
+        auto *create = dynamic_cast<SmoothActionButton *>(window.findChild<QPushButton *>(QStringLiteral("action_add")));
+        auto *copy = dynamic_cast<SmoothActionButton *>(window.findChild<QPushButton *>(QStringLiteral("action_copy")));
+        QVERIFY(toolbar && create && copy); QCOMPARE(toolbar->height(), 52);
+        const QColor accent = qApp->palette().color(QPalette::Highlight);
+        auto corner = [&] { const QPixmap image = create->grab(); return image.toImage().pixelColor(qRound(4 * image.devicePixelRatio()), qRound(4 * image.devicePixelRatio())); };
+        QCOMPARE(corner(), accent);
+        const QRect original = create->geometry();
+        window.setReducedMotion(false);
+        auto *motion = create->findChild<QVariantAnimation *>(QStringLiteral("continuousButtonAnimation")); QVERIFY(motion);
+        QTest::mousePress(create, Qt::LeftButton); QCOMPARE(motion->state(), QAbstractAnimation::Running);
+        QVERIFY(!create->findChild<QWidget *>(QStringLiteral("uiSnapshotTransition")));
+        motion->pause(); motion->setCurrentTime(35);
+        QVERIFY(corner() != accent);
+        QCOMPARE(create->geometry(), original);
+        // Release outside the button so testing the press state cannot create files.
+        QTest::mouseRelease(create, Qt::LeftButton, Qt::NoModifier, QPoint(-10, -10));
+        window.setReducedMotion(true); QCOMPARE(motion->state(), QAbstractAnimation::Stopped);
+        create->setEnabled(false); QVERIFY(corner() != accent);
+        create->setEnabled(true); QCOMPARE(corner(), accent);
+        copy->setFocus(Qt::TabFocusReason); QTest::qWait(10);
+        const QString evidence = qEnvironmentVariable("TWINFILE_VERIFY_SCREENSHOT_ROOT");
+        if (!evidence.isEmpty()) {
+            QVERIFY(window.grab().save(QDir(evidence).filePath(QStringLiteral("native-continuous-corners-%1.png").arg(mode))));
+            QVERIFY(toolbar->grab().save(QDir(evidence).filePath(QStringLiteral("native-continuous-toolbar-%1.png").arg(mode))));
+        }
+        auto *dock = window.findChild<QDockWidget *>(QStringLiteral("extensionDock")); dock->show();
+        window.resize(1100, 650); QTest::qWait(40);
+        for (auto *button : toolbar->findChildren<QPushButton *>(QString(), Qt::FindDirectChildrenOnly))
+            QVERIFY(toolbar->rect().contains(button->geometry()));
+        if (!evidence.isEmpty()) QVERIFY(window.grab().save(QDir(evidence).filePath(QStringLiteral("native-continuous-compact-%1.png").arg(mode))));
+        window.setTheme(QStringLiteral("twinfile")); QTest::qWait(20); QCOMPARE(toolbar->height(), 44);
+        window.setTheme(QStringLiteral("miuix")); QTest::qWait(20); QCOMPARE(toolbar->height(), 52); QCOMPARE(corner(), accent);
+        window.close();
+    }
     void miuixLayoutNavigationAndMotion_data() {
         QTest::addColumn<QString>("mode");
         QTest::newRow("light") << QStringLiteral("light");
@@ -435,7 +546,7 @@ private slots:
         QVERIFY(selector && motion && left && right && toolbar && dock); QVERIFY(selector->isVisible());
         QVERIFY(qApp->property("miuixStyle").toBool()); QVERIFY(!qApp->property("mtStyle").toBool());
         QVERIFY(!window.findChild<QWidget *>(QStringLiteral("workspaceHeading"))->isVisible());
-        QVERIFY(toolbar->mapTo(&window, QPoint()).y() > window.leftPane()->mapTo(&window, window.leftPane()->rect().bottomLeft()).y());
+        QVERIFY(toolbar->mapTo(&window, QPoint()).y() < window.leftPane()->mapTo(&window, QPoint()).y());
         for (Pane *pane : {window.leftPane(), window.rightPane()}) {
             QVERIFY(pane->findChild<QWidget *>(QStringLiteral("miuixPaneHeading"))->isVisible());
             QVERIFY(!pane->findChild<QWidget *>(QStringLiteral("paneColumns"))->isVisible());
@@ -449,12 +560,12 @@ private slots:
             if (!evidence.isEmpty()) QVERIFY(window.grab().save(QDir(evidence).filePath(QStringLiteral("native-miuix-%1-%2.png").arg(scene, mode))));
         };
         QTest::qWait(60); screenshot(QStringLiteral("desktop"));
-        QCOMPARE(selector->grab().toImage().pixelColor(43, 8), qApp->palette().base().color());
+        QCOMPARE(selector->grab().toImage().pixelColor(43, 8), qApp->palette().highlight().color());
         QCOMPARE(selector->grab().toImage().pixelColor(121, 8), qApp->palette().alternateBase().color());
         window.setReducedMotion(false);
         QTest::mouseClick(right, Qt::LeftButton); QCOMPARE(window.activePane(), window.rightPane()); QVERIFY(right->isChecked()); QVERIFY(!left->isChecked());
         QCOMPARE(window.findChild<QPushButton *>(QStringLiteral("action_copy"))->property("symbol").toString(), QStringLiteral("copy-back"));
-        QCOMPARE(motion->state(), QAbstractAnimation::Running); motion->setCurrentTime(70);
+        QCOMPARE(motion->state(), QAbstractAnimation::Running); motion->setCurrentTime(25);
         QCOMPARE(selector->grab().toImage().pixelColor(150, 19), qApp->palette().alternateBase().color());
         motion->setCurrentTime(105);
         const qreal middle = selector->property("position").toReal(); QVERIFY(middle > 0 && middle < 1);

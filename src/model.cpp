@@ -1,4 +1,6 @@
 #include "model.h"
+#include "miuix_theme.h"
+#include "smooth_widgets.h"
 
 #include <QApplication>
 #include <QDrag>
@@ -227,7 +229,14 @@ void FileDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option, 
     const QRect body = mt ? option.rect : option.rect.adjusted(3, 2, -5, -2);
     const bool selected = option.state.testFlag(QStyle::State_Selected);
     if (selected || option.state.testFlag(QStyle::State_MouseOver)) {
-        painter->setPen(Qt::NoPen); painter->setBrush(selected && !miuix ? option.palette.highlight() : option.palette.alternateBase()); painter->drawRoundedRect(body, mt ? 0 : 8, mt ? 0 : 8);
+        painter->setPen(Qt::NoPen);
+        if (miuix) {
+            const auto tokens = miuixTokens(option.palette);
+            painter->fillPath(continuousRoundedRect(QRectF(body), 8), selected ? tokens.selection : tokens.hover);
+        } else {
+            painter->setBrush(selected ? option.palette.highlight() : option.palette.alternateBase());
+            painter->drawRoundedRect(body, mt ? 0 : 8, mt ? 0 : 8);
+        }
     }
     const int iconSize = mt || miuix ? 40 : 36;
     const QRect iconBox(body.left() + 8, body.top() + (body.height() - iconSize) / 2, iconSize, iconSize);

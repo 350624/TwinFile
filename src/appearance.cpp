@@ -4,6 +4,7 @@
 #include <QMap>
 #include <QPainter>
 #include <QPainterPath>
+#include "miuix_theme.h"
 
 namespace twinfile {
 
@@ -155,6 +156,7 @@ QPalette appearancePalette(const QString &theme, bool dark, const QString &accen
         {QStringLiteral("macos"), {QStringLiteral("#262628"), QStringLiteral("#1e1e20"), QStringLiteral("#343438"), QStringLiteral("#f0f0f2"), QStringLiteral("#49494d"), QStringLiteral("#b0b0b8")}}};
     const auto colors = (dark ? darkColors : lightColors).value(theme, (dark ? darkColors : lightColors).value(QStringLiteral("twinfile")));
     static const QMap<QString, QString> accents{{QStringLiteral("blue"), QStringLiteral("#0277bd")}, {QStringLiteral("teal"), QStringLiteral("#00695c")}, {QStringLiteral("green"), QStringLiteral("#1b5e20")}, {QStringLiteral("purple"), QStringLiteral("#4527a0")}, {QStringLiteral("orange"), QStringLiteral("#b94300")}, {QStringLiteral("indigo"), QStringLiteral("#4f46e5")}, {QStringLiteral("mtblue"), QStringLiteral("#1565c0")}};
+    if (theme == QStringLiteral("miuix")) return miuixPalette(dark, QColor(accents.value(accent)));
     QPalette palette;
     palette.setColor(QPalette::Window, QColor(colors[0]));
     palette.setColor(QPalette::Base, QColor(colors[1]));
@@ -418,62 +420,7 @@ QListWidget#mtPlacesList::item { padding: 7px 12px; min-height: 48px; }
 QStatusBar { background: palette(base); }
 )").arg(border, accent, dark ? QStringLiteral("#65b8ed") : QStringLiteral("#0879b9"),
         dark ? QStringLiteral("#202020") : QStringLiteral("#303030"));
-    if (theme == QStringLiteral("miuix")) sheet += QStringLiteral(R"(
-QWidget { letter-spacing: 0; }
-QWidget#workspaceHeader { background: palette(window); border: none; }
-QLabel#miuixTitle { font-size: 22px; font-weight: 600; background: transparent; }
-QLabel#miuixLocation { color: %3; font-size: 13px; background: transparent; }
-QWidget#miuixPaneSwitch { background: palette(alternate-base); border: none; border-radius: 18px; }
-QWidget#miuixPaneSwitch QToolButton { background: transparent; border: none; border-radius: 15px; padding: 0 14px; font-size: 12px; }
-QWidget#miuixPaneSwitch QToolButton:checked { background: transparent; color: %2; font-weight: 600; }
-QPushButton#workspaceSearch { background: palette(base); border: 1px solid palette(mid); border-radius: 18px; min-height: 34px; padding: 0 14px; }
-QPushButton#workspaceSearch:hover { background: palette(alternate-base); border-color: %2; }
-QPushButton#appearanceButton { background: transparent; border: none; border-radius: 17px; min-height: 34px; }
-QPushButton#appearanceButton:hover { background: palette(alternate-base); }
-QWidget#navigationSidebar { background: palette(window); border: none; }
-QLabel#brandTitle { font-size: 17px; font-weight: 600; letter-spacing: 0; }
-QLabel#navigationSection { font-size: 11px; color: %3; padding: 12px 12px 5px; }
-QPushButton[navigationItem="true"] { border: none; border-radius: 16px; padding: 8px 12px; min-height: 28px; text-align: left; }
-QWidget#navigationSidebar QPushButton[navigationItem="true"]:hover { background: palette(alternate-base); }
-QWidget#navigationSidebar QPushButton[navigationItem="true"]:checked, QWidget#navigationSidebar QPushButton[navigationItem="true"]:checked:hover { background: %4; color: %2; font-weight: 600; }
-QFrame#filePane, QFrame#filePane[active="true"] { border: none; border-radius: 18px; background: palette(base); }
-QFrame#filePane[active="true"] { border: 1px solid %2; }
-QWidget#miuixPaneHeading { background: transparent; }
-QLabel#miuixFolderTitle { font-size: 20px; font-weight: 600; }
-QLabel#miuixFolderDetails { font-size: 12px; color: %3; }
-QLabel#paneIndicator { color: %2; padding-left: 3px; }
-QTabBar#paneTabs { background: transparent; }
-QTabBar#paneTabs::tab { padding: 7px 14px; margin: 0 2px; border-radius: 14px; font-size: 12px; min-width: 70px; }
-QTabBar#paneTabs::tab:hover:!selected { background: palette(alternate-base); }
-QTabBar#paneTabs::tab:selected { background: %4; color: %2; font-weight: 600; }
-QLineEdit#panePath { background: palette(alternate-base); border: 1px solid transparent; padding: 8px 12px; border-radius: 16px; }
-QLineEdit#panePath:hover { background: palette(window); }
-QLineEdit#panePath:focus { border-color: %2; background: palette(base); }
-QLabel#paneFooter { padding: 7px 8px; border: none; font-size: 11px; color: %3; }
-QWidget#workspaceToolbar { background: palette(alternate-base); border: none; border-radius: 20px; min-height: 50px; }
-QWidget#workspaceToolbar QPushButton { border: none; border-radius: 16px; padding: 7px 12px; }
-QWidget#workspaceToolbar QPushButton:hover { background: palette(base); }
-QWidget#workspaceToolbar QPushButton[primaryAction="true"] { background: %2; color: white; }
-QWidget#workspaceToolbar QPushButton[primaryAction="true"]:hover { background: %2; }
-QSplitter#fileSplitter::handle { background: transparent; width: 14px; }
-QWidget#extensionSidebar { background: palette(base); border-left: 1px solid %1; }
-QFrame#aiComposer { border-radius: 18px; }
-QDialog { background: palette(window); }
-QDialog QPushButton, QDialog QToolButton { border: none; border-radius: 16px; padding: 9px 16px; background: palette(base); }
-QDialog QPushButton:hover, QDialog QToolButton:hover { background: palette(alternate-base); }
-QDialog QPushButton:default, QDialog QPushButton:checked, QDialog QToolButton:checked { background: %2; color: white; }
-QDialog QLineEdit, QDialog QComboBox, QDialog QSpinBox, QDialog QDoubleSpinBox { border: 1px solid palette(mid); border-radius: 16px; padding: 9px 12px; background: palette(base); }
-QDialog QLineEdit:focus, QDialog QComboBox:focus, QDialog QSpinBox:focus { border-color: %2; }
-QMenu { padding: 8px; border: 1px solid palette(mid); border-radius: 18px; }
-QMenu::item { padding: 10px 30px; border-radius: 12px; }
-QMenu::item:selected { background: palette(alternate-base); color: palette(text); }
-QProgressBar { min-height: 8px; max-height: 8px; background: palette(window); border: none; border-radius: 4px; }
-QProgressBar::chunk { background: %2; border-radius: 4px; }
-QScrollBar:vertical { width: 6px; background: transparent; }
-QScrollBar::handle:vertical { background: palette(mid); border-radius: 3px; min-height: 32px; }
-QScrollBar:horizontal { height: 6px; background: transparent; }
-QStatusBar { background: palette(window); color: %3; }
-)").arg(border, accent, muted, dark ? QStringLiteral("#34445f") : QStringLiteral("#e4efff"));
+    if (theme == QStringLiteral("miuix")) sheet += miuixStyleSheet(dark, palette);
     sheet += QStringLiteral(R"(
 QWidget#navigationLocations QPushButton[navigationItem="true"]:checked,
 QWidget#navigationLocations QPushButton[navigationItem="true"]:checked:hover { background: transparent; }

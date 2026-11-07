@@ -11,6 +11,7 @@ TwinFile 的原创桌面代码、项目文档及未另行声明的原创资源�
 | `vendor/xz` | `COPYING*` 及各文件通知，实际使用的 liblzma 为 0BSD |
 | `vendor/zstd` | `LICENSE`，本项目采用 BSD-3-Clause 选项 |
 | `vendor/webp` | `COPYING`、`PATENTS`、`AUTHORS` |
+| `vendor/miuix-console` 与 Miuix 原生适配的上游部分 | 上游 README 的 Apache-2.0 声明；见 `licenses/MIUIX-CONSOLE.md`、`licenses/Apache-2.0.txt` |
 | `assets/ChineseSimplified.isl` | 文件内 Inno Setup 翻译署名及许可说明 |
 | `licenses/sources/HybridFileXfer-v3.0.0-source.zip` | 上游 HybridFileXfer 源码与 GPL-3.0；修改说明见 `licenses/HFX-MODIFICATIONS.md` |
 

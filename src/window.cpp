@@ -19,6 +19,7 @@
 #include "task_progress.h"
 #include "properties.h"
 #include "motion.h"
+#include "smooth_widgets.h"
 
 #include <QApplication>
 #include <QActionGroup>
@@ -159,14 +160,14 @@ Window::Window(QWidget *parent, const QUrl &updateTestEndpoint) : QMainWindow(pa
     auto *headingLayout = new QHBoxLayout(heading); headingLayout->setContentsMargins(20, 14, 2, 14); headingLayout->setSpacing(12);
     auto *headingTitle = new QLabel(QStringLiteral("文件")); headingTitle->setObjectName(QStringLiteral("workspaceHeading")); headingLayout->addWidget(headingTitle);
     auto *headingDetail = new QLabel(QStringLiteral("工作空间")); headingDetail->setObjectName(QStringLiteral("workspaceDetail")); headingLayout->addWidget(headingDetail); headingLayout->addStretch();
-    auto *search = new QPushButton(QStringLiteral("搜索文件    Ctrl+F")); search->setObjectName(QStringLiteral("workspaceSearch")); search->setProperty("symbol", QStringLiteral("search")); search->setAccessibleName(QStringLiteral("搜索当前栏文件")); search->setCursor(Qt::PointingHandCursor); connect(search, &QPushButton::clicked, this, &Window::searchFiles); headingLayout->addWidget(search);
-    auto *appearance = new QPushButton; appearance->setObjectName(QStringLiteral("appearanceButton")); appearance->setProperty("symbol", QStringLiteral("theme")); appearance->setToolTip(QStringLiteral("外观与明暗模式")); appearance->setAccessibleName(appearance->toolTip()); appearance->setFixedSize(34, 34); connect(appearance, &QPushButton::clicked, this, &Window::showAppearanceSettings); headingLayout->addWidget(appearance);
+    auto *search = new SmoothActionButton(QStringLiteral("搜索文件    Ctrl+F")); search->setObjectName(QStringLiteral("workspaceSearch")); search->setProperty("symbol", QStringLiteral("search")); search->setAccessibleName(QStringLiteral("搜索当前栏文件")); search->setCursor(Qt::PointingHandCursor); connect(search, &QPushButton::clicked, this, &Window::searchFiles); headingLayout->addWidget(search);
+    auto *appearance = new SmoothActionButton; appearance->setObjectName(QStringLiteral("appearanceButton")); appearance->setProperty("symbol", QStringLiteral("theme")); appearance->setToolTip(QStringLiteral("外观与明暗模式")); appearance->setAccessibleName(appearance->toolTip()); appearance->setFixedSize(34, 34); connect(appearance, &QPushButton::clicked, this, &Window::showAppearanceSettings); headingLayout->addWidget(appearance);
     root->addWidget(heading);
     auto *body = new QHBoxLayout; body->setContentsMargins(0, 0, 0, 0); body->setSpacing(12); sidebar_ = new QWidget; sidebar_->setObjectName(QStringLiteral("navigationSidebar")); sidebar_->setFixedWidth(184); sidebar_->installEventFilter(this); buildSidebar(sidebar_); body->addWidget(sidebar_);
     auto *content = new QWidget; content->setObjectName(QStringLiteral("workspaceContent")); auto *contentLayout = new QVBoxLayout(content); contentLayout->setContentsMargins(0, 0, 0, 0); contentLayout->setSpacing(12);
-    auto *toolbarWidget = new QWidget; toolbarWidget->setObjectName(QStringLiteral("workspaceToolbar")); toolbarWidget->installEventFilter(this); auto *toolbar = new QHBoxLayout(toolbarWidget); toolbar->setContentsMargins(4, 0, 4, 0); toolbar->setSpacing(4);
+    auto *toolbarWidget = new SmoothToolbar; toolbarWidget->setObjectName(QStringLiteral("workspaceToolbar")); toolbarWidget->installEventFilter(this); auto *toolbar = new QHBoxLayout(toolbarWidget); toolbar->setContentsMargins(4, 0, 4, 0); toolbar->setSpacing(4);
     auto addButton = [&](const QString &text, const QString &symbol, const QString &tip, auto handler) {
-        auto *button = new QPushButton(text); button->setProperty("symbol", symbol); button->setProperty("toolbarText", text); button->setObjectName(QStringLiteral("action_") + symbol); button->setToolTip(tip); button->setAccessibleName(tip); button->setCursor(Qt::PointingHandCursor); connect(button, &QPushButton::clicked, this, handler); toolbar->addWidget(button); return button;
+        auto *button = new SmoothActionButton(text); button->setProperty("symbol", symbol); button->setProperty("toolbarText", text); button->setObjectName(QStringLiteral("action_") + symbol); button->setToolTip(tip); button->setAccessibleName(tip); button->setCursor(Qt::PointingHandCursor); connect(button, &QPushButton::clicked, this, handler); toolbar->addWidget(button); return button;
     };
     auto *createButton = addButton(QStringLiteral("新建"), QStringLiteral("add"), QStringLiteral("新建文件夹 F7"), [this] { create(true); }); createButton->setProperty("primaryAction", true);
     addButton(QStringLiteral("复制"), QStringLiteral("copy"), QStringLiteral("复制到另一栏 F5"), [this] { transfer(false); });
@@ -296,7 +297,7 @@ void Window::buildSidebar(QWidget *sidebar) {
     auto *locationsLayout = new QVBoxLayout(navigation); locationsLayout->setContentsMargins(0, 0, 0, 0); locationsLayout->setSpacing(4);
     auto *scroll = new QScrollArea; scroll->setObjectName(QStringLiteral("navigationScroll")); scroll->setFrameShape(QFrame::NoFrame); scroll->setWidgetResizable(true); scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff); scroll->setWidget(navigation); layout->addWidget(scroll, 1);
     auto addLocation = [&](const QString &label, const QString &path) {
-        auto *button = new QPushButton; button->setText(button->fontMetrics().elidedText(label, Qt::ElideMiddle, 104)); button->setAccessibleName(label); button->setProperty("navigationItem", true); button->setProperty("navigationPath", path); button->setCheckable(true); button->setIcon(sidebarSymbol(label)); button->setIconSize(QSize(18, 18)); button->setMinimumHeight(36); button->setFlat(true); button->setCursor(Qt::PointingHandCursor); button->setToolTip(path.isEmpty() ? QStringLiteral("驱动器与已连接设备") : QDir::toNativeSeparators(path));
+        auto *button = new SmoothActionButton; button->setText(button->fontMetrics().elidedText(label, Qt::ElideMiddle, 104)); button->setAccessibleName(label); button->setProperty("navigationItem", true); button->setProperty("navigationPath", path); button->setCheckable(true); button->setIcon(sidebarSymbol(label)); button->setIconSize(QSize(18, 18)); button->setMinimumHeight(36); button->setFlat(true); button->setCursor(Qt::PointingHandCursor); button->setToolTip(path.isEmpty() ? QStringLiteral("驱动器与已连接设备") : QDir::toNativeSeparators(path));
         connect(button, &QPushButton::clicked, this, [this, path] { active_->navigate(path.isEmpty() ? Location() : Location{Source::Local, path, {}, {}}); }); locationsLayout->addWidget(button);
     };
     auto addSection = [&](const QString &text) { auto *label = new QLabel(text); label->setObjectName(QStringLiteral("navigationSection")); locationsLayout->addWidget(label); };
@@ -316,7 +317,7 @@ void Window::buildSidebar(QWidget *sidebar) {
         const QString path = value.toString(); if (QFileInfo(path).isDir()) addLocation(QFileInfo(path).fileName(), path);
     }
     locationsLayout->addStretch();
-    auto *tools = new QPushButton(QStringLiteral("扩展与工具")); tools->setFlat(true); tools->setProperty("navigationItem", true); tools->setIcon(actionSymbol(QStringLiteral("assistant"), palette().color(QPalette::PlaceholderText))); tools->setProperty("symbol", QStringLiteral("assistant")); tools->setCursor(Qt::PointingHandCursor); connect(tools, &QPushButton::clicked, this, [this] { setExtensionsVisible(true); extensions_->showExtensions(); }); layout->addWidget(tools);
+    auto *tools = new SmoothActionButton(QStringLiteral("扩展与工具")); tools->setFlat(true); tools->setProperty("navigationItem", true); tools->setIcon(actionSymbol(QStringLiteral("assistant"), palette().color(QPalette::PlaceholderText))); tools->setProperty("symbol", QStringLiteral("assistant")); tools->setCursor(Qt::PointingHandCursor); connect(tools, &QPushButton::clicked, this, [this] { setExtensionsVisible(true); extensions_->showExtensions(); }); layout->addWidget(tools);
 }
 
 void Window::updateNavigation() {
@@ -369,7 +370,7 @@ void Window::updateDeviceNavigation() {
     auto *layout = deviceNavigation_->layout();
     while (auto *item = layout->takeAt(0)) { delete item->widget(); delete item; }
     auto add = [&](const QString &label, const QString &symbol, const QString &tip) {
-        auto *button = new QPushButton; button->setProperty("navigationItem", true); button->setProperty("symbol", symbol);
+        auto *button = new SmoothActionButton; button->setProperty("navigationItem", true); button->setProperty("symbol", symbol);
         button->setText(button->fontMetrics().elidedText(label, Qt::ElideMiddle, 104)); button->setAccessibleName(label); button->setToolTip(tip);
         button->setIcon(actionSymbol(symbol, qApp->palette().color(QPalette::Text))); button->setIconSize(QSize(18, 18)); button->setMinimumHeight(36); button->setFlat(true); button->setCheckable(true); button->setCursor(Qt::PointingHandCursor); layout->addWidget(button); return button;
     };

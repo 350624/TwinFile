@@ -1,4 +1,6 @@
 #include "motion.h"
+#include "smooth_widgets.h"
+#include "miuix_theme.h"
 
 #include <QAbstractButton>
 #include <QApplication>
@@ -66,29 +68,43 @@ public:
         connect(&motion_, &QVariantAnimation::valueChanged, this, [this](const QVariant &value) {
             position_ = value.toRectF(); setProperty("selectionRect", position_); update();
         });
+        marker_.setObjectName(QStringLiteral("navigationMarkerAnimation"));
+        marker_.setDuration(200); marker_.setEasingCurve(miuixSpring());
+        connect(&marker_, &QVariantAnimation::valueChanged, this, [this](const QVariant &value) { markerHeight_ = value.toReal(); update(); });
     }
     void select(QAbstractButton *button, bool animate) {
         button_ = button;
         if (!button || !button->isVisibleTo(parentWidget())) {
-            motion_.stop(); position_ = {}; target_ = {}; setProperty("selectionRect", position_); hide(); return;
+            motion_.stop(); marker_.stop(); position_ = {}; target_ = {}; setProperty("selectionRect", position_); hide(); return;
         }
         const QRectF destination(button->mapTo(parentWidget(), QPoint()), button->size());
         if (target_ == destination && animate) return;
         motion_.stop(); target_ = destination; setProperty("targetRect", target_);
         setGeometry(parentWidget()->rect()); show(); raise();
         if (!animate || position_.isEmpty() || !motionAllowed(parentWidget())) {
+            marker_.stop(); markerHeight_ = 1;
             position_ = destination; setProperty("selectionRect", position_); update(); return;
         }
+        if (qApp->property("miuixStyle").toBool()) {
+            marker_.stop(); marker_.setStartValue(0.65); marker_.setEndValue(1.0); marker_.start();
+        }
+        motion_.setEasingCurve(qApp->property("miuixStyle").toBool() ? miuixEase() : QEasingCurve(QEasingCurve::OutCubic));
         motion_.setStartValue(position_); motion_.setEndValue(destination); motion_.start();
     }
 protected:
     void paintEvent(QPaintEvent *) override {
         if (position_.isEmpty()) return;
         QPainter painter(this); painter.setRenderHint(QPainter::Antialiasing); painter.setPen(Qt::NoPen);
-        QColor color = palette().highlight().color(); color.setAlpha(42);
+        QColor color = palette().highlight().color(); color.setAlpha(qApp->property("miuixStyle").toBool() ? 36 : 42);
         painter.setBrush(color);
         const int radius = qApp->property("mtStyle").toBool() ? 0 : qApp->property("miuixStyle").toBool() ? 16 : 8;
-        painter.drawRoundedRect(position_, radius, radius);
+        if (qApp->property("miuixStyle").toBool()) painter.drawPath(continuousRoundedRect(position_, radius));
+        else painter.drawRoundedRect(position_, radius, radius);
+        if (qApp->property("miuixStyle").toBool()) {
+            const qreal height = 18 * markerHeight_;
+            const QRectF bar(position_.left(), position_.center().y() - height / 2, 3, height);
+            painter.fillPath(continuousRoundedRect(bar, 1.5), palette().highlight());
+        }
     }
     bool eventFilter(QObject *, QEvent *event) override {
         if (event->type() == QEvent::Resize || event->type() == QEvent::LayoutRequest || event->type() == QEvent::Show)
@@ -103,6 +119,8 @@ protected:
 private:
     QPointer<QAbstractButton> button_;
     QVariantAnimation motion_{this};
+    QVariantAnimation marker_{this};
+    qreal markerHeight_ = 1;
     QRectF position_, target_;
 };
 
@@ -148,6 +166,7 @@ void MotionTabBar::selectTab(bool animate) {
     if (!animate || position_.isEmpty() || !motionAllowed(this) || !isVisible()) {
         position_ = target_; setProperty("selectionRect", position_); update(); return;
     }
+    motion_.setEasingCurve(qApp->property("miuixStyle").toBool() ? miuixEase() : QEasingCurve(QEasingCurve::OutCubic));
     motion_.setStartValue(position_); motion_.setEndValue(target_); motion_.start();
 }
 
@@ -160,14 +179,16 @@ void MotionTabBar::paintEvent(QPaintEvent *) {
     QStylePainter painter(this); painter.setRenderHint(QPainter::Antialiasing); painter.setPen(Qt::NoPen);
     if (!position_.isEmpty()) {
         const bool mt = qApp->property("mtStyle").toBool();
-        if (mt) {
+        if (mt || (qApp->property("miuixStyle").toBool() && objectName() == QStringLiteral("extensionTabBar"))) {
             painter.setBrush(palette().highlight()); painter.drawRect(QRectF(position_.left(), position_.bottom() - 2, position_.width(), 2));
         } else {
             QColor color = palette().alternateBase().color();
             if (qApp->property("miuixStyle").toBool()) { color = palette().highlight().color(); color.setAlpha(38); }
             painter.setBrush(color);
             const int radius = qApp->property("miuixStyle").toBool() ? 14 : 7;
-            painter.drawRoundedRect(position_.adjusted(2, 0, -2, 0), radius, radius);
+            const auto bounds = position_.adjusted(2, 0, -2, 0);
+            if (qApp->property("miuixStyle").toBool()) painter.drawPath(continuousRoundedRect(bounds, radius));
+            else painter.drawRoundedRect(bounds, radius, radius);
         }
     }
     // Keep native labels, close buttons, focus and accessibility while painting one moving selection.
@@ -214,9 +235,11 @@ void UiMotion::updateNavigation() {
 
 void UiMotion::settle() {
     if (!owner_) return;
+    for (auto *button : owner_->findChildren<QPushButton *>())
+        if (auto *smooth = dynamic_cast<SmoothActionButton *>(button)) smooth->settleMotion();
     for (auto *bar : owner_->findChildren<QTabBar *>()) if (auto *animated = dynamic_cast<MotionTabBar *>(bar)) animated->settleMotion();
     for (auto *animation : owner_->findChildren<QVariantAnimation *>()) {
-        if (animation->objectName() == QStringLiteral("navigationSelectionAnimation") || animation->objectName() == QStringLiteral("uiPopupAnimation")) {
+        if (animation->objectName() == QStringLiteral("navigationSelectionAnimation") || animation->objectName() == QStringLiteral("navigationMarkerAnimation") || animation->objectName() == QStringLiteral("uiPopupAnimation")) {
             if (animation->state() != QAbstractAnimation::Stopped) { animation->setCurrentTime(animation->duration()); animation->stop(); }
         }
     }
@@ -226,7 +249,9 @@ void UiMotion::settle() {
 
 bool UiMotion::eventFilter(QObject *object, QEvent *event) {
     auto *widget = qobject_cast<QWidget *>(object);
-    if (!owner_ || !widget || capturing_ || !owns(owner_, widget) || widget->objectName() == QStringLiteral("uiSnapshotTransition")) return false;
+    if (!owner_ || !widget || !owns(owner_, widget) || widget->objectName() == QStringLiteral("uiSnapshotTransition")) return false;
+    if (event->type() == QEvent::Paint) paintMiuixSurface(widget);
+    if (capturing_) return false;
     if (widget == owner_ && event->type() == QEvent::Hide) { settle(); return false; }
     if (widget == owner_ && event->type() == QEvent::Show) QTimer::singleShot(0, this, &UiMotion::updateNavigation);
     const auto type = event->type();
@@ -250,6 +275,7 @@ bool UiMotion::eventFilter(QObject *object, QEvent *event) {
     };
     if (auto *button = qobject_cast<QAbstractButton *>(widget)) {
         if (!button->isVisible() || !button->isEnabled() || button->property("navigationItem").toBool()
+            || (qApp->property("miuixStyle").toBool() && dynamic_cast<SmoothActionButton *>(button))
             || button->parentWidget()->objectName() == QStringLiteral("miuixPaneSwitch")) return false;
         if (type == QEvent::Enter || type == QEvent::Leave || type == QEvent::MouseButtonPress || type == QEvent::MouseButtonRelease || type == QEvent::KeyPress) {
             const QPixmap before = capture(); QPointer<QWidget> guarded = widget;
@@ -268,9 +294,10 @@ bool UiMotion::eventFilter(QObject *object, QEvent *event) {
             auto *animation = widget->findChild<QVariantAnimation *>(QStringLiteral("uiPopupAnimation"), Qt::FindDirectChildrenOnly);
             if (!animation) {
                 animation = new QVariantAnimation(widget); animation->setObjectName(QStringLiteral("uiPopupAnimation"));
-                animation->setDuration(160); animation->setEasingCurve(QEasingCurve::OutCubic);
                 connect(animation, &QVariantAnimation::valueChanged, widget, [widget](const QVariant &value) { widget->setWindowOpacity(value.toReal()); });
             }
+            animation->setDuration(qApp->property("miuixStyle").toBool() ? 320 : 160);
+            animation->setEasingCurve(qApp->property("miuixStyle").toBool() ? miuixEase() : QEasingCurve(QEasingCurve::OutCubic));
             animation->stop(); animation->setStartValue(0.05); animation->setEndValue(1.0); widget->setWindowOpacity(0.05); animation->start();
         } else if (type == QEvent::Hide && owner_->isVisible()) {
             const qreal opacity = widget->windowOpacity();

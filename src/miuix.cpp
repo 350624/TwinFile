@@ -1,4 +1,6 @@
 #include "window.h"
+#include "smooth_widgets.h"
+#include "miuix_theme.h"
 
 #include <QApplication>
 #include <QHBoxLayout>
@@ -16,10 +18,10 @@ namespace {
 class PaneSwitch : public QWidget {
 public:
     explicit PaneSwitch(QWidget *parent) : QWidget(parent) {
-        setObjectName(QStringLiteral("miuixPaneSwitch")); setFixedSize(164, 38);
+        setObjectName(QStringLiteral("miuixPaneSwitch")); setFixedSize(164, 34);
         motion_.setObjectName(QStringLiteral("miuixPaneAnimation"));
-        motion_.setDuration(210); motion_.setEasingCurve(QEasingCurve::OutCubic);
-        auto *row = new QHBoxLayout(this); row->setContentsMargins(4, 4, 4, 4); row->setSpacing(0);
+        motion_.setDuration(200); motion_.setEasingCurve(miuixEase());
+        auto *row = new QHBoxLayout(this); row->setContentsMargins(3, 3, 3, 3); row->setSpacing(0);
         for (int index = 0; index < 2; ++index) {
             auto *button = new QToolButton(this); button->setText(index ? QStringLiteral("右栏") : QStringLiteral("左栏"));
             button->setObjectName(index ? QStringLiteral("miuixRightPane") : QStringLiteral("miuixLeftPane"));
@@ -47,9 +49,9 @@ protected:
     void hideEvent(QHideEvent *event) override { select(target_ > 0.5, false); QWidget::hideEvent(event); }
     void paintEvent(QPaintEvent *) override {
         QPainter painter(this); painter.setRenderHint(QPainter::Antialiasing); painter.setPen(Qt::NoPen);
-        painter.setBrush(qApp->palette().alternateBase()); painter.drawRoundedRect(rect(), 19, 19);
-        const qreal segment = (width() - 8.0) / 2;
-        painter.setBrush(qApp->palette().base()); painter.drawRoundedRect(QRectF(4 + segment * position_, 4, segment, height() - 8), 15, 15);
+        painter.fillPath(continuousRoundedRect(QRectF(rect()), 17), qApp->palette().alternateBase());
+        const qreal segment = (width() - 6.0) / 2;
+        painter.fillPath(continuousRoundedRect(QRectF(3 + segment * position_, 3, segment, height() - 6), 14), qApp->palette().highlight());
     }
 private:
     QVariantAnimation motion_{this};
@@ -83,15 +85,16 @@ void Window::applyMiuixChrome(bool enabled) {
     auto *content = findChild<QWidget *>(QStringLiteral("workspaceContent"));
     auto *layout = qobject_cast<QVBoxLayout *>(content->layout());
     auto *toolbar = findChild<QWidget *>(QStringLiteral("workspaceToolbar"));
-    layout->removeWidget(toolbar); layout->insertWidget(enabled ? layout->count() : 0, toolbar);
+    toolbar->layout()->setContentsMargins(enabled ? 8 : 4, 0, enabled ? 8 : 4, 0);
+    layout->removeWidget(toolbar); layout->insertWidget(0, toolbar);
     if (enabled) {
-        header->layout()->setContentsMargins(24, 18, 18, 16);
+        header->layout()->setContentsMargins(20, 6, 16, 6);
         findChild<QLabel *>(QStringLiteral("workspaceHeading"))->hide();
         findChild<QLabel *>(QStringLiteral("workspaceDetail"))->hide();
-        findChild<QSplitter *>(QStringLiteral("fileSplitter"))->setHandleWidth(14);
-        centralWidget()->layout()->setContentsMargins(0, 0, 16, 0);
-        layout->setContentsMargins(8, 0, 8, 10);
-        layout->setSpacing(14);
+        findChild<QSplitter *>(QStringLiteral("fileSplitter"))->setHandleWidth(12);
+        centralWidget()->layout()->setContentsMargins(0, 0, 12, 0);
+        layout->setContentsMargins(0, 0, 0, 12);
+        layout->setSpacing(12);
     } else {
         header->layout()->setContentsMargins(20, 14, 2, 14);
         findChild<QLabel *>(QStringLiteral("workspaceHeading"))->show();
@@ -120,7 +123,7 @@ void Window::updateMiuixContext() {
 void Window::adaptMiuixChrome() {
     if (settings_.value(QStringLiteral("theme")).toString() != QStringLiteral("miuix")) return;
     const bool compact = centralWidget()->width() < 1000;
-    sidebar_->setFixedWidth(compact ? 164 : 196);
+    sidebar_->setFixedWidth(compact ? 176 : 240);
     auto *search = findChild<QPushButton *>(QStringLiteral("workspaceSearch"));
     search->setText(compact ? QString() : QStringLiteral("搜索文件"));
     search->setMinimumWidth(compact ? 36 : 120); search->setMaximumWidth(compact ? 36 : 160);

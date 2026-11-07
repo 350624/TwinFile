@@ -1,5 +1,7 @@
 # 第三方组件、来源与发布边界
 
+Miuix 主题原生适配 **Miuix Console**（bmbxwbh，Apache-2.0）的设计令牌与组件交互。固定提交、保留源码、许可及适配差异见 `licenses/MIUIX-CONSOLE.md`；来源文件在 `vendor/miuix-console`，运行时不加载网页代码或在线字体。
+
 ARSCLib 1.4.0 用于 Android 二进制 XML / 资源表编辑，使用未修改的 Apache-2.0 JAR；来源、固定哈希及通知见 `licenses/ANDROID-EDITOR.md`，原创桥为 `assets/AndroidBinaryBridge.java`。
 
 APK 图标的离线 Android 系统色板和公开资源编号来自 AOSP Android 12，使用 Apache-2.0，来源与修改说明见 `licenses/ANDROID-COLORS.md`。不读取手机壁纸或厂商动态配色。

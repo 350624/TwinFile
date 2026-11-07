@@ -59,7 +59,7 @@ try {
     Get-Content -LiteralPath $MtResults
     if ($Process.ExitCode -ne 0) { throw 'MT original UI check failed' }
     $MiuixResults = Join-Path $Evidence 'miuix-ui-test-results.txt'
-    $Process = Start-Process -FilePath $ExtensionExecutable -ArgumentList @('-platform','windows','miuixLayoutNavigationAndMotion','roundedMenusKeepTransparentCorners','-o',('"' + $MiuixResults + ',txt"')) -WindowStyle Hidden -PassThru
+    $Process = Start-Process -FilePath $ExtensionExecutable -ArgumentList @('-platform','windows','miuixLayoutNavigationAndMotion','miuixContinuousCornersAndButtonStates','continuousCornersHaveSmoothJoins','miuixConsoleTokensAndMotion','roundedMenusKeepTransparentCorners','-o',('"' + $MiuixResults + ',txt"')) -WindowStyle Hidden -PassThru
     if (-not $Process.WaitForExit(90000)) { $Process.Kill(); throw 'miuix UI check timed out' }
     Get-Content -LiteralPath $MiuixResults
     if ($Process.ExitCode -ne 0) { throw 'miuix UI check failed' }
