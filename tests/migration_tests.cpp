@@ -54,7 +54,9 @@
 #include <zstd.h>
 #include <chrono>
 #include <future>
+#include <mutex>
 #include <thread>
+#include <utility>
 
 using namespace twinfile;
 
@@ -1406,6 +1408,25 @@ private slots:
         task.begin(QStringLiteral("复制文件"), [] {}); task.updateProgress(1, 4, QStringLiteral("copy"));
         QCOMPARE(task.findChild<QProgressBar *>()->value(), 250);
     }
+    void hfxDetectsMissingStoragePermission() {
+        for (const QString &output : {QStringLiteral("MANAGE_EXTERNAL_STORAGE: ignore; rejectTime=+59s"),
+            QStringLiteral("MANAGE_EXTERNAL_STORAGE: deny"), QStringLiteral("Uid mode: MANAGE_EXTERNAL_STORAGE: default"),
+            QStringLiteral("No operations."),
+            QStringLiteral("Uid mode: MANAGE_EXTERNAL_STORAGE: deny\nMANAGE_EXTERNAL_STORAGE: allow"),
+            QStringLiteral("MANAGE_EXTERNAL_STORAGE: allow\nUid mode: MANAGE_EXTERNAL_STORAGE: ignore"),
+            QStringLiteral("Uid mode: MANAGE_EXTERNAL_STORAGE: default\nMANAGE_EXTERNAL_STORAGE: ignore"),
+            QStringLiteral("Uid mode: MANAGE_EXTERNAL_STORAGE: default\nNo operations."),
+            QStringLiteral("MANAGE_EXTERNAL_STORAGE: default")}) QVERIFY2(hfxStorageAccessDenied(output), qPrintable(output));
+        for (const QString &output : {QStringLiteral("MANAGE_EXTERNAL_STORAGE: allow; time=+2s"),
+            QStringLiteral("Uid mode: MANAGE_EXTERNAL_STORAGE: allow\nMANAGE_EXTERNAL_STORAGE: ignore; rejectTime=+4h50m0s883ms ago"),
+            QStringLiteral("MANAGE_EXTERNAL_STORAGE: ignore; rejectTime=+4h50m0s883ms ago\nUid mode: MANAGE_EXTERNAL_STORAGE: allow"),
+            QStringLiteral("Uid mode: MANAGE_EXTERNAL_STORAGE: default\nMANAGE_EXTERNAL_STORAGE: allow"),
+            QStringLiteral("MANAGE_EXTERNAL_STORAGE: allow\nUid mode: MANAGE_EXTERNAL_STORAGE: default"),
+            QStringLiteral("Uid mode: MANAGE_EXTERNAL_STORAGE: allow\nNo operations."),
+            QStringLiteral("Uid mode: MANAGE_EXTERNAL_STORAGE: future_mode\nMANAGE_EXTERNAL_STORAGE: ignore"),
+            QStringLiteral("MANAGE_EXTERNAL_STORAGE: future_mode"),
+            QStringLiteral(""), QStringLiteral("Error: unknown operation")}) QVERIFY2(!hfxStorageAccessDenied(output), qPrintable(output));
+    }
     void hfxLoopbackHandshakeAndListing() {
         const auto owner = std::make_shared<HfxSession>(); HfxSession &session = *owner; HfxOptions options; options.port = 0; options.interfaces = {{QStringLiteral("loopback"), QHostAddress::LocalHost}}; auto cancel = std::make_shared<std::atomic_bool>(false); std::promise<quint16> listening; auto port = listening.get_future();
         auto task = qtAsync([&] { return session.connect(options, cancel, [&](quint16 value) { listening.set_value(value); }); });
@@ -1430,6 +1451,55 @@ private slots:
         };
         auto push = qtAsync([&] { return transferEntries({local}, phoneLocation, false, cancel); }); respondPush();
         QVERIFY(push.wait_for(std::chrono::seconds(3)) == std::future_status::ready); const Result pushed = push.get(); QVERIFY2(pushed.ok, qPrintable(pushed.error));
+        {
+            const QString secondSource = files.filePath(QStringLiteral("second.txt"));
+            const QByteArray secondContents("second file");
+            QVERIFY(writeFile(secondSource, secondContents));
+            const auto cancelBatch = std::make_shared<std::atomic_bool>(false);
+            QList<QPair<qint64, qint64>> progress;
+            auto batch = qtAsync([&] {
+                return session.push({source, secondSource}, QStringLiteral("/sdcard"), cancelBatch,
+                    [&](qint64 done, qint64 total, const QString &) { progress.append({done, total}); });
+            });
+            const auto stopBatch = qScopeGuard([&] { cancelBatch->store(true); });
+            QCOMPARE(read(2), network<qint16>(1));
+            QCOMPARE(readText(), QStringLiteral("/sdcard"));
+            control.write(network<qint32>(1) + utf(QStringLiteral("existing.txt")) + utf(QStringLiteral("/sdcard/existing.txt"))
+                + network<qint64>(0) + network<qint64>(1) + QByteArray(1, '\0'));
+            control.waitForBytesWritten(3000);
+            QCOMPARE(read(2), network<qint16>(10));
+            const QList<QPair<QString, QByteArray>> expectedFiles{
+                {QStringLiteral("/sdcard/push.bin"), contents}, {QStringLiteral("/sdcard/second.txt"), secondContents}};
+            for (int index = 0; index < expectedFiles.size(); ++index) {
+                const auto &[name, bytes] = expectedFiles.at(index);
+                QCOMPARE(readChannel(2), network<qint16>(0));
+                QCOMPARE(readChannel(4), network<qint32>(index));
+                const QByteArray length = readChannel(2);
+                QCOMPARE(length.size(), 2);
+                QCOMPARE(QString::fromUtf8(readChannel(qFromBigEndian<quint16>(length.constData()))), name);
+                QCOMPARE(readChannel(8).size(), 8);
+                QCOMPARE(readChannel(8), network<qint64>(bytes.size()));
+                QCOMPARE(readChannel(4), network<qint32>(0));
+                QCOMPARE(readChannel(4), network<qint32>(bytes.size()));
+                QCOMPARE(readChannel(bytes.size()), bytes);
+            }
+            QCOMPARE(readChannel(2), network<qint16>(3));
+            control.write(QByteArray(1, char(1)));
+            control.waitForBytesWritten(3000);
+            QCOMPARE(read(1), QByteArray(1, char(1)));
+            QVERIFY(batch.wait_for(std::chrono::seconds(3)) == std::future_status::ready);
+            const Result uploaded = batch.get();
+            QVERIFY2(uploaded.ok, qPrintable(uploaded.error));
+            const qint64 expectedTotal = contents.size() + secondContents.size();
+            QVERIFY(!progress.isEmpty());
+            qint64 previous = 0;
+            for (const auto &[done, total] : std::as_const(progress)) {
+                QVERIFY(done >= previous && done <= expectedTotal);
+                QCOMPARE(total, expectedTotal);
+                previous = done;
+            }
+            QCOMPARE(previous, expectedTotal);
+        }
         Entry remote; remote.source = Source::Phone; remote.serial = endpoint; remote.path = QStringLiteral("/sdcard/pulled.bin"); remote.name = QStringLiteral("pulled.bin");
         auto pull = qtAsync([&] { return transferEntries({remote}, {Source::Local, files.path(), {}, {}}, false, cancel); });
         QCOMPARE(read(2), network<qint16>(11)); QCOMPARE(read(4), network<qint32>(1)); QCOMPARE(readText(), QStringLiteral("/sdcard/pulled.bin")); const QString destination = readText() + QStringLiteral("pulled.bin"); QCOMPARE(read(4), network<qint32>(1)); QCOMPARE(readText(), QStringLiteral("/sdcard/"));
@@ -1459,8 +1529,22 @@ private slots:
         auto badUploadMove = qtAsync([&] { return transferEntries({local}, phoneLocation, true, cancel); }); respondPush(); respondPull(local.name, QByteArray("wrong"));
         QVERIFY(badUploadMove.wait_for(std::chrono::seconds(3)) == std::future_status::ready); QVERIFY(!badUploadMove.get().ok); QVERIFY(QFileInfo::exists(source));
         QTemporaryDir uploadMove; Entry uploadSource = local; uploadSource.path = uploadMove.filePath(local.name); QVERIFY(writeFile(uploadSource.path, contents));
+        const QString trashProbe = uploadMove.filePath(QStringLiteral("recycle-test.bin"));
+        QVERIFY(writeFile(trashProbe, QByteArray("trash probe")));
+        QFile probe(trashProbe);
+        const bool canRecycle = probe.moveToTrash();
         auto goodUploadMove = qtAsync([&] { return transferEntries({uploadSource}, phoneLocation, true, cancel); }); respondPush(); respondPull(local.name, contents);
-        QVERIFY(goodUploadMove.wait_for(std::chrono::seconds(3)) == std::future_status::ready); const Result uploaded = goodUploadMove.get(); QVERIFY2(uploaded.ok, qPrintable(uploaded.error)); QVERIFY(!QFileInfo::exists(uploadSource.path));
+        QVERIFY(goodUploadMove.wait_for(std::chrono::seconds(3)) == std::future_status::ready);
+        const Result uploaded = goodUploadMove.get();
+        if (canRecycle) {
+            QVERIFY2(uploaded.ok, qPrintable(uploaded.error)); QVERIFY(!QFileInfo::exists(uploadSource.path));
+        } else {
+            qInfo("Recycle bin unavailable for the fixture; check the verified-copy error and retained source.");
+            QVERIFY(!uploaded.ok);
+            QVERIFY2(uploaded.error.contains(QStringLiteral("复制和校验已完成，但来源删除失败")) &&
+                uploaded.error.contains(QStringLiteral("无法移入回收站")), qPrintable(uploaded.error));
+            QCOMPARE(readFile(uploadSource.path), contents);
+        }
         auto mkdir = qtAsync([&] { return createEntry(phoneLocation, QStringLiteral("folder"), true, cancel); }); QCOMPARE(read(2), network<qint16>(3)); QCOMPARE(readText(), QStringLiteral("/sdcard")); QCOMPARE(readText(), QStringLiteral("folder")); control.write(QByteArray(1, char(1))); control.waitForBytesWritten(3000); QVERIFY(mkdir.wait_for(std::chrono::seconds(3)) == std::future_status::ready); QVERIFY(mkdir.get().ok);
         Entry directory = remote; directory.name = QStringLiteral("folder"); directory.path = QStringLiteral("/sdcard/folder"); directory.directory = true;
         auto folderPull = qtAsync([&] { return transferEntries({directory}, {Source::Local, files.path(), {}, {}}, false, cancel); });
@@ -1549,6 +1633,9 @@ private slots:
     void hfxMultiLanePullActivityAndFailures_data() {
         QTest::addColumn<QString>("scenario");
         QTest::newRow("active-other-lane") << QStringLiteral("active");
+        QTest::newRow("interleaved-shared-file") << QStringLiteral("interleaved");
+        QTest::newRow("duplicate-file-block") << QStringLiteral("duplicate-block");
+        QTest::newRow("duplicate-output-path") << QStringLiteral("duplicate-path");
         QTest::newRow("all-lanes-stalled") << QStringLiteral("stall");
         QTest::newRow("enumeration-stalled") << QStringLiteral("enumeration-stall");
         QTest::newRow("cancel-partial-folder") << QStringLiteral("cancel");
@@ -1577,9 +1664,27 @@ private slots:
         control.write(network<qint32>(0) + utf(QStringLiteral("/sdcard"))); QVERIFY(flush(control));
         QVERIFY(connection.wait_for(std::chrono::seconds(3)) == std::future_status::ready); QVERIFY(connection.get().ok);
         QTemporaryDir destination; QVERIFY(destination.isValid());
-        auto pull = qtAsync([&] { return session.pull({QStringLiteral("/sdcard/tree")}, QStringLiteral("/sdcard"), destination.path(), cancel); });
+        QString targetDirectory = destination.path();
+        if (scenario == QStringLiteral("interleaved")) {
+            for (const QChar letter : {QChar('a'), QChar('b'), QChar('c')})
+                targetDirectory += QChar('/') + QString(90, letter);
+            QVERIFY(targetDirectory.size() > 260);
+            QVERIFY(QDir().mkpath(targetDirectory));
+        }
+        QStringList remotePaths{QStringLiteral("/sdcard/tree")};
+        if (scenario == QStringLiteral("interleaved")) remotePaths.append(QStringLiteral("/sdcard/standalone.txt"));
+        std::mutex progressMutex;
+        QList<QPair<qint64, qint64>> progress;
+        auto pull = qtAsync([&] {
+            return session.pull(remotePaths, QStringLiteral("/sdcard"), targetDirectory, cancel,
+                [&](qint64 done, qint64 total, const QString &) {
+                    std::lock_guard lock(progressMutex);
+                    progress.append({done, total});
+                });
+        });
         const auto stopPull = qScopeGuard([&] { cancel->store(true); });
-        QCOMPARE(read(2), network<qint16>(11)); QCOMPARE(read(4), network<qint32>(1)); QCOMPARE(readText(), QStringLiteral("/sdcard/tree"));
+        QCOMPARE(read(2), network<qint16>(11)); QCOMPARE(read(4), network<qint32>(remotePaths.size()));
+        for (const auto &path : std::as_const(remotePaths)) QCOMPARE(readText(), path);
         const QString staging = readText(); QCOMPARE(read(4), network<qint32>(1)); QCOMPARE(readText(), QStringLiteral("/sdcard/"));
         if (scenario == QStringLiteral("enumeration-stall")) {
             QElapsedTimer elapsed; elapsed.start();
@@ -1588,9 +1693,9 @@ private slots:
             QVERIFY(elapsed.elapsed() >= 1600); QVERIFY(QDir(destination.path()).entryList(QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot).isEmpty());
             return;
         }
-        auto frame = [&](int index, const QString &name, const QByteArray &bytes, qint64 total) {
+        auto frame = [&](int index, const QString &name, const QByteArray &bytes, qint64 total, qint32 block = 0) {
             return network<qint16>(0) + network<qint32>(index) + utf(staging + name) + network<qint64>(1200)
-                + network<qint64>(total) + network<qint32>(0) + network<qint32>(qint32(bytes.size())) + bytes;
+                + network<qint64>(total) + network<qint32>(block) + network<qint32>(qint32(bytes.size())) + bytes;
         };
         if (scenario == QStringLiteral("active")) QTest::qWait(1200);
         second.write(network<qint16>(1) + network<qint32>(0) + utf(staging + QStringLiteral("tree")) + network<qint64>(1200)); QVERIFY(flush(second));
@@ -1605,6 +1710,43 @@ private slots:
             QVERIFY(pull.wait_for(std::chrono::seconds(3)) == std::future_status::ready);
             const Result result = pull.get(); QVERIFY2(result.ok, qPrintable(result.error)); QVERIFY(session.connected());
             for (int index = 1; index <= 12; ++index) QCOMPARE(readFile(destination.filePath(QStringLiteral("tree/nested/%1.bin").arg(index))), contents);
+        } else if (scenario == QStringLiteral("interleaved")) {
+            constexpr qsizetype blockSize = 1024 * 1024;
+            const QByteArray prefix(blockSize, 'a'), middle(blockSize, 'b'), suffix(blockSize, 'c'), tail(123, 'd');
+            const QByteArray standalone("another selected root");
+            const QByteArray expected = prefix + middle + suffix + tail;
+            const QString name = QStringLiteral("tree/nested/shared.bin");
+            second.write(frame(1, name, middle, expected.size(), 1) + frame(1, name, tail, expected.size(), 3)
+                + network<qint16>(3));
+            first.write(frame(1, name, prefix, expected.size(), 0) + frame(1, name, suffix, expected.size(), 2)
+                + frame(2, QStringLiteral("standalone.txt"), standalone, standalone.size()) + network<qint16>(3));
+            QVERIFY(flush(first)); QVERIFY(flush(second));
+            QCOMPARE(read(1), QByteArray(1, char(1))); control.write(QByteArray(1, char(1))); QVERIFY(flush(control));
+            QVERIFY(pull.wait_for(std::chrono::seconds(3)) == std::future_status::ready);
+            const Result result = pull.get(); QVERIFY2(result.ok, qPrintable(result.error)); QVERIFY(session.connected());
+            QCOMPARE(readFile(QDir(targetDirectory).filePath(name)), expected);
+            QCOMPARE(readFile(QDir(targetDirectory).filePath(QStringLiteral("standalone.txt"))), standalone);
+            const qint64 expectedTotal = expected.size() + standalone.size();
+            QVERIFY(!progress.isEmpty());
+            qint64 previous = 0;
+            for (const auto &[done, total] : std::as_const(progress)) {
+                QVERIFY(done >= previous && done <= expectedTotal);
+                QVERIFY(total == 0 || total == expectedTotal);
+                previous = done;
+            }
+            QCOMPARE(progress.back().first, expectedTotal);
+            QCOMPARE(progress.back().second, expectedTotal);
+        } else if (scenario == QStringLiteral("duplicate-block") || scenario == QStringLiteral("duplicate-path")) {
+            const QString name = QStringLiteral("tree/duplicate.bin");
+            const QByteArray bytes("duplicate payload");
+            first.write(frame(1, name, bytes, bytes.size()));
+            second.write(frame(scenario == QStringLiteral("duplicate-block") ? 1 : 2, name, bytes, bytes.size()));
+            QVERIFY(flush(first)); QVERIFY(flush(second));
+            QVERIFY(pull.wait_for(std::chrono::seconds(3)) == std::future_status::ready);
+            const Result result = pull.get();
+            QVERIFY(!result.ok); QVERIFY2(result.error.contains(QStringLiteral("重复")), qPrintable(result.error));
+            QVERIFY(!session.connected());
+            QVERIFY(!QFileInfo::exists(destination.filePath(QStringLiteral("tree"))));
         } else {
             first.write(frame(1, QStringLiteral("tree/partial.bin"), QByteArray(1024 * 1024, 'p'), 2 * 1024 * 1024)); QVERIFY(flush(first)); QTest::qWait(100);
             QElapsedTimer elapsed; elapsed.start();

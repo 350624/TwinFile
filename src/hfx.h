@@ -6,6 +6,8 @@
 
 namespace twinfile {
 
+bool hfxStorageAccessDenied(const QString &appOpsOutput);
+
 struct HfxOptions {
     QString serial;
     QList<QPair<QString, QHostAddress>> interfaces;
