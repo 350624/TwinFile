@@ -1,0 +1,4 @@
+/target/
+/.toolchain/
+/dist/
+/verification/
