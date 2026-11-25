@@ -1,49 +1,52 @@
-const hostName = "com.twinfile.downloader";
+"use strict";
+const host = "com.twinfile.rust.downloader";
+const menuId = "twinfile-rust-link";
 const pending = new Set();
-
-function sendToDownloader(url, filename, callback) {
-  const clearStatus = () => {
-    chrome.action.setBadgeText({ text: "" });
-    chrome.storage.local.remove("bridgeError");
-  };
-  chrome.runtime.sendNativeMessage(hostName, { url, filename }, response => {
-    const accepted = !chrome.runtime.lastError && response?.accepted === true;
-    if (!accepted) {
-      const message = chrome.runtime.lastError?.message || "下载器未能启动";
-      chrome.action.setBadgeText({ text: "!" });
-      chrome.action.setBadgeBackgroundColor({ color: "#b42318" });
-      chrome.storage.local.set({ bridgeError: message });
-    } else {
-      clearStatus();
-    }
-    callback(accepted);
-  });
+function httpUrl(url) {
+  try {
+    const u = new URL(url);
+    return (u.protocol === "http:" || u.protocol === "https:") && !u.username && !u.password && !u.hash ? u : null;
+  } catch { return null; }
 }
-
-chrome.downloads.onCreated.addListener(item => {
-  if (item.byExtensionId || !item.url || !/^https?:/i.test(item.url) || pending.has(item.id)) return;
-  pending.add(item.id);
-  chrome.storage.local.get({ takeover: false }, settings => {
-    if (!settings.takeover) { pending.delete(item.id); return; }
-    chrome.downloads.pause(item.id, () => {
-      if (chrome.runtime.lastError) { pending.delete(item.id); return; }
-      const filename = item.filename.split(/[\\/]/).pop() || new URL(item.url).pathname.split("/").pop() || "download.bin";
-      sendToDownloader(item.url, filename, accepted => {
-        if (accepted) chrome.downloads.cancel(item.id, () => void chrome.runtime.lastError);
-        else chrome.downloads.resume(item.id, () => void chrome.runtime.lastError);
-        pending.delete(item.id);
-      });
-    });
-  });
-});
-
+function suggest(u, name) {
+  const last = (name || "").split(/[\\/]/).pop();
+  if (last) return last;
+  try { return decodeURIComponent(u.pathname.split("/").pop()) || "download.bin"; }
+  catch { return "download.bin"; }
+}
+async function send(u, name) {
+  let accepted = false;
+  try { accepted = (await chrome.runtime.sendNativeMessage(host, {url: u.href, filename: suggest(u, name)}))?.accepted === true; }
+  catch { /* Opening the original task remains the browser's responsibility. */ }
+  await Promise.allSettled([
+    chrome.action.setBadgeText({text: accepted ? "" : "!"}),
+    chrome.storage.local.set({bridgeError: !accepted})
+  ]);
+  return accepted;
+}
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({ id: "twinfile-download-link", title: "用 TwinFile Downloader 下载链接", contexts: ["link"] });
+  chrome.contextMenus.create({id: menuId, title: "用 TwinFile Rust 下载链接", contexts: ["link"]}, () => void chrome.runtime.lastError);
 });
-
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId !== "twinfile-download-link" || !info.linkUrl) return;
-  let filename = "download.bin";
-  try { filename = new URL(info.linkUrl).pathname.split("/").pop() || filename; } catch {}
-  sendToDownloader(info.linkUrl, filename, () => {});
+chrome.contextMenus.onClicked.addListener((item) => {
+  const u = httpUrl(item.linkUrl);
+  if (item.menuItemId === menuId && u) void send(u);
+});
+chrome.downloads.onCreated.addListener(async item => {
+  const u = httpUrl(item.url);
+  if (!u || item.byExtensionId || item.state !== "in_progress" || pending.has(item.id)) return;
+  pending.add(item.id);
+  let paused = false;
+  try {
+    if (!(await chrome.storage.local.get({takeover: false})).takeover) return;
+    await chrome.downloads.pause(item.id);
+    paused = true;
+    if (await send(u, item.filename)) {
+      await chrome.downloads.cancel(item.id);
+      paused = false;
+    }
+  } catch { /* If any operation fails, do not leave the browser task paused. */ }
+  finally {
+    if (paused) { try { await chrome.downloads.resume(item.id); } catch {} }
+    pending.delete(item.id);
+  }
 });
